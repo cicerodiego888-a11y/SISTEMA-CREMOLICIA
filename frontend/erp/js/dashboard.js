@@ -5,6 +5,19 @@ function formatarMoedaDashboard(valor) {
     });
 }
 
+/** Quantidade operacional legível (evita 183.931034…) */
+function formatarQuantidadeDashboard(valor) {
+    const n = Number(valor || 0);
+    if (!Number.isFinite(n)) return '0';
+    if (Math.abs(n - Math.round(n)) < 0.001) {
+        return Math.round(n).toLocaleString('pt-BR');
+    }
+    return n.toLocaleString('pt-BR', {
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 2
+    });
+}
+
 function escapeHtmlDashboard(texto) {
     if (texto === null || texto === undefined) return '';
     return String(texto)
@@ -50,14 +63,14 @@ function montarListaProdutosDashboard(lista, modoFiscalAtivo, mensagemVazia) {
     return lista.map((item, index) => {
         let quantidadeHtml;
         if (modoFiscalAtivo) {
-            quantidadeHtml = `<strong>${Number(item.quantidade_vendida || item.quantidade_fiscal || 0)}</strong>`;
+            quantidadeHtml = `<strong>${escapeHtmlDashboard(formatarQuantidadeDashboard(item.quantidade_vendida || item.quantidade_fiscal || 0))}</strong>`;
         } else {
             quantidadeHtml = `
                 <span class="text-end">
-                    <strong>${Number(item.quantidade_vendida || 0)}</strong>
+                    <strong>${escapeHtmlDashboard(formatarQuantidadeDashboard(item.quantidade_vendida || 0))}</strong>
                     <small class="text-muted d-block">
-                        F: ${Number(item.quantidade_fiscal || 0)} |
-                        NF: ${Number(item.quantidade_nao_fiscal || 0)}
+                        F: ${escapeHtmlDashboard(formatarQuantidadeDashboard(item.quantidade_fiscal || 0))} |
+                        NF: ${escapeHtmlDashboard(formatarQuantidadeDashboard(item.quantidade_nao_fiscal || 0))}
                     </small>
                 </span>
             `;
@@ -606,7 +619,7 @@ function preencherDashboard(data) {
     if (produtosVendidos === 0) {
         aplicarIndicadorPrincipal('dashboardProdutos', 0, 'Nenhum produto vendido no período.');
     } else {
-        setDashboardText('dashboardProdutos', produtosVendidos);
+        setDashboardText('dashboardProdutos', formatarQuantidadeDashboard(produtosVendidos));
     }
 
     const receber = data.contas_receber || {};

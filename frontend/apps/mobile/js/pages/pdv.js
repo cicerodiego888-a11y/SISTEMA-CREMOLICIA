@@ -46,6 +46,13 @@ import {
   mostrarCupomNoCelular,
   mostrarCupomAposEmissao
 } from '../cupom.js';
+import {
+  sincronizarModoFiscalDoServidor,
+  modoFiscalChipHtml,
+  bindModoFiscalChip,
+  emitirFiscalDaVendaAtual,
+  isModoFiscalAtivo
+} from '../modoFiscal.js';
 
 const CART_KEY = 'cds-mobile-pdv-cart';
 /** RCM-05.13 — resumo financeiro inicia recolhido */
@@ -130,6 +137,7 @@ function terminalStatusBannerHtml(caixaAberto) {
     : 'Nenhum caixa';
 
   // RCM-9.2.2.1 — OK operacional: só bolinha; problemas: painel completo
+  // RCM-9.2.5 — chip Fiscal/Não Fiscal (mesmo contrato F12 Desktop)
   if (st.code === 'CAIXA_ABERTO') {
     return `
       <div class="cds-term-chip-row" id="pdv-term-status">
@@ -141,6 +149,7 @@ function terminalStatusBannerHtml(caixaAberto) {
           data-status="${escapeHtml(st.title)}">
           <span aria-hidden="true">🟢</span>
         </button>
+        ${modoFiscalChipHtml()}
       </div>
     `;
   }
@@ -148,7 +157,10 @@ function terminalStatusBannerHtml(caixaAberto) {
   const toneClass = st.tone === 'danger' ? 'cds-term-banner--danger' : 'cds-term-banner--warn';
   return `
     <article class="cds-term-banner ${toneClass}" id="pdv-term-status">
-      <strong>${st.emoji} ${escapeHtml(st.title)}</strong>
+      <div class="cds-term-banner__top">
+        <strong>${st.emoji} ${escapeHtml(st.title)}</strong>
+        ${modoFiscalChipHtml()}
+      </div>
       <p>${escapeHtml(st.message)}</p>
       <p class="cds-muted">Terminal #${escapeHtml(asText(term.id, '—'))} · ${escapeHtml(nome)}${term.caixaId ? ` · ${escapeHtml(caixaLabel)}` : ''}</p>
       <p class="cds-muted cds-term-banner__hint">Renomear terminal: apenas no ERP (SUPER_ADMIN / Gerenciar Caixas).</p>
@@ -157,6 +169,7 @@ function terminalStatusBannerHtml(caixaAberto) {
 }
 
 function bindTerminalStatusUi(root) {
+  bindModoFiscalChip(root);
   const chip = root?.querySelector?.('#pdv-term-chip');
   if (!chip) return;
   chip.addEventListener('click', () => {
@@ -174,6 +187,7 @@ function bindTerminalStatusUi(root) {
           <div class="cds-row"><span>Nome</span><strong>${escapeHtml(nome)}</strong></div>
           <div class="cds-row"><span>Caixa</span><strong>${escapeHtml(caixaLabel)}</strong></div>
           <div class="cds-row"><span>Sessão</span><strong>Aberta</strong></div>
+          <div class="cds-row"><span>Modo fiscal</span><strong>${isModoFiscalAtivo() ? '🟢 FISCAL' : '⚪ NÃO FISCAL'}</strong></div>
           <p class="cds-muted cds-term-banner__hint" style="margin-top:10px">Renomear terminal: apenas no ERP (SUPER_ADMIN / Gerenciar Caixas).</p>
         </div>
       `,
@@ -398,6 +412,8 @@ async function renderCaixaTab(root, caixa) {
   const term = getStoredTerminal();
   const ui = getTerminalUiState({ caixaAberto: aberto });
   const semCaixaVinculado = ui.code === 'SEM_CAIXA' || ui.code === 'INATIVO' || ui.code === 'NAO_REGISTRADO';
+
+  await sincronizarModoFiscalDoServidor().catch(() => null);
 
   root.innerHTML = `
     ${tabsHtml([
@@ -719,23 +735,21 @@ async function iniciarPagamento(root, aberto) {
     title: 'Forma de pagamento',
     bodyHtml: `
       <p class="cds-muted">Total ${escapeHtml(formatMoney(total))}</p>
+      <p class="cds-fiscal-pay-hint">${isModoFiscalAtivo() ? '🟢 FISCAL — NFC-e conforme módulo oficial' : '⚪ NÃO FISCAL — sem emissão'}</p>
       <div class="cds-pay-grid">
         <button type="button" class="cds-mobile-btn" data-pay="dinheiro">Dinheiro</button>
         <button type="button" class="cds-mobile-btn" data-pay="pix">PIX</button>
         <button type="button" class="cds-mobile-btn" data-pay="cartao">Cartão</button>
         <button type="button" class="cds-mobile-btn cds-mobile-btn--secondary" data-pay="tef">TEF</button>
       </div>
-      <label class="cds-field cds-field--check" style="margin-top:12px">
-        <input type="checkbox" id="pdv-emit-nfce" ${canDoAction('emitir_nfce') ? '' : 'disabled'}>
-        <span>Emitir NFC-e após a venda</span>
-      </label>
     `
   });
 
   document.querySelectorAll('#cds-mobile-sheet [data-pay]').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const forma = btn.getAttribute('data-pay');
-      const emitir = !!document.querySelector('#pdv-emit-nfce')?.checked;
+      // RCM-9.2.5 — mesmo contrato Desktop F12 (não checkbox paralelo)
+      const emitir = emitirFiscalDaVendaAtual();
       closeBottomSheet();
       await finalizarVenda({ forma, emitir, total, desconto, cart });
     });
@@ -884,6 +898,8 @@ async function finalizarVenda({ forma, emitir, total, desconto, cart }) {
 async function renderVenderTab(root, caixa) {
   const aberto = isCaixaAberto(caixa) && !caixa.__error;
   pdvResumoExpandido = false;
+
+  await sincronizarModoFiscalDoServidor().catch(() => null);
 
   root.innerHTML = `
     ${tabsHtml([

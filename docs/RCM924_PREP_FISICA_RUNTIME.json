@@ -1,0 +1,13 @@
+{
+  "sprint": "RCM-9.2.4",
+  "at": "2026-08-08T13:20:04.394Z",
+  "lan_ip": "192.168.0.9",
+  "url_mobile": "http://192.168.0.9:3002/apps/mobile/",
+  "stale_ip_22_ok": false,
+  "smoke_lan": true,
+  "smoke_assets": true,
+  "smoke_pwa_manifest": true,
+  "smoke_ux_contratos": true,
+  "homologacao_fisica_aparelho": null,
+  "declaracao": "Smoke LAN/assets/PWA/UX OK — homologação física exige checklist no celular"
+}

@@ -1,0 +1,333 @@
+{
+  "sprint": "RCM-9.2.3",
+  "started_at": "2026-08-08T13:12:23.770Z",
+  "base": "http://127.0.0.1:3002",
+  "hostname_simulado": "mobile-rcm923-mske8d09",
+  "checks": {
+    "mobile_shell": {
+      "ok": true,
+      "detail": {
+        "status": 200
+      }
+    },
+    "login": {
+      "ok": true,
+      "detail": {
+        "user": "Diego",
+        "id": 1
+      }
+    },
+    "terminal": {
+      "ok": true,
+      "detail": {
+        "id": 24,
+        "nome": "CDS Mobile RCM923",
+        "caixa_id": null,
+        "ativo": 1
+      }
+    },
+    "caixa_vinculado": {
+      "ok": true,
+      "detail": {
+        "caixa_id": 4
+      }
+    },
+    "caixa_aberto": {
+      "ok": true,
+      "detail": {
+        "sessao": 16,
+        "operador": "Diego",
+        "status_ui": "CAIXA_ABERTO / 🟢"
+      }
+    },
+    "venda_varejo_resolver": {
+      "ok": true,
+      "detail": {
+        "canal": "VAREJO",
+        "preco": 2.5,
+        "uc": "UN",
+        "qtd_avaliada": 1
+      }
+    },
+    "venda_varejo": {
+      "ok": true,
+      "detail": {
+        "id": 55,
+        "total": 2.5,
+        "forma": "dinheiro",
+        "canal": "VAREJO",
+        "desktop": {
+          "total": 2.5,
+          "raw_keys": [
+            "id",
+            "codigo",
+            "data_venda",
+            "cliente_id",
+            "total",
+            "desconto",
+            "forma_pagamento",
+            "status",
+            "valor_recebido",
+            "caixa_id",
+            "cpf_cnpj_nota",
+            "cancelada"
+          ]
+        }
+      }
+    },
+    "pagamento_varejo": {
+      "ok": true,
+      "detail": {
+        "forma": "dinheiro",
+        "valor": 2.5
+      }
+    },
+    "venda_atacado_resolver": {
+      "ok": true,
+      "detail": {
+        "canal": "ATACADO",
+        "itens_comerciais": 30,
+        "picole": {
+          "qtd": 29,
+          "uc": "UN",
+          "preco": 2
+        },
+        "pote": {
+          "qtd_estoque_kg": 0.25,
+          "uc": "LT",
+          "preco": 28,
+          "item_comercial": 1
+        }
+      }
+    },
+    "venda_atacado": {
+      "ok": true,
+      "detail": {
+        "id": 56,
+        "total": 65,
+        "forma": "pix",
+        "canal": "ATACADO",
+        "itens_comerciais": 30,
+        "desktop": {
+          "total": 65,
+          "raw_keys": [
+            "id",
+            "codigo",
+            "data_venda",
+            "cliente_id",
+            "total",
+            "desconto",
+            "forma_pagamento",
+            "status",
+            "valor_recebido",
+            "caixa_id",
+            "cpf_cnpj_nota",
+            "cancelada"
+          ]
+        }
+      }
+    },
+    "pagamento_atacado": {
+      "ok": true,
+      "detail": {
+        "forma": "pix",
+        "valor": 65
+      }
+    },
+    "contagem_30": {
+      "ok": true,
+      "detail": {
+        "quantidade_avaliada": 30
+      }
+    },
+    "estoque_picole": {
+      "ok": true,
+      "detail": {
+        "before": 141,
+        "after": 111,
+        "delta": 30,
+        "esperado": 30
+      }
+    },
+    "estoque_sorvete": {
+      "ok": true,
+      "detail": {
+        "before": 8.319,
+        "after": 8.069,
+        "delta": 0.25,
+        "nota": "0,25 KG comercial ≠ 30 UN; baixa física via MUC"
+      }
+    },
+    "desktop_lista_varejo": {
+      "ok": true,
+      "detail": {
+        "id": 55
+      }
+    },
+    "desktop_lista_atacado": {
+      "ok": true,
+      "detail": {
+        "id": 56
+      }
+    },
+    "dupla_verificacao_varejo": {
+      "ok": true,
+      "detail": {
+        "mobile_total": 2.5,
+        "desktop_total": 2.5,
+        "terminal": 24,
+        "forma": "dinheiro"
+      }
+    },
+    "dupla_verificacao_atacado": {
+      "ok": true,
+      "detail": {
+        "mobile_total": 65,
+        "desktop_total": 65,
+        "canal_hint": "ATACADO (resolver)"
+      }
+    },
+    "reabertura_terminal": {
+      "ok": true,
+      "detail": {
+        "id": 24,
+        "nome": "CDS Mobile RCM923",
+        "caixa_id": 4
+      }
+    },
+    "reabertura_caixa": {
+      "ok": true,
+      "detail": {
+        "sessao": 16
+      }
+    },
+    "segunda_venda": {
+      "ok": true,
+      "detail": {
+        "id": 57,
+        "total": 2.5,
+        "forma": "dinheiro"
+      }
+    },
+    "ux_sticky_nowrap": {
+      "ok": true,
+      "detail": "RCM-9.2.2.2"
+    },
+    "ux_sticky_coluna": {
+      "ok": true,
+      "detail": "full-width"
+    },
+    "ux_pesquisa_limpa": {
+      "ok": true,
+      "detail": "RCM-9.2.2.1"
+    },
+    "ux_terminal_persist": {
+      "ok": true,
+      "detail": "localStorage"
+    },
+    "ux_normalize_caixa": {
+      "ok": true,
+      "detail": "unwrap /caixa/aberto"
+    },
+    "ux_subtotal": {
+      "ok": true,
+      "detail": "payload venda"
+    },
+    "ux_css_360": {
+      "ok": true,
+      "detail": null
+    },
+    "ux_css_390": {
+      "ok": true,
+      "detail": null
+    },
+    "estoque_picole_final": {
+      "ok": true,
+      "detail": {
+        "before": 141,
+        "after": 110,
+        "delta": 31,
+        "esperado": 31
+      }
+    }
+  },
+  "vendas": {
+    "varejo": {
+      "id": 55,
+      "total": 2.5,
+      "forma": "dinheiro",
+      "canal": "VAREJO",
+      "desktop": {
+        "total": 2.5,
+        "raw_keys": [
+          "id",
+          "codigo",
+          "data_venda",
+          "cliente_id",
+          "total",
+          "desconto",
+          "forma_pagamento",
+          "status",
+          "valor_recebido",
+          "caixa_id",
+          "cpf_cnpj_nota",
+          "cancelada"
+        ]
+      }
+    },
+    "atacado": {
+      "id": 56,
+      "total": 65,
+      "forma": "pix",
+      "canal": "ATACADO",
+      "itens_comerciais": 30,
+      "desktop": {
+        "total": 65,
+        "raw_keys": [
+          "id",
+          "codigo",
+          "data_venda",
+          "cliente_id",
+          "total",
+          "desconto",
+          "forma_pagamento",
+          "status",
+          "valor_recebido",
+          "caixa_id",
+          "cpf_cnpj_nota",
+          "cancelada"
+        ]
+      }
+    },
+    "segunda": {
+      "id": 57,
+      "total": 2.5,
+      "forma": "dinheiro"
+    }
+  },
+  "estoque": {
+    "before": {
+      "picole": 141,
+      "sorvete": 8.319
+    },
+    "after_atacado": {
+      "picole": 111,
+      "sorvete": 8.069
+    },
+    "after_segunda": {
+      "picole": 110
+    }
+  },
+  "problemas": [],
+  "correcoes": [],
+  "terminal": {
+    "id": 24,
+    "nome": "CDS Mobile RCM923",
+    "caixa_id": 4,
+    "sessao": 16
+  },
+  "finished_at": "2026-08-08T13:12:27.791Z",
+  "pass_api": true,
+  "pass_fisico_aparelho": null,
+  "declaracao": "API/ciclo operacional PASS — declaração plena no aparelho depende do checklist físico do operador"
+}

@@ -413,18 +413,11 @@ Teste: `backend/modules/comercial/tests/rcm923-homologacao-sorvete-kg.test.js`
 
 ### Declaração RCM-9.2.3
 
-**Ainda não** se publica a frase *“CDS Mobile homologado para operação real”* — falta a confirmação de toque/PWA no celular (item 6 da sprint).
+**Pendência MUC do sorvete Varejo/KG: ENCERRADA** (cadastro LT→KG 0,58).
 
-**Pendência MUC do sorvete Varejo/KG: ENCERRADA** com cadastro oficial LT→KG 0,58 e venda #54 + estoque conferidos.
+**Auditoria operacional 2026-08-08 (API):** PASS — doc `docs/RCM923_AUDITORIA_OPERACAO_MOBILE.md` · vendas **#55** (varejo), **#56** (atacado 30 itens), **#57** (2ª após reabertura) · estoque −30/−0,25/−31 · Desktop totais iguais.
 
-Checklist celular (operador):
-
-1. Abrir `http://192.168.0.9:3002/apps/mobile/` + hard refresh  
-2. Login → terminal → caixa → vender 29 picolés + pote → sticky **ATACADO · 30 itens**  
-3. Vender sorvete varejo (KG) → sucesso  
-4. Fechar PWA → reabrir → terminal/caixa/sessão  
-
-Após esse checklist ✅, registrar no doc e liberar a declaração final.
+**Ainda não** se publica a frase plena *“CDS Mobile homologado para operação real”* / declaração RCM-9.2.3 no aparelho — falta checklist de toque/PWA no celular (seção final do doc RCM923).
 
 ---
 

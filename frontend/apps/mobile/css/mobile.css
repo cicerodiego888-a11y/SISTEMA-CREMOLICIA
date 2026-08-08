@@ -646,6 +646,7 @@ body.cds-mobile.is-overlay-open {
   display: flex;
   justify-content: flex-end;
   align-items: center;
+  gap: 8px;
   margin: 6px 0 2px;
   min-height: 28px;
 }
@@ -666,6 +667,53 @@ body.cds-mobile.is-overlay-open {
 }
 .cds-term-chip--ok:active {
   background: rgba(22, 163, 74, 0.12);
+}
+/* RCM-9.2.5 — chip Fiscal / Não Fiscal (compacto) */
+.cds-fiscal-chip {
+  border: 1px solid var(--color-border, #e2e8f0);
+  background: var(--color-surface, #fff);
+  color: var(--color-text, #0f172a);
+  padding: 6px 10px;
+  margin: 0;
+  min-height: 40px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  max-width: 100%;
+}
+.cds-fiscal-chip__label {
+  white-space: nowrap;
+}
+.cds-fiscal-chip--on {
+  border-color: rgba(22, 163, 74, 0.35);
+  background: rgba(22, 163, 74, 0.08);
+  color: #166534;
+}
+.cds-fiscal-chip--off {
+  border-color: rgba(100, 116, 139, 0.35);
+  background: rgba(148, 163, 184, 0.12);
+  color: #475569;
+}
+.cds-fiscal-chip:active {
+  transform: scale(0.97);
+}
+.cds-fiscal-pay-hint {
+  margin: 0 0 10px;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+.cds-term-banner__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
 }
 .cds-canal-badge {
   letter-spacing: 0.04em;

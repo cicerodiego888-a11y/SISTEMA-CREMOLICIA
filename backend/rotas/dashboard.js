@@ -165,7 +165,13 @@ router.get('/resumo', verificarPermissaoEspecifica('relatorios'), async (req, re
       `, [dataHoje]),
 
       dbGet(`
-        SELECT COALESCE(SUM(${exprQuantidade}), 0) AS produtos_vendidos
+        SELECT COALESCE(SUM(
+          CASE
+            WHEN UPPER(TRIM(COALESCE(vi.forma_comercializacao, ''))) IN ('PESO', 'VOLUME') THEN 1
+            WHEN ABS((${exprQuantidade}) - ROUND(${exprQuantidade})) > 0.0001 THEN 1
+            ELSE (${exprQuantidade})
+          END
+        ), 0) AS produtos_vendidos
         FROM vendas_itens vi
         INNER JOIN vendas v ON v.id = vi.venda_id
         WHERE date(v.data_venda) BETWEEN date(?) AND date(?)
