@@ -8,6 +8,7 @@
  */
 
 const ProdutoDTO = require('../dto/ProdutoDTO');
+const ComercialPrecoResolver = require('../../../modules/comercial/preco/ComercialPrecoResolver');
 
 function ehPesavel(produto) {
   return Number(produto.produto_fracionado ?? produto.vendido_por_peso ?? 0) === 1
@@ -26,7 +27,7 @@ class ProdutoMapper {
       codigoBarras: produto.codigo_barras ?? produto.codigoBarras ?? null,
       descricao: produto.nome ?? produto.descricao ?? '',
       descricaoReduzida: (produto.nome ?? '').slice(0, 22),
-      preco: produto.preco_venda ?? produto.preco ?? 0,
+      preco: ComercialPrecoResolver.obterPrecoVenda(produto),
       unidade: produto.unidade ?? 'kg',
       pesavel: ehPesavel(produto),
       validadeDias: produto.dias_alerta_validade ?? null,

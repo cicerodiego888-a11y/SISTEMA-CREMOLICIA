@@ -53,6 +53,7 @@ function renderClientes(clientes) {
                         <thead>
                             <tr>
                                 <th>Nome</th>
+                                <th>Tipo Comercial</th>
                                 <th>CPF/CNPJ</th>
                                 <th>Telefone</th>
                                 <th>Email</th>
@@ -65,6 +66,7 @@ function renderClientes(clientes) {
                             ${clientes.map(c => `
                                 <tr>
                                     <td>${c.nome}</td>
+                                    <td>${c.tipo_comercial_descricao || c.tipo_comercial_codigo || '-'}</td>
                                     <td>${formatarCpfCnpj(c.cpf_cnpj) || '-'}</td>
                                     <td>${c.telefone || '-'}</td>
                                     <td>${c.email || '-'}</td>
@@ -88,7 +90,7 @@ function renderClientes(clientes) {
                                     </td>
                                 </tr>
                             `).join('')}
-                            ${clientes.length === 0 ? '<tr><td colspan="7" class="text-center">Nenhum cliente cadastrado</td></tr>' : ''}
+                            ${clientes.length === 0 ? '<tr><td colspan="8" class="text-center">Nenhum cliente cadastrado</td></tr>' : ''}
                         </tbody>
                     </table>
                 </div>
@@ -100,12 +102,14 @@ function renderClientes(clientes) {
         const termo = normalizarTexto($(this).val());
         const filtrados = clientes.filter(c =>
             (c.nome && normalizarTexto(c.nome).includes(termo)) ||
-            (c.cpf_cnpj && String(c.cpf_cnpj).toLowerCase().includes(termo))
+            (c.cpf_cnpj && String(c.cpf_cnpj).toLowerCase().includes(termo)) ||
+            (c.tipo_comercial_descricao && normalizarTexto(c.tipo_comercial_descricao).includes(termo))
         );
         $('#clientes-tbody').html(filtrados.map(c => `
             <tr>
                 <td>${c.nome}</td>
-                <td>${c.cpf_cnpj || '-'}</td>
+                <td>${c.tipo_comercial_descricao || c.tipo_comercial_codigo || '-'}</td>
+                <td>${formatarCpfCnpj(c.cpf_cnpj) || '-'}</td>
                 <td>${c.telefone || '-'}</td>
                 <td>${c.email || '-'}</td>
                 <td>${formatCurrency(c.limite_credito)}</td>
@@ -154,6 +158,13 @@ function showClienteModal(cliente = null) {
                                 <div class="col-md-6 mb-3">
                                     <label for="nome" class="form-label">Nome *</label>
                                     <input type="text" class="form-control" id="nome" required value="${isEdit ? cliente.nome : ''}">
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <label for="tipo_comercial_id" class="form-label">Tipo Comercial *</label>
+                                    <select class="form-select" id="tipo_comercial_id" required>
+                                        <option value="">Carregando...</option>
+                                    </select>
+                                    <small class="text-muted">Define o Canal padrão da operação (não escolhe tabela/preço).</small>
                                 </div>
                                 <div class="col-md-6 mb-3">
                                     <label for="cpf_cnpj" class="form-label">CPF/CNPJ</label>
@@ -216,6 +227,31 @@ function showClienteModal(cliente = null) {
     `;
     $('#modal-container').html(modalHtml);
     $('#clienteModal').modal('show');
+
+    // RCM-7.1 — carrega Tipos Comerciais (obrigatório)
+    const tipoSelecionado = isEdit ? (cliente.tipo_comercial_id || '') : '';
+    $.ajax({
+        url: `${API_URL}/tipos-comerciais?ativos=1`,
+        method: 'GET',
+        success: function (tipos) {
+            const $sel = $('#tipo_comercial_id');
+            $sel.empty();
+            $sel.append('<option value="">Selecione...</option>');
+            (tipos || []).forEach(function (t) {
+                const label = `${t.descricao} (${t.canal_padrao})`;
+                $sel.append(
+                    $('<option>')
+                        .val(t.id)
+                        .text(label)
+                        .prop('selected', String(t.id) === String(tipoSelecionado)
+                            || (!tipoSelecionado && String(t.codigo).toUpperCase() === 'CONSUMIDOR_FINAL'))
+                );
+            });
+        },
+        error: function () {
+            $('#tipo_comercial_id').html('<option value="">Erro ao carregar tipos</option>');
+        }
+    });
 
     // Busca automática de endereço ao completar o CEP (8 dígitos)
     let cepBuscaTimer = null;
@@ -306,8 +342,18 @@ function saveCliente() {
         bairro: $('#bairro').val(),
         cidade: $('#cidade').val(),
         uf: $('#uf').val(),
-        limite_credito: parseFloat($('#limite_credito').val())
+        limite_credito: parseFloat($('#limite_credito').val()),
+        tipo_comercial_id: Number($('#tipo_comercial_id').val()) || null
     };
+
+    if (!data.nome) {
+        showNotification('Nome é obrigatório.', 'danger');
+        return;
+    }
+    if (!data.tipo_comercial_id) {
+        showNotification('Tipo Comercial é obrigatório.', 'danger');
+        return;
+    }
     
     const url = id ? `${API_URL}/clientes/${id}` : `${API_URL}/clientes`;
     const method = id ? 'PUT' : 'POST';
@@ -423,6 +469,8 @@ function viewCliente(id) {
                             </div>
                             <div class="modal-body">
                                 <p><strong>Nome:</strong> ${cliente.nome}</p>
+                                <p><strong>Tipo Comercial:</strong> ${cliente.tipo_comercial_descricao || cliente.tipo_comercial_codigo || '-'}
+                                  ${cliente.tipo_comercial_canal ? ` <span class="text-muted">(Canal ${cliente.tipo_comercial_canal})</span>` : ''}</p>
                                 <p><strong>CPF/CNPJ:</strong> ${formatarCpfCnpj(cliente.cpf_cnpj) || '-'}</p>
                                 <p><strong>Telefone:</strong> ${cliente.telefone || '-'}</p>
                                 <p><strong>Email:</strong> ${cliente.email || '-'}</p>

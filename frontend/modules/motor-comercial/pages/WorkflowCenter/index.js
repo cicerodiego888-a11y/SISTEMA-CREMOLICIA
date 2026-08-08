@@ -33,6 +33,13 @@ const {
   loadHistory
 } = require('./workflowMappers');
 const { notify, navigate, confirmDialog, promptDialog } = require('../../utils/operacional');
+const {
+  ConfirmMessages,
+  emptyState,
+  notifySuccess,
+  notifyWarning,
+  notifyInfo
+} = require('../../messages');
 
 const REFRESH_INTERVAL_MS = 60000;
 
@@ -302,7 +309,7 @@ class WorkflowCenterPage {
     s.innerHTML = '<h2>Fila Operacional</h2>';
     const list = this.filteredView.fila || [];
     if (!list.length) {
-      s.appendChild(EmptyState.create({ title: 'Fila vazia', description: 'Nenhum processo no escopo atual' }));
+      s.appendChild(EmptyState.create(emptyState('WORKFLOW_FILA')));
       return;
     }
     s.appendChild(Table.create({
@@ -482,7 +489,7 @@ class WorkflowCenterPage {
     s.innerHTML = '<h2>Histórico Local</h2>';
     const hist = loadHistory().slice(0, 20);
     if (!hist.length) {
-      s.appendChild(EmptyState.create({ title: 'Histórico vazio', description: 'Ações locais aparecerão aqui' }));
+      s.appendChild(EmptyState.create(emptyState('WORKFLOW_HISTORICO')));
       return;
     }
     s.appendChild(Table.create({
@@ -528,7 +535,7 @@ class WorkflowCenterPage {
       variant: 'secondary',
       onClick: () => {
         assignResponsavel(workflow.id, null);
-        notify('Responsável atualizado', 'success');
+        notifySuccess('WORKFLOW_RESPONSAVEL');
         this._loadData(true);
       }
     }));
@@ -537,7 +544,7 @@ class WorkflowCenterPage {
       variant: 'primary',
       onClick: () => {
         updateWorkflowStatus(workflow.id, 'emAndamento', 'EM_ANDAMENTO');
-        notify('Status atualizado', 'success');
+        notifySuccess('WORKFLOW_STATUS');
         this._loadData(true);
       }
     }));
@@ -545,10 +552,10 @@ class WorkflowCenterPage {
       text: 'Concluir',
       variant: 'success',
       onClick: async () => {
-        const ok = await confirmDialog('Concluir este processo?');
+        const ok = await confirmDialog(ConfirmMessages.CONCLUIR_WORKFLOW);
         if (!ok) return;
         updateWorkflowStatus(workflow.id, 'concluido', 'CONCLUIDO');
-        notify('Processo concluído', 'success');
+        notifySuccess('WORKFLOW_CONCLUIDO');
         this._loadData(true);
         if (this.activeDrawer?.close) this.activeDrawer.close();
       }
@@ -559,12 +566,12 @@ class WorkflowCenterPage {
   _export(format) {
     const rows = exportRows(this.filteredView);
     if (!rows.length) {
-      notify('Nada para exportar', 'warning');
+      notifyWarning('NADA_PARA_EXPORTAR');
       return;
     }
     if (format === 'csv') downloadCsv(rows);
     else if (format === 'excel') downloadExcelPlaceholder(rows);
-    else notify('Exportação PDF em breve', 'info');
+    else notifyInfo('EXPORT_PDF_EM_BREVE');
   }
 
   _startAutoRefresh() {

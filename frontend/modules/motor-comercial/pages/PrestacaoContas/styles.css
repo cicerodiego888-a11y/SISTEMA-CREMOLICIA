@@ -1827,6 +1827,152 @@ tr.cds-fechar-consignacao__grade-row--retornos > td,
   margin-top: 0.85rem;
 }
 
+/* RC4.2 — Rateio da Perda */
+.cds-retornos-sidebar-col {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  min-width: 0;
+}
+
+.cds-rateio-perda-bloco {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.cds-rateio-perda__total {
+  margin: 0 0 0.65rem;
+  font-size: 0.875rem;
+}
+
+.cds-rateio-perda__tipos {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-bottom: 0.75rem;
+}
+
+.cds-rateio-perda__tipo {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.cds-rateio-perda__valores {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.65rem;
+  margin-bottom: 0.75rem;
+}
+
+.cds-rateio-perda__valores label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-neutral-600, #475569);
+}
+
+.cds-rateio-perda__valores input,
+.cds-rateio-perda__motivo select,
+.cds-rateio-perda__obs textarea {
+  width: 100%;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--color-neutral-300, #cbd5e1);
+  border-radius: 0.4rem;
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.cds-rateio-perda__pct {
+  margin: 0 0 0.75rem;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.4rem 0.75rem;
+}
+
+.cds-rateio-perda__pct > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+}
+
+.cds-rateio-perda__pct dt {
+  margin: 0;
+  color: var(--color-neutral-500, #64748b);
+}
+
+.cds-rateio-perda__pct dd {
+  margin: 0;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.cds-rateio-perda__motivo,
+.cds-rateio-perda__obs {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin-bottom: 0.65rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-neutral-600, #475569);
+}
+
+.cds-rateio-perda__erro {
+  margin: 0 0 0.5rem;
+  color: #b91c1c;
+  font-size: 0.8rem;
+}
+
+.cds-rateio-perda [data-rateio-action="salvar"] {
+  width: 100%;
+  margin-top: 0.35rem;
+}
+
+.cds-rateio-resumo-fin__lista {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.cds-rateio-resumo-fin__lista > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-size: 0.875rem;
+  border-bottom: 1px dotted rgba(148, 163, 184, 0.45);
+  padding-bottom: 0.35rem;
+}
+
+.cds-rateio-resumo-fin__lista dt {
+  margin: 0;
+  color: var(--color-neutral-500, #64748b);
+}
+
+.cds-rateio-resumo-fin__lista dd {
+  margin: 0;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.cds-rateio-resumo-fin__lista .is-destaque {
+  border-bottom: none;
+  padding-top: 0.35rem;
+  font-size: 0.95rem;
+}
+
+.cds-rateio-resumo-fin__lista .is-destaque dt,
+.cds-rateio-resumo-fin__lista .is-destaque dd {
+  color: var(--color-neutral-900, #0f172a);
+}
+
 .cds-op-pagamento-historico-btn {
   margin-top: 0.75rem;
   padding-top: 0.65rem;

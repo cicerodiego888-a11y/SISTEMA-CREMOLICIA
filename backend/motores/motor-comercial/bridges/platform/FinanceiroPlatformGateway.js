@@ -9,6 +9,17 @@
 const moment = require('moment');
 const { dbGet, dbRun } = require('./dbHelpers');
 
+function emitirEventoComercialArMfe(db, operacao) {
+  try {
+    const { publicarEventoComercialArMfe } = require('../../../motor-financeiro/adapters');
+    Promise.resolve(publicarEventoComercialArMfe(db, operacao)).catch((err) => {
+      console.error('[MFE-05.1] emitirEventoComercialArMfe:', err?.message || err);
+    });
+  } catch (err) {
+    console.error('[MFE-05.1] bridge Comercial indisponível:', err?.message || err);
+  }
+}
+
 class FinanceiroPlatformGateway {
   /**
    * @param {Object} deps
@@ -39,6 +50,17 @@ class FinanceiroPlatformGateway {
       origem: 'motor-comercial',
       pessoa_nome: consignacao?.cliente_nome ?? null,
       observacao: dados.correlationId ? `correlationId=${dados.correlationId}` : null
+    });
+
+    emitirEventoComercialArMfe(this._db, {
+      tipo: 'credito_gerado',
+      eventType: 'COMMERCIAL_CREDIT_GENERATED',
+      consignacao_id: dados.consignacaoId,
+      cliente_id: consignacao?.cliente_id ?? null,
+      valor,
+      correlationId: dados.correlationId || null,
+      persistirTitulo: false,
+      idempotencyKey: `comercial-ar:credit-gen:${dados.consignacaoId}:${financeiroId}`
     });
 
     return {
@@ -72,6 +94,28 @@ class FinanceiroPlatformGateway {
       origem: 'motor-comercial',
       pessoa_nome: consignacao?.cliente_nome ?? null,
       observacao: dados.correlationId ? `correlationId=${dados.correlationId}` : null
+    });
+
+    emitirEventoComercialArMfe(this._db, {
+      tipo: 'credito_usado',
+      eventType: 'COMMERCIAL_CREDIT_USED',
+      consignacao_id: dados.consignacaoId,
+      cliente_id: consignacao?.cliente_id ?? null,
+      valor,
+      correlationId: dados.correlationId || null,
+      persistirTitulo: false,
+      idempotencyKey: `comercial-ar:credit-used:${dados.consignacaoId}:${financeiroId}`
+    });
+
+    emitirEventoComercialArMfe(this._db, {
+      tipo: 'pagamento_recebido',
+      eventType: 'PAYMENT_RECEIVED',
+      consignacao_id: dados.consignacaoId,
+      cliente_id: consignacao?.cliente_id ?? null,
+      valor,
+      correlationId: dados.correlationId || null,
+      persistirTitulo: false,
+      idempotencyKey: `comercial-ar:pay:${dados.consignacaoId}:${financeiroId}`
     });
 
     return {

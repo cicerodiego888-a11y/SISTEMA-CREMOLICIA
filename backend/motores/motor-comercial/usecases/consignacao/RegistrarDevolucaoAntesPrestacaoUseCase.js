@@ -22,6 +22,7 @@ const {
 } = require('./consignacaoOperacaoHelpers');
 const { sincronizarCacheConsignacao } = require('../../services/projections/ledgerCacheSync');
 const { sincronizarCreditoComercial } = require('../../services/sincronizarCreditoComercial');
+const { resolverQuantidadeBaseMcc } = require('../../services/mccQuantidadeComercial');
 const {
   OUTBOX_EVENT_TYPES,
   OUTBOX_BRIDGE_NAMES,
@@ -87,6 +88,15 @@ class RegistrarDevolucaoAntesPrestacaoUseCase extends ConsignacaoWriteUseCase {
         });
       }
 
+      const mccQty = await resolverQuantidadeBaseMcc(uow, {
+        produtoId: item.produtoId,
+        quantidade,
+        unidadeOrigem: entrada.unidadeComercial || entrada.unidadeOrigem || item.unidadeComercial || item.unidade,
+        consignacaoId: consignacao.id,
+        operacao: 'DEVOLUCAO',
+        usuarioId: entrada.usuarioId
+      });
+
       const valorDevolucao = quantidade * Number(item.precoUnitario ?? 0);
       const novaQtdDevolvida = Number(item.quantidadeDevolvida ?? 0) + quantidade;
       const grupoAbertoId = prestacaoEstaAberta(consignacao)
@@ -100,12 +110,17 @@ class RegistrarDevolucaoAntesPrestacaoUseCase extends ConsignacaoWriteUseCase {
         origem,
         correlationId,
         grupoPrestacaoContasId: grupoAbertoId,
-        snapshot: criarSnapshotConsignacao(consignacao, { operacao: 'DEVOLUCAO', itemId: item.id }),
+        snapshot: criarSnapshotConsignacao(consignacao, {
+          operacao: 'DEVOLUCAO',
+          itemId: item.id,
+          mcc: mccQty.auditoria
+        }),
         usuarioId: entrada.usuarioId ?? null,
         valor: valorDevolucao,
-        quantidade,
+        quantidade: mccQty.quantidadeBase,
         motivo: entrada.motivo
-          ?? (grupoAbertoId ? 'Devolução na prestação de contas' : 'Devolução antes da prestação')
+          ?? (grupoAbertoId ? 'Devolução na prestação de contas' : 'Devolução antes da prestação'),
+        detalhes: mccQty.auditoria ? { mcc: mccQty.auditoria } : null
       });
 
       const itemAtualizado = await uow.consignacaoItem.atualizar(item.id, {
@@ -121,6 +136,8 @@ class RegistrarDevolucaoAntesPrestacaoUseCase extends ConsignacaoWriteUseCase {
           consignacaoId: consignacao.id,
           item: itemAtualizado,
           quantidade,
+          quantidadeBase: mccQty.quantidadeBase,
+          unidadeOrigem: mccQty.unidadeOrigem,
           correlationId
         },
         correlationId,

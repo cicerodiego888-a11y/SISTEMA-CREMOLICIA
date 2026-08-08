@@ -236,15 +236,22 @@ export function tabsHtml(tabs = [], activeId = '') {
   `;
 }
 
-export function openBottomSheet({ title = '', bodyHtml = '', actionsHtml = '' } = {}) {
+export function openBottomSheet({
+  title = '',
+  bodyHtml = '',
+  actionsHtml = '',
+  panelClass = '',
+  closeMs = 180
+} = {}) {
   closeBottomSheet();
   const el = document.createElement('div');
   el.className = 'cds-sheet';
   el.id = 'cds-mobile-sheet';
   el.setAttribute('aria-hidden', 'false');
+  el.dataset.closeMs = String(closeMs);
   el.innerHTML = `
     <div class="cds-sheet__backdrop" data-sheet-close></div>
-    <div class="cds-sheet__panel cds-m-enter" role="dialog" aria-modal="true">
+    <div class="cds-sheet__panel cds-m-enter ${panelClass || ''}" role="dialog" aria-modal="true">
       <div class="cds-sheet__handle" aria-hidden="true"></div>
       ${title ? `<h3 class="cds-sheet__title">${escapeHtml(title)}</h3>` : ''}
       <div class="cds-sheet__body">${bodyHtml || ''}</div>
@@ -268,6 +275,11 @@ export function closeBottomSheet() {
     }
     return;
   }
+  const ms = Number(el.dataset.closeMs || 180);
+  const panel = el.querySelector('.cds-sheet__panel');
+  if (panel && Number.isFinite(ms) && ms !== 180) {
+    panel.style.transitionDuration = `${ms}ms`;
+  }
   el.classList.remove('is-open');
   el.setAttribute('aria-hidden', 'true');
   setTimeout(() => {
@@ -275,7 +287,7 @@ export function closeBottomSheet() {
     if (!document.querySelector('.cds-mobile-drawer.is-open') && !document.querySelector('.cds-scan-overlay')) {
       document.body.classList.remove('is-overlay-open');
     }
-  }, 180);
+  }, Number.isFinite(ms) ? ms : 180);
 }
 
 export function confirmSheet({ title = 'Confirmar', message = '', confirmLabel = 'Confirmar', danger = false } = {}) {

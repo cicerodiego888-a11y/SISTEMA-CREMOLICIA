@@ -128,7 +128,14 @@ class TransferirItensEntreConsignacoesUseCase extends ConsignacaoWriteUseCase {
             produtoId: linha.produtoId,
             quantidadeEntregue: quantidade,
             precoUnitario: itemOrigem.precoUnitario,
-            subtotalEntregue: valor
+            subtotalEntregue: valor,
+            // RCM-6.1 — preserva snapshot de precificação na transferência
+            linhaComercialId: itemOrigem.linhaComercialId ?? null,
+            tabelaPrecoId: itemOrigem.tabelaPrecoId ?? null,
+            canalVenda: itemOrigem.canalVenda ?? null,
+            unidadeComercial: itemOrigem.unidadeComercial ?? null,
+            precoOrigem: itemOrigem.precoOrigem ?? null,
+            precoFallback: itemOrigem.precoFallback ?? false
           });
         }
 

@@ -1,0 +1,67 @@
+<!-- Diagnóstico Comercial (RCM-8.7) -->
+<div class="container mt-4">
+  <nav aria-label="breadcrumb" class="mb-2">
+    <ol class="breadcrumb mb-0">
+      <li class="breadcrumb-item"><a href="#" onclick="loadPage('configuracoes'); return false;">Configurações</a></li>
+      <li class="breadcrumb-item">Comercial</li>
+      <li class="breadcrumb-item active" aria-current="page">Diagnóstico Comercial</li>
+    </ol>
+  </nav>
+
+  <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+    <div>
+      <h2 class="mb-0">Diagnóstico Comercial</h2>
+      <small class="text-muted">Motor Oficial de Precificação — Analisar Produto e verificação de consistência</small>
+    </div>
+    <div class="d-flex gap-2">
+      <button type="button" class="btn btn-outline-primary btn-sm" id="btn-diag-cobertura-geral">Verificação de Consistência</button>
+      <button type="button" class="btn btn-outline-warning btn-sm" id="btn-diag-comercial-corrigir">Corrigir automaticamente</button>
+      <button type="button" class="btn btn-outline-secondary btn-sm" id="btn-diag-comercial-atualizar">Atualizar</button>
+    </div>
+  </div>
+
+  <div id="diag-consistencia-box" class="alert alert-secondary mb-3">
+    Carregando consistência...
+  </div>
+
+  <div id="diag-cobertura-geral-box" class="card mb-3 d-none">
+    <div class="card-header py-2"><strong>Verificação de Consistência</strong></div>
+    <div class="card-body" id="diag-cobertura-geral-body">—</div>
+  </div>
+
+  <div class="row g-2 mb-3">
+    <div class="col-md-5">
+      <input type="text" id="diag-comercial-busca" class="form-control" placeholder="Buscar produto (nome, código...)">
+    </div>
+    <div class="col-md-3">
+      <select id="diag-comercial-canal" class="form-select">
+        <option value="VAREJO">Varejo</option>
+        <option value="ATACADO">Atacado</option>
+        <option value="CONSIGNADO">Consignação</option>
+        <option value="DELIVERY">Delivery</option>
+        <option value="EVENTO">Evento</option>
+      </select>
+    </div>
+    <div class="col-md-2">
+      <button type="button" class="btn btn-primary w-100" id="btn-diag-comercial-buscar">Buscar</button>
+    </div>
+  </div>
+
+  <div class="table-responsive">
+    <table class="table table-bordered table-hover table-sm align-middle">
+      <thead class="table-light">
+        <tr>
+          <th>Produto</th>
+          <th>Linha de Precificação</th>
+          <th>Canal</th>
+          <th class="text-end">Preço</th>
+          <th>Origem</th>
+          <th style="width:120px;">Ações</th>
+        </tr>
+      </thead>
+      <tbody id="diag-comercial-tbody">
+        <tr><td colspan="6" class="text-muted text-center">Carregando...</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>

@@ -38,7 +38,103 @@ function unidadeVendaSuportaConversao(unidade) {
 }
 
 function produtoCadastroUsaConversaoUnidades() {
+    const forma = ($('input[name="forma_comercializacao"]:checked').val() || '').toUpperCase();
+    if (forma === 'PESO' || forma === 'VOLUME') return true;
     return $('#produto_fracionado').is(':checked');
+}
+
+function obterFormaComercializacaoSelecionada() {
+    return String($('input[name="forma_comercializacao"]:checked').val() || 'UNIDADE').toUpperCase();
+}
+
+function sincronizarFlagsLegadasDaForma() {
+    const forma = obterFormaComercializacaoSelecionada();
+    const fracionado = forma === 'PESO' || forma === 'VOLUME';
+    $('#produto_fracionado').prop('checked', fracionado);
+    if (forma === 'PESO' && !($('#unidade_venda').val() || '').trim()) {
+        $('#unidade_venda').val('KG');
+    }
+    if (forma === 'VOLUME' && !($('#unidade_venda').val() || '').trim()) {
+        $('#unidade_venda').val('L');
+    }
+}
+
+function atualizarPaineisFormaComercializacao() {
+    const forma = obterFormaComercializacaoSelecionada();
+    $('#painelFormaPesoVolume').toggleClass('d-none', !(forma === 'PESO' || forma === 'VOLUME'));
+    $('#painelFormaCasquinha').toggleClass('d-none', forma !== 'CASQUINHA');
+    $('#painelFormaPersonalizada').toggleClass('d-none', forma !== 'PERSONALIZADA');
+    sincronizarFlagsLegadasDaForma();
+}
+
+function inicializarFormaComercializacaoProduto(produto, isEdit) {
+    let forma = 'UNIDADE';
+    if (isEdit && produto) {
+        forma = String(produto.forma_comercializacao || '').toUpperCase();
+        if (!forma || forma === 'UNIDADE') {
+            if (produtoEhFracionado(produto)) {
+                const u = String(produto.unidade || '').toLowerCase();
+                forma = ['l', 'ml'].includes(u) ? 'VOLUME' : 'PESO';
+            } else {
+                forma = 'UNIDADE';
+            }
+        }
+    }
+
+    $(`input[name="forma_comercializacao"][value="${forma}"]`).prop('checked', true);
+
+    if (produto?.unidade_venda) {
+        $('#unidade_venda').val(String(produto.unidade_venda).toUpperCase());
+    } else if (forma === 'PESO') {
+        $('#unidade_venda').val('KG');
+    } else if (forma === 'VOLUME') {
+        $('#unidade_venda').val('L');
+    }
+
+    $('input[name="forma_comercializacao"]').off('change.rcm043').on('change.rcm043', function () {
+        atualizarPaineisFormaComercializacao();
+    });
+
+    atualizarPaineisFormaComercializacao();
+}
+
+function validarFormaComercializacaoAntesSalvar() {
+    const forma = obterFormaComercializacaoSelecionada();
+    if (forma === 'PESO' || forma === 'VOLUME') {
+        if (!($('#unidade_venda').val() || '').trim()) {
+            showNotification('Informe a Unidade de Venda.', 'warning');
+            $('#unidade_venda').focus();
+            return false;
+        }
+    }
+    if (forma === 'CASQUINHA') {
+        const min = parseInt($('#bolas_min').val(), 10);
+        const max = parseInt($('#bolas_max').val(), 10);
+        if (!Number.isFinite(min) || min < 1) {
+            showNotification('Informe a quantidade mínima de bolas (≥ 1).', 'warning');
+            $('#bolas_min').focus();
+            return false;
+        }
+        if (!Number.isFinite(max) || max < min) {
+            showNotification('A quantidade máxima deve ser ≥ mínima.', 'warning');
+            $('#bolas_max').focus();
+            return false;
+        }
+        $('#quantidade_bolas').val(max);
+    }
+    if (forma === 'PERSONALIZADA') {
+        if (!($('#forma_personalizada_nome').val() || '').trim()) {
+            showNotification('Informe o Nome da Forma.', 'warning');
+            $('#forma_personalizada_nome').focus();
+            return false;
+        }
+        if (!($('#forma_personalizada_unidade').val() || '').trim()) {
+            showNotification('Informe a Unidade da Forma Personalizada.', 'warning');
+            $('#forma_personalizada_unidade').focus();
+            return false;
+        }
+    }
+    return true;
 }
 
 function obterStepEstoqueProduto(unidade, usaConversao = false) {
@@ -49,10 +145,14 @@ function obterStepEstoqueProduto(unidade, usaConversao = false) {
     return '0.01';
 }
 
-function formatarCustoUnitarioCadastro(valor, usaConversao = false) {
+function formatarCustoUnitarioCadastro(valor, _usaConversao = false) {
+    // CP-E1: sempre 2 casas no padrão pt-BR (30,00) — evita confusão com 30,0000 / 30.0000
     const numero = Number(valor || 0);
-    if (!Number.isFinite(numero)) return usaConversao ? '0.0000' : '0';
-    return usaConversao ? numero.toFixed(4) : String(numero);
+    if (!Number.isFinite(numero)) return '0,00';
+    return numero.toLocaleString('pt-BR', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+    });
 }
 
 function custoUnitarioVendaCadastro(valor) {
@@ -111,46 +211,26 @@ function parseNumeroCadastro(valor) {
     return Number.isFinite(numero) ? numero : 0;
 }
 
-function calcularCustoUnitarioReferenciaCadastro() {
-    if (!produtoCadastroUsaConversaoUnidades()) return;
-
-    const valor = parseNumeroCadastro($('#cadastro_valor_total_referencia').val());
-    const qtd = parseNumeroCadastro($('#cadastro_quantidade_total_referencia').val());
-    const unidade = String($('#unidade').val() || 'un').toUpperCase();
-
-    if (valor > 0 && qtd > 0) {
-        const custo = custoUnitarioVendaCadastro(valor / qtd);
-        $('#preco_compra').val(formatarCustoUnitarioCadastro(custo, true));
-        const qtdFmt = Number.isInteger(qtd) ? String(qtd) : qtd.toFixed(3).replace(/\.?0+$/, '');
-        $('#formula_custo_unitario_cadastro').text(
-            `R$ ${valor.toFixed(2).replace('.', ',')} ÷ ${qtdFmt} ${unidade} = R$ ${formatarCustoUnitarioCadastro(custo, true)}/${unidade}`
-        );
-        if (typeof sincronizarFormacaoPrecoProduto === 'function') {
-            sincronizarFormacaoPrecoProduto('compra');
-        }
-    } else {
-        $('#formula_custo_unitario_cadastro').text('—');
-        $('#preco_compra').val('');
-    }
+function rotuloUnidadeFormacaoPreco(unidade) {
+    const u = String(unidade || 'un').toLowerCase();
+    const mapa = {
+        un: 'Unidade',
+        kg: 'Kg',
+        g: 'Grama',
+        l: 'Litro',
+        ml: 'Mililitro',
+        mt: 'Metro',
+        m2: 'm²',
+        m3: 'm³'
+    };
+    return mapa[u] || String(unidade || 'Unidade').toUpperCase();
 }
 
-function sincronizarQuantidadeTotalReferenciaCadastro() {
-    if (!produtoCadastroUsaConversaoUnidades()) return;
+/** CP-E1 / CP-2.1 — quando true, nenhum cálculo/validação de custo deve rodar (reset/salvar/fechar). */
+window._cpe1SuspenderCalculosProduto = window._cpe1SuspenderCalculosProduto || false;
 
-    const saldos = obterSaldosIniciaisDoFormulario();
-    const total = Number(saldos.estoque_total || 0);
-    const $qtd = $('#cadastro_quantidade_total_referencia');
-
-    if (!$qtd.length) return;
-
-    if (total > 0) {
-        const casas = total % 1 === 0 ? 0 : 3;
-        $qtd.val(casas === 0 ? total : total.toFixed(casas)).prop('readonly', true).addClass('bg-light');
-    } else {
-        $qtd.prop('readonly', false).removeClass('bg-light');
-    }
-
-    calcularCustoUnitarioReferenciaCadastro();
+function cpe1CalculosSuspensos() {
+    return !!window._cpe1SuspenderCalculosProduto || !$('#produtoModal').length || !$('#produtoModal').hasClass('show');
 }
 
 function aplicarModoConversaoUnidadesCadastro() {
@@ -161,30 +241,22 @@ function aplicarModoConversaoUnidadesCadastro() {
     const unidade = ($('#unidade').val() || '').toLowerCase();
     const stepEstoque = obterStepEstoqueProduto(unidade, ativo);
 
-    $('#painelInfoConversaoUnidadesCadastro').toggleClass('d-none', !ativo);
-    $('#painelCalcularCustoUnitarioCadastro').toggleClass('d-none', !ativo);
-    $('#label_unidade_produto').text(ativo ? 'Unidade de Venda *' : 'Unidade');
-    $('#label_preco_compra_produto').text(
-        ativo ? 'Custo por Unidade de Venda (calculado)' : 'Preço de Compra'
+    $('#label_unidade_produto').html(
+        ativo
+            ? 'Unidade do Estoque <span class="text-muted small">· venda</span>'
+            : 'Unidade do Estoque'
     );
-    $('#hint_preco_compra_produto').toggleClass('d-none', !ativo);
-    $('#avisoUnidadeConversaoCadastro').toggleClass(
-        'd-none',
-        !ativo || unidadeVendaSuportaConversao(unidade)
-    );
+    $('#label_preco_compra_produto').text('Último Custo');
 
+    // CP-2.1 — Último Custo permanece editável (implantação / sem módulo Compras)
     $('#preco_compra')
         .attr('step', ativo ? '0.0001' : '0.01')
-        .prop('readonly', ativo)
-        .toggleClass('bg-light', ativo);
+        .prop('readonly', false)
+        .removeClass('bg-light');
     $('#saldo_fiscal_inicial, #saldo_nao_fiscal_inicial, #estoque_minimo').attr('step', stepEstoque);
 
     if (typeof atualizarPreviewEstoqueTotalInicial === 'function') {
         atualizarPreviewEstoqueTotalInicial();
-    }
-
-    if (ativo) {
-        sincronizarQuantidadeTotalReferenciaCadastro();
     }
 
     aplicarModoVendaUnidadeCadastro();
@@ -219,6 +291,654 @@ function inicializarVendaUnidadeCadastro(produto, isEdit) {
     aplicarModoVendaUnidadeCadastro();
 }
 
+/* ========== RCM-8.7 — Linha de Precificação (picker inteligente) ========== */
+
+function garantirCssLinhaPickerProduto() {
+    if (document.getElementById('cds-linha-picker-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'cds-linha-picker-styles';
+    style.textContent = `
+      .cds-linha-picker { position: relative; }
+      .cds-linha-picker__trigger {
+        position: relative; cursor: pointer; background-image: none; padding-right: 2rem;
+      }
+      .cds-linha-picker__trigger::after {
+        content: ''; position: absolute; right: 0.9rem; top: 50%;
+        width: 0.45rem; height: 0.45rem;
+        border-right: 2px solid #64748b; border-bottom: 2px solid #64748b;
+        transform: translateY(-60%) rotate(45deg); pointer-events: none;
+      }
+      .cds-linha-picker__panel {
+        position: absolute; z-index: 1080; left: 0; right: 0; top: calc(100% + 2px);
+        max-height: 260px; overflow: auto; background: #fff;
+        border: 1px solid #dee2e6; border-radius: 0.375rem;
+        box-shadow: 0 0.5rem 1rem rgba(0,0,0,.08);
+      }
+      .cds-linha-picker__item { display: block; width: 100%; text-align: left; border: 0; background: transparent; padding: 0.5rem 0.75rem; }
+      .cds-linha-picker__item:hover, .cds-linha-picker__item:focus { background: #f1f5f9; }
+      .cds-linha-picker__item.is-active { background: #e0f2fe; }
+    `;
+    document.head.appendChild(style);
+}
+
+function formatarDataRcm871(valor) {
+    if (!valor) return '—';
+    try {
+        const d = new Date(valor);
+        if (Number.isNaN(d.getTime())) return String(valor);
+        return d.toLocaleDateString('pt-BR');
+    } catch (_e) {
+        return String(valor);
+    }
+}
+
+function htmlOperacoesRcm871(ops, { clicavel = false } = {}) {
+    const lista = Array.isArray(ops) && ops.length
+        ? ops
+        : [
+            { canal: 'VAREJO', label: 'Varejo', com_preco: false },
+            { canal: 'ATACADO', label: 'Atacado', com_preco: false },
+            { canal: 'CONSIGNADO', label: 'Consignação', com_preco: false },
+            { canal: 'DELIVERY', label: 'Delivery', com_preco: false },
+            { canal: 'EVENTO', label: 'Evento', com_preco: false }
+          ];
+    return lista.map((op) => {
+        const ok = !!op.com_preco;
+        const label = escapeHtml(op.label || op.canal);
+        const inner = `${ok ? '✔' : '✖'} ${label}`;
+        if (clicavel) {
+            return `<button type="button" class="btn btn-link btn-sm p-0 d-block text-start ${ok ? 'text-success' : 'text-danger'}"
+                      data-rcm871-op="${escapeHtml(op.canal || '')}">${inner}</button>`;
+        }
+        return `<div class="small ${ok ? 'text-success' : 'text-danger'}">${inner}</div>`;
+    }).join('');
+}
+
+function aplicarIndicadorComercialRcm871(codigo) {
+    const map = {
+        completa: { cls: 'bg-success', txt: '🟢 Linha completa' },
+        parcial: { cls: 'bg-warning text-dark', txt: '🟡 Cobertura parcial' },
+        fallback: { cls: 'bg-warning text-dark', txt: '🟡 Utilizando Preço de Segurança' },
+        sem_preco: { cls: 'bg-danger', txt: '🔴 Produto sem preço' },
+        propria: { cls: 'bg-primary', txt: '🔵 Precificação Própria' }
+    };
+    const m = map[codigo] || { cls: 'bg-secondary', txt: '—' };
+    $('#indicadorComercialRcm871').attr('class', `badge ${m.cls} align-self-center`).text(m.txt);
+}
+
+function renderPainelLinhaPropriaRcm87() {
+    const $painel = $('#painelLinhaInteligenteRcm87');
+    if (!$painel.length) return;
+    $painel.html(`
+      <div class="fw-semibold mb-1">Produto com Precificação Própria</div>
+      <div class="small text-muted mb-2">
+        Este produto não pertence a nenhuma Linha de Precificação.<br>
+        Sua precificação será realizada diretamente pelo Produto na <strong>Central de Precificação</strong>.
+      </div>
+      <button type="button" class="btn btn-sm btn-outline-primary" id="btnAbrirCentralPropriaRcm871">Abrir Central de Precificação</button>
+    `);
+}
+
+function renderPainelLinhaSelecionadaRcm87(diag, linhaFallback) {
+    const $painel = $('#painelLinhaInteligenteRcm87');
+    if (!$painel.length) return;
+    const linhaId = diag?.linha?.id || linhaFallback?.id || '';
+    const nome = (diag?.linha?.descricao || diag?.linha?.codigo
+        || linhaFallback?.descricao || linhaFallback?.codigo || 'Linha').toString();
+    const total = Number(diag?.produtos_vinculados ?? 0);
+    const deps = diag?.dependencias || {};
+    const hist = diag?.historico || {};
+    const ultima = formatarDataRcm871(diag?.ultima_alteracao || hist.ultima_alteracao);
+
+    $painel.html(`
+      <div class="text-uppercase small text-muted fw-semibold">Linha de Precificação</div>
+      <div class="fs-5 mb-2">
+        <a href="#" class="link-primary text-decoration-none" id="linkVerLinhaRcm871" data-linha-id="${linhaId}">${escapeHtml(nome)}</a>
+      </div>
+      <div class="d-flex flex-wrap gap-3 mb-2">
+        <div><span class="text-muted small d-block">Produtos nesta Linha</span><strong>${total}</strong></div>
+        <div><span class="text-muted small d-block">Tabelas</span><strong>${Number(diag?.tabelas_com_preco ?? diag?.tabelas?.length ?? deps.tabelas ?? 0)}</strong></div>
+        <div><span class="text-muted small d-block">Última alteração</span><strong>${escapeHtml(ultima)}</strong></div>
+      </div>
+      <div class="small text-muted mb-1">Esta Linha possui preços em:</div>
+      ${htmlOperacoesRcm871(diag?.operacoes, { clicavel: true })}
+      <div class="border-top mt-2 pt-2 small">
+        <div class="text-muted mb-1">Esta Linha influencia:</div>
+        <strong>${Number(deps.produtos ?? total)}</strong> Produtos ·
+        <strong>${Number(deps.tabelas ?? 0)}</strong> Tabelas ·
+        <strong>${Number(deps.operacoes ?? 0)}</strong> Operações
+        ${Number(deps.representantes || 0) ? ` · <strong>${Number(deps.representantes)}</strong> Representantes` : ''}
+      </div>
+      <div class="mt-2 d-flex flex-wrap gap-2">
+        <button type="button" class="btn btn-sm btn-outline-secondary" id="btnVerLinhaRcm871" data-linha-id="${linhaId}">Ver Linha</button>
+        <button type="button" class="btn btn-sm btn-outline-primary" id="btnAbrirCentralDaLinhaRcm871" data-linha-id="${linhaId}">Abrir Central de Precificação</button>
+      </div>
+    `);
+}
+
+function renderPainelOndeVendidoRcm871(operacoes) {
+    const $el = $('#painelOndeVendidoRcm871');
+    if (!$el.length) return;
+    $el.html(`
+      <div class="fw-semibold mb-1">Onde este Produto é vendido</div>
+      <div class="small text-muted mb-2">Este Produto possui preço em:</div>
+      ${htmlOperacoesRcm871(operacoes, { clicavel: true })}
+    `);
+}
+
+function renderResumoComercialRcm871(ctx = {}) {
+    const $el = $('#painelResumoComercialRcm871');
+    if (!$el.length) return;
+    const grupo = ctx.grupo || ($('#categoria_id option:selected').text() || '—');
+    const linhaId = $('#linha_comercial_id').val();
+    const linha = ctx.linha || (linhaId ? ($('#linha_comercial_trigger').text() || '—') : 'Produto com Precificação Própria');
+    const forma = ctx.forma || ($('input[name="forma_comercializacao"]:checked').val() || 'UNIDADE');
+    const formaLabel = ({
+        UNIDADE: 'Unidade', PESO: 'Peso', VOLUME: 'Volume',
+        CASQUINHA: 'Casquinha', PERSONALIZADA: 'Personalizada'
+    })[String(forma).toUpperCase()] || forma;
+
+    $el.html(`
+      <div class="fw-semibold mb-2">Resumo Comercial</div>
+      <div class="row g-2 small">
+        <div class="col-md-6"><span class="text-muted d-block">Grupo</span>
+          <a href="#" id="linkResumoGrupoRcm871">${escapeHtml(grupo === 'Carregando...' ? '—' : grupo)}</a></div>
+        <div class="col-md-6"><span class="text-muted d-block">Linha</span>
+          <a href="#" id="linkResumoLinhaRcm871">${escapeHtml(linha)}</a></div>
+        <div class="col-md-6"><span class="text-muted d-block">Forma</span><strong>${escapeHtml(formaLabel)}</strong></div>
+        <div class="col-md-6"><span class="text-muted d-block">Preço Oficial</span><strong>Central de Precificação</strong></div>
+        <div class="col-md-6"><span class="text-muted d-block">Fallback</span><strong>Preço de Segurança</strong></div>
+      </div>
+    `);
+}
+
+function abrirCentralPrecificacaoRcm871(linhaId) {
+    try {
+        if (linhaId) sessionStorage.setItem('cds_central_filtro_linha_id', String(linhaId));
+        else sessionStorage.removeItem('cds_central_filtro_linha_id');
+    } catch (_e) { /* ignore */ }
+    if (typeof loadPage === 'function') loadPage('tabelas-preco');
+}
+
+function abrirCadastroLinhaRcm871(linhaId) {
+    if (!linhaId) return;
+    if (typeof loadPage === 'function') {
+        try { sessionStorage.setItem('cds_abrir_linha_id', String(linhaId)); } catch (_e) { /* ignore */ }
+        loadPage('linhas-comerciais');
+    }
+}
+
+function abrirGrupoComercialRcm871() {
+    const catId = $('#categoria_id').val();
+    if (typeof loadPage === 'function') {
+        try {
+            if (catId) sessionStorage.setItem('cds_abrir_categoria_id', String(catId));
+        } catch (_e) { /* ignore */ }
+        loadPage('categorias');
+    }
+}
+
+function carregarPainelLinhaInteligenteRcm87(linhaId, linhaMeta) {
+    if (!linhaId) {
+        renderPainelLinhaPropriaRcm87();
+        renderResumoComercialRcm871({ linha: 'Produto com Precificação Própria' });
+        return;
+    }
+    const $painel = $('#painelLinhaInteligenteRcm87');
+    if ($painel.length) $painel.html('<div class="text-muted small">Carregando impacto da Linha...</div>');
+    $.ajax({
+        url: `${API_URL}/tabelas-preco/linhas/${linhaId}/diagnostico`,
+        method: 'GET',
+        headers: { Authorization: 'Bearer ' + (localStorage.getItem('token') || '') }
+    }).done((diag) => {
+        renderPainelLinhaSelecionadaRcm87(diag, linhaMeta);
+        renderResumoComercialRcm871({
+            linha: diag?.linha?.descricao || diag?.linha?.codigo || linhaMeta?.descricao
+        });
+    }).fail(() => {
+        renderPainelLinhaSelecionadaRcm87({
+            linha: linhaMeta,
+            produtos_vinculados: 0,
+            tabelas_com_preco: 0,
+            operacoes: [],
+            dependencias: { produtos: 0, tabelas: 0, operacoes: 0 }
+        }, linhaMeta);
+    });
+}
+
+function carregarPainelProdutoComercialRcm871(produtoId) {
+    if (!produtoId) {
+        renderPainelOndeVendidoRcm871([]);
+        aplicarIndicadorComercialRcm871($('#linha_comercial_id').val() ? 'fallback' : 'propria');
+        renderResumoComercialRcm871();
+        return;
+    }
+    $.ajax({
+        url: `${API_URL}/tabelas-preco/produtos/${produtoId}/painel`,
+        method: 'GET',
+        headers: { Authorization: 'Bearer ' + (localStorage.getItem('token') || '') }
+    }).done((painel) => {
+        renderPainelOndeVendidoRcm871(painel.operacoes || []);
+        aplicarIndicadorComercialRcm871(painel.indicador || 'propria');
+        renderResumoComercialRcm871({
+            grupo: painel.produto?.categoria,
+            linha: painel.produto?.linha
+                ? (painel.produto.linha.descricao || painel.produto.linha.codigo)
+                : 'Produto com Precificação Própria',
+            forma: painel.produto?.forma_comercializacao
+        });
+    }).fail(() => {
+        renderPainelOndeVendidoRcm871([]);
+    });
+}
+
+function aplicarSelecaoLinhaProduto(linha) {
+    const id = linha?.id ? Number(linha.id) : null;
+    $('#linha_comercial_id').val(id || '');
+    const label = id
+        ? `${linha.descricao || linha.codigo || ('#' + id)}`
+        : 'Sem linha — Produto com Precificação Própria';
+    $('#linha_comercial_trigger').text(label);
+    carregarPainelLinhaInteligenteRcm87(id, linha);
+    const pid = $('#produtoId').val();
+    if (pid) carregarPainelProdutoComercialRcm871(pid);
+    else {
+        renderPainelOndeVendidoRcm871([]);
+        aplicarIndicadorComercialRcm871(id ? 'fallback' : 'propria');
+        renderResumoComercialRcm871();
+    }
+}
+
+function fecharPainelLinhaPicker() {
+    $('#linha_comercial_panel').addClass('d-none');
+    $('#linha_comercial_trigger').attr('aria-expanded', 'false');
+}
+
+function renderListaLinhasPicker(linhas, selecionadoId) {
+    const $lista = $('#linha_comercial_lista');
+    if (!$lista.length) return;
+    const items = [
+        { id: null, descricao: 'Sem linha — Produto com Precificação Própria', codigo: '' },
+        ...(linhas || [])
+    ];
+    $lista.html(items.map((l) => {
+        const id = l.id != null ? Number(l.id) : null;
+        const ativo = (selecionadoId ? Number(selecionadoId) : null) === id
+            || (!selecionadoId && id == null);
+        const titulo = id == null ? l.descricao : `${l.descricao || l.codigo}`;
+        const meta = id == null ? '' : `<div class="small text-muted">${escapeHtml(l.codigo || '')}</div>`;
+        return `<button type="button" class="cds-linha-picker__item ${ativo ? 'is-active' : ''}"
+                  data-linha-id="${id == null ? '' : id}"
+                  data-linha-codigo="${escapeHtml(l.codigo || '')}"
+                  data-linha-descricao="${escapeHtml(l.descricao || l.nome || '')}">
+                  <strong>${escapeHtml(titulo)}</strong>${meta}
+                </button>`;
+    }).join(''));
+}
+
+function carregarOpcoesLinhaPicker(termo) {
+    const q = String(termo || '').trim();
+    const url = q
+        ? `${API_URL}/linhas-comerciais?ativos=1&q=${encodeURIComponent(q)}`
+        : `${API_URL}/linhas-comerciais?ativos=1`;
+    return $.ajax({
+        url,
+        method: 'GET',
+        headers: { Authorization: 'Bearer ' + (localStorage.getItem('token') || '') }
+    }).done((rows) => {
+        renderListaLinhasPicker(Array.isArray(rows) ? rows : [], $('#linha_comercial_id').val());
+    }).fail(() => {
+        $('#linha_comercial_lista').html('<div class="p-2 text-danger small">Falha ao carregar Linhas de Precificação.</div>');
+    });
+}
+
+function abrirCoberturaGeralRcm871() {
+    $('#modalCoberturaRcm871').remove();
+    const html = `
+      <div class="modal fade" id="modalCoberturaRcm871" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+          <div class="modal-content">
+            <div class="modal-header"><h5 class="modal-title">Verificar Cobertura</h5>
+              <button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+            <div class="modal-body" id="modalCoberturaRcm871Body">Carregando...</div>
+            <div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fechar</button></div>
+          </div>
+        </div>
+      </div>`;
+    $('body').append(html);
+    const el = document.getElementById('modalCoberturaRcm871');
+    bootstrap.Modal.getOrCreateInstance(el).show();
+    $(el).on('hidden.bs.modal', function () { $(this).remove(); });
+    $.ajax({
+        url: `${API_URL}/tabelas-preco/cobertura`,
+        method: 'GET',
+        headers: { Authorization: 'Bearer ' + (localStorage.getItem('token') || '') }
+    }).done((res) => {
+        $('#modalCoberturaRcm871Body').html(`
+          <div class="row g-2">
+            <div class="col-md-4"><div class="border rounded p-2"><div class="small text-muted">Produtos sem Linha</div><div class="fs-4">${Number(res.produtos_sem_linha || 0)}</div></div></div>
+            <div class="col-md-4"><div class="border rounded p-2"><div class="small text-muted">Produtos sem preço</div><div class="fs-4">${(res.produtos_sem_preco || []).length}</div></div></div>
+            <div class="col-md-4"><div class="border rounded p-2"><div class="small text-muted">Usando Fallback</div><div class="fs-4">${Number(res.produtos_usando_preco_seguranca || 0)}</div></div></div>
+            <div class="col-md-4"><div class="border rounded p-2"><div class="small text-muted">Linhas sem Produtos</div><div class="fs-4">${(res.linhas_sem_produtos || []).length}</div></div></div>
+            <div class="col-md-4"><div class="border rounded p-2"><div class="small text-muted">Linhas sem preço</div><div class="fs-4">${(res.linhas_sem_preco || []).length}</div></div></div>
+            <div class="col-md-4"><div class="border rounded p-2"><div class="small text-muted">Operações sem Tabela</div><div class="fs-4">${(res.operacoes_sem_tabela || []).length}</div></div></div>
+          </div>
+          <div class="small text-muted mt-2">Alertas: <strong>${Number(res.resumo?.alertas || 0)}</strong></div>
+        `);
+    }).fail((xhr) => {
+        $('#modalCoberturaRcm871Body').html(`<div class="text-danger">${escapeHtml(xhr.responseJSON?.erro || 'Falha')}</div>`);
+    });
+}
+
+function abrirSimularPrecoRcm871(produtoId) {
+    $('#modalSimularRcm871').remove();
+    const html = `
+      <div class="modal fade" id="modalSimularRcm871" tabindex="-1">
+        <div class="modal-dialog">
+          <div class="modal-content">
+            <div class="modal-header"><h5 class="modal-title">Simular Preço</h5>
+              <button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+            <div class="modal-body">
+              <div class="row g-2 mb-2">
+                <div class="col-md-6"><label class="form-label small">Operação</label>
+                  <select class="form-select form-select-sm" id="sim-canal-rcm871">
+                    <option value="VAREJO">Varejo</option>
+                    <option value="ATACADO">Atacado</option>
+                    <option value="CONSIGNADO">Consignação</option>
+                    <option value="DELIVERY">Delivery</option>
+                    <option value="EVENTO">Evento</option>
+                  </select></div>
+                <div class="col-md-6"><label class="form-label small">Quantidade</label>
+                  <input type="number" min="1" step="1" class="form-control form-control-sm" id="sim-qtd-rcm871" value="1"></div>
+                <div class="col-12"><label class="form-label small">Cliente (opcional)</label>
+                  <input type="number" class="form-control form-control-sm" id="sim-cliente-rcm871" placeholder="ID do cliente"></div>
+              </div>
+              <div id="sim-resultado-rcm871" class="border rounded p-3 bg-light">Informe os parâmetros e simule.</div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-primary" id="btnExecSimularRcm871">Simular</button>
+              <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fechar</button>
+            </div>
+          </div>
+        </div>
+      </div>`;
+    $('body').append(html);
+    const el = document.getElementById('modalSimularRcm871');
+    bootstrap.Modal.getOrCreateInstance(el).show();
+    $(el).on('hidden.bs.modal', function () { $(this).remove(); });
+    const run = () => {
+        $('#sim-resultado-rcm871').html('<div class="text-muted">Consultando Motor Oficial...</div>');
+        const payload = {
+            produto_id: Number(produtoId),
+            canal: $('#sim-canal-rcm871').val(),
+            quantidade: Number($('#sim-qtd-rcm871').val()) || 1
+        };
+        const cid = $('#sim-cliente-rcm871').val();
+        if (cid) payload.cliente_id = Number(cid);
+        $.ajax({
+            url: `${API_URL}/tabelas-preco/simular`,
+            method: 'POST',
+            contentType: 'application/json',
+            headers: { Authorization: 'Bearer ' + (localStorage.getItem('token') || '') },
+            data: JSON.stringify(payload)
+        }).done((r) => {
+            const preco = Number(r.preco_encontrado ?? r.preco ?? 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            $('#sim-resultado-rcm871').html(`
+              <div class="small"><span class="text-muted">Tabela</span><div class="fw-semibold">${escapeHtml(r.tabela_utilizada || r.tabela?.nome || '—')}</div></div>
+              <div class="small mt-1"><span class="text-muted">Linha</span><div>${r.linha ? escapeHtml(r.linha.descricao || r.linha.codigo) : '<em>Precificação Própria</em>'}</div></div>
+              <div class="small mt-1"><span class="text-muted">Produto</span><div>${escapeHtml(r.produto?.nome || '—')}</div></div>
+              <div class="small mt-1"><span class="text-muted">Preço</span><div class="fs-4">R$ ${preco}</div></div>
+              <div class="small mt-1"><span class="text-muted">Unidade</span><div>${escapeHtml(r.unidade_comercial || '—')}</div></div>
+              <div class="small mt-1"><span class="text-muted">Origem</span><div>${escapeHtml(r.origem_label || r.origem || '—')}</div></div>
+              <div class="small mt-1"><span class="text-muted">Fallback</span><div>${r.fallback || r.usou_preco_seguranca ? 'Sim (Preço de Segurança)' : 'Não'}</div></div>
+            `);
+        }).fail((xhr) => {
+            $('#sim-resultado-rcm871').html(`<div class="text-danger">${escapeHtml(xhr.responseJSON?.erro || 'Falha')}</div>`);
+        });
+    };
+    $('#btnExecSimularRcm871').on('click', run);
+}
+
+function abrirCopiarConfigComercialRcm871() {
+    $('#modalCopiarConfigRcm871').remove();
+    const html = `
+      <div class="modal fade" id="modalCopiarConfigRcm871" tabindex="-1">
+        <div class="modal-dialog">
+          <div class="modal-content">
+            <div class="modal-header"><h5 class="modal-title">Copiar configuração comercial</h5>
+              <button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+            <div class="modal-body">
+              <label class="form-label">Produto origem (código ou nome)</label>
+              <input type="search" class="form-control mb-2" id="copiar-busca-rcm871" placeholder="Digite para pesquisar...">
+              <div id="copiar-lista-rcm871" class="list-group" style="max-height:240px;overflow:auto;"></div>
+              <small class="text-muted d-block mt-2">Copia: Grupo, Linha, Forma e Participa do Atacado. Não copia estoque nem fiscal.</small>
+            </div>
+            <div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fechar</button></div>
+          </div>
+        </div>
+      </div>`;
+    $('body').append(html);
+    const el = document.getElementById('modalCopiarConfigRcm871');
+    bootstrap.Modal.getOrCreateInstance(el).show();
+    $(el).on('hidden.bs.modal', function () { $(this).remove(); });
+    let t = null;
+    $('#copiar-busca-rcm871').on('input', function () {
+        clearTimeout(t);
+        const q = String($(this).val() || '').trim();
+        t = setTimeout(() => {
+            if (q.length < 1) {
+                $('#copiar-lista-rcm871').empty();
+                return;
+            }
+            $.ajax({
+                url: `${API_URL}/tabelas-preco/pesquisar-produtos?q=${encodeURIComponent(q)}`,
+                method: 'GET',
+                headers: { Authorization: 'Bearer ' + (localStorage.getItem('token') || '') }
+            }).done((rows) => {
+                $('#copiar-lista-rcm871').html((rows || []).slice(0, 20).map((p) => `
+                  <button type="button" class="list-group-item list-group-item-action" data-pid="${p.id}">
+                    <strong>${escapeHtml(p.nome || '')}</strong> <span class="text-muted">${escapeHtml(p.codigo || '')}</span>
+                  </button>`).join('') || '<div class="text-muted p-2">Nenhum produto</div>');
+            });
+        }, 200);
+    });
+    $('#copiar-lista-rcm871').on('click', '[data-pid]', function () {
+        const pid = $(this).attr('data-pid');
+        $.ajax({
+            url: `${API_URL}/produtos/${pid}`,
+            method: 'GET',
+            headers: { Authorization: 'Bearer ' + (localStorage.getItem('token') || '') }
+        }).done((p) => {
+            if (p.categoria_id) $('#categoria_id').val(String(p.categoria_id)).trigger('change');
+            aplicarSelecaoLinhaProduto(p.linha_comercial_id
+                ? {
+                    id: p.linha_comercial_id,
+                    codigo: p.linha_comercial_codigo || '',
+                    descricao: p.linha_comercial_descricao || p.linha_comercial_codigo || ''
+                  }
+                : null);
+            const forma = String(p.forma_comercializacao || 'UNIDADE').toUpperCase();
+            $(`input[name="forma_comercializacao"][value="${forma}"]`).prop('checked', true).trigger('change');
+            $(`input[name="participa_atacado"][value="${Number(p.participa_atacado ?? 1) !== 0 ? '1' : '0'}"]`).prop('checked', true);
+            if (typeof showNotification === 'function') {
+                showNotification('Configuração comercial copiada.', 'success');
+            }
+            bootstrap.Modal.getInstance(el)?.hide();
+        }).fail(() => {
+            if (typeof showNotification === 'function') showNotification('Falha ao carregar produto origem.', 'danger');
+        });
+    });
+}
+
+function inicializarLinhaComercialProduto(produto, isEdit) {
+    garantirCssLinhaPickerProduto();
+    const linhaInicial = isEdit && produto?.linha_comercial_id
+        ? {
+            id: produto.linha_comercial_id,
+            codigo: produto.linha_comercial_codigo || '',
+            descricao: produto.linha_comercial_descricao || produto.linha_comercial_codigo || ('#' + produto.linha_comercial_id)
+          }
+        : null;
+    aplicarSelecaoLinhaProduto(linhaInicial);
+    if (isEdit && produto?.id) carregarPainelProdutoComercialRcm871(produto.id);
+
+    $('#linha_comercial_trigger').off('click.rcm87').on('click.rcm87', function (e) {
+        e.preventDefault();
+        const $panel = $('#linha_comercial_panel');
+        const aberto = !$panel.hasClass('d-none');
+        if (aberto) {
+            fecharPainelLinhaPicker();
+            return;
+        }
+        $panel.removeClass('d-none');
+        $(this).attr('aria-expanded', 'true');
+        $('#linha_comercial_busca').val('').trigger('focus');
+        carregarOpcoesLinhaPicker('');
+    });
+
+    let timerBusca = null;
+    $('#linha_comercial_busca').off('input.rcm87').on('input.rcm87', function () {
+        clearTimeout(timerBusca);
+        const termo = $(this).val();
+        timerBusca = setTimeout(() => carregarOpcoesLinhaPicker(termo), 200);
+    });
+
+    $('#linha_comercial_lista').off('click.rcm87').on('click.rcm87', '.cds-linha-picker__item', function () {
+        const id = $(this).attr('data-linha-id');
+        aplicarSelecaoLinhaProduto(id
+            ? {
+                id: Number(id),
+                codigo: $(this).attr('data-linha-codigo') || '',
+                descricao: $(this).attr('data-linha-descricao') || ''
+              }
+            : null);
+        fecharPainelLinhaPicker();
+    });
+
+    $(document).off('click.rcm87LinhaOutside').on('click.rcm87LinhaOutside', function (e) {
+        if (!$(e.target).closest('#linha_comercial_picker').length) {
+            fecharPainelLinhaPicker();
+        }
+    });
+
+    const $modal = $('#produtoModal');
+    $modal.off('click.rcm871nav').on('click.rcm871nav', '#btnVerLinhaRcm871, #linkVerLinhaRcm871, #linkResumoLinhaRcm871', function (e) {
+        e.preventDefault();
+        const lid = $(this).attr('data-linha-id') || $('#linha_comercial_id').val();
+        if (lid) abrirCadastroLinhaRcm871(lid);
+    });
+    $modal.on('click.rcm871nav', '#btnAbrirCentralDaLinhaRcm871, #btnAbrirCentralLinhaRcm871, #btnAbrirCentralPropriaRcm871', function (e) {
+        e.preventDefault();
+        const lid = $(this).attr('data-linha-id') || $('#linha_comercial_id').val() || null;
+        abrirCentralPrecificacaoRcm871(lid || null);
+    });
+    $modal.on('click.rcm871nav', '#btnAbrirGrupoComercialRcm871, #linkResumoGrupoRcm871', function (e) {
+        e.preventDefault();
+        abrirGrupoComercialRcm871();
+    });
+    $modal.on('click.rcm871nav', '[data-rcm871-op]', function (e) {
+        e.preventDefault();
+        const canal = $(this).attr('data-rcm871-op');
+        try { sessionStorage.setItem('cds_central_filtro_canal', String(canal || '')); } catch (_e) { /* ignore */ }
+        abrirCentralPrecificacaoRcm871($('#linha_comercial_id').val() || null);
+    });
+
+    $('#btnAnalisarProdutoRcm87').off('click.rcm87').on('click.rcm87', function () {
+        const pid = $('#produtoId').val() || produto?.id;
+        if (pid) abrirAnaliseProdutoRcm87(pid);
+    });
+    $('#btnVerificarCoberturaRcm871').off('click.rcm871').on('click.rcm871', abrirCoberturaGeralRcm871);
+    $('#btnSimularPrecoRcm871').off('click.rcm871').on('click.rcm871', function () {
+        const pid = $('#produtoId').val() || produto?.id;
+        if (pid) abrirSimularPrecoRcm871(pid);
+    });
+    $('#btnCopiarConfigComercialRcm871').off('click.rcm871').on('click.rcm871', abrirCopiarConfigComercialRcm871);
+    $('#btnSugerirLinhaRcm871').off('click.rcm871').on('click.rcm871', function () {
+        if (typeof showNotification === 'function') {
+            showNotification('Sugestão de Linha de Precificação estará disponível em breve (IA Comercial).', 'info');
+        } else {
+            alert('Sugestão de Linha estará disponível em breve.');
+        }
+    });
+
+    $('input[name="forma_comercializacao"]').off('change.rcm871resumo').on('change.rcm871resumo', function () {
+        renderResumoComercialRcm871();
+    });
+    $('#categoria_id').off('change.rcm871resumo').on('change.rcm871resumo', function () {
+        renderResumoComercialRcm871();
+    });
+}
+
+function abrirAnaliseProdutoRcm87(produtoId, canal) {
+    const canalSel = canal || 'VAREJO';
+    $('#modalAnaliseProdutoRcm87').remove();
+    const html = `
+      <div class="modal fade" id="modalAnaliseProdutoRcm87" tabindex="-1">
+        <div class="modal-dialog">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h5 class="modal-title">Auditoria Comercial</h5>
+              <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+              <div class="mb-2">
+                <label class="form-label small">Operação / Canal</label>
+                <select class="form-select form-select-sm" id="analise-canal-rcm87">
+                  <option value="VAREJO">Varejo</option>
+                  <option value="ATACADO">Atacado</option>
+                  <option value="CONSIGNADO">Consignação</option>
+                  <option value="DELIVERY">Delivery</option>
+                  <option value="EVENTO">Evento</option>
+                </select>
+              </div>
+              <div id="analise-produto-resultado" class="border rounded p-3 bg-light">Carregando...</div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fechar</button>
+            </div>
+          </div>
+        </div>
+      </div>`;
+    $('body').append(html);
+    const $modal = $('#modalAnaliseProdutoRcm87');
+    const carregar = () => {
+        const c = $('#analise-canal-rcm87').val() || 'VAREJO';
+        $('#analise-produto-resultado').html('<div class="text-muted">Consultando Motor Oficial...</div>');
+        $.ajax({
+            url: `${API_URL}/tabelas-preco/simular`,
+            method: 'POST',
+            contentType: 'application/json',
+            headers: { Authorization: 'Bearer ' + (localStorage.getItem('token') || '') },
+            data: JSON.stringify({ produto_id: Number(produtoId), canal: c, quantidade: 1 })
+        }).done((r) => {
+            const preco = Number(r.preco_encontrado ?? r.preco ?? 0);
+            const precoFmt = preco.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            $('#analise-produto-resultado').html(`
+              <div class="mb-2"><span class="text-muted small">Produto</span><div class="fw-semibold">${escapeHtml(r.produto?.nome || '—')}</div></div>
+              <div class="mb-2"><span class="text-muted small">Linha de Precificação</span><div>${r.linha ? escapeHtml(r.linha.descricao || r.linha.codigo) : '<em>Produto com Precificação Própria</em>'}</div></div>
+              <div class="mb-2"><span class="text-muted small">Tabela</span><div>${escapeHtml(r.tabela_utilizada || r.tabela?.nome || r.tabela?.codigo || '—')}</div></div>
+              <div class="mb-2"><span class="text-muted small">Operação</span><div>${escapeHtml(r.canal || c)}</div></div>
+              <div class="mb-2"><span class="text-muted small">Preço</span><div class="fs-4">R$ ${precoFmt}</div></div>
+              <div class="mb-2"><span class="text-muted small">Unidade</span><div>${escapeHtml(r.unidade_comercial || '—')}</div></div>
+              <div class="mb-2"><span class="text-muted small">Origem</span><div>${escapeHtml(r.origem_label || r.origem || '—')}</div></div>
+              <div class="mb-2"><span class="text-muted small">Motor Oficial</span><div>${escapeHtml(r.motor || 'Motor Oficial de Precificação')}</div></div>
+              <div class="mb-2"><span class="text-muted small">Resolver</span><div>${escapeHtml(r.resolver || 'Motor Oficial')}</div></div>
+              <div><span class="text-muted small">Fallback</span><div>${r.fallback || r.usou_preco_seguranca ? 'Sim (Preço de Segurança)' : 'Não'}</div></div>
+            `);
+        }).fail((xhr) => {
+            $('#analise-produto-resultado').html(
+                `<div class="text-danger">${escapeHtml(xhr.responseJSON?.erro || 'Falha ao analisar produto')}</div>`
+            );
+        });
+    };
+    $('#analise-canal-rcm87').val(canalSel).off('change.rcm87').on('change.rcm87', carregar);
+    bootstrap.Modal.getOrCreateInstance($modal[0]).show();
+    carregar();
+    $modal.on('hidden.bs.modal', function () { $(this).remove(); });
+}
+window.abrirAnaliseProdutoRcm87 = abrirAnaliseProdutoRcm87;
+window.abrirCentralPrecificacaoRcm871 = abrirCentralPrecificacaoRcm871;
+
 function inicializarMotorConversaoUnidadesCadastro() {
     const $modal = $('#produtoModal');
     if (!$modal.length) return;
@@ -227,17 +947,17 @@ function inicializarMotorConversaoUnidadesCadastro() {
         .off('change.motorConversaoUnidades input.motorConversaoUnidades')
         .on(
             'change.motorConversaoUnidades input.motorConversaoUnidades',
-            '#produto_fracionado, #unidade, #cadastro_valor_total_referencia, #saldo_fiscal_inicial, #saldo_nao_fiscal_inicial',
+            '#produto_fracionado, #unidade, #saldo_fiscal_inicial, #saldo_nao_fiscal_inicial',
             function onMotorConversaoCadastro() {
+                if (cpe1CalculosSuspensos()) return;
                 if ($(this).is('#saldo_fiscal_inicial, #saldo_nao_fiscal_inicial')) {
                     if (typeof atualizarPreviewEstoqueTotalInicial === 'function') {
                         atualizarPreviewEstoqueTotalInicial();
                     }
                     return;
                 }
-                aplicarModoConversaoUnidadesCadastro();
-                if ($(this).is('#cadastro_valor_total_referencia, #unidade')) {
-                    calcularCustoUnitarioReferenciaCadastro();
+                if ($(this).is('#produto_fracionado, #unidade')) {
+                    aplicarModoConversaoUnidadesCadastro();
                 }
             }
         );
@@ -265,7 +985,6 @@ window.minimizarModal = function(modalId) {
                         subcategoria_id: $('#subcategoria_id').val(),
                         unidade: $('#unidade').val(),
                         preco_compra: $('#preco_compra').val(),
-                        lucro_percentual: $('#lucro_percentual').val(),
                         preco_venda: $('#preco_venda').val(),
                         estoque_atual: $('#estoque_atual').val(),
                         estoque_minimo: $('#estoque_minimo').val(),
@@ -364,9 +1083,52 @@ function obterSaldosIniciaisDoFormulario() {
     };
 }
 
+/** UX-PROD-03.1 — Campos de implantação (infraestrutura de bloqueio futuro) */
+const CAMPOS_IMPLANTACAO_PRODUTO = Object.freeze([
+    'saldo_fiscal_inicial',
+    'saldo_nao_fiscal_inicial',
+    'peso_fisico_inicial_fiscal',
+    'peso_fisico_inicial_nao_fiscal',
+    'data_validade_inicial',
+    'dias_alerta_validade'
+]);
+
+function avaliarFaseCadastroProduto(isEdit, temMovimentacoes) {
+    const operacao = Boolean(isEdit && temMovimentacoes);
+    return {
+        fase: operacao ? 'OPERACAO' : 'IMPLANTACAO',
+        label: operacao ? 'Operação' : 'Implantação',
+        temMovimentacoes: Boolean(temMovimentacoes),
+        camposImplantacaoSomenteLeitura: operacao,
+        campos: CAMPOS_IMPLANTACAO_PRODUTO
+    };
+}
+
+/**
+ * UX-PROD-03.1 — prepara metadados/UI do bloqueio de implantação.
+ * A lógica definitiva de travar todos os campos permanece no roadmap;
+ * saldos iniciais já respeitam somente leitura após a 1ª movimentação.
+ */
+function prepararBloqueioImplantacaoProduto(meta) {
+    const $modal = $('#produtoModal');
+    if (!$modal.length) return meta;
+    $modal.attr('data-fase-cadastro', meta.fase);
+    $modal.data('faseCadastro', meta);
+    $modal.find('[data-campo-implantacao="1"]').each(function () {
+        if (meta.camposImplantacaoSomenteLeitura) {
+            $(this).prop('readonly', true).addClass('bg-light');
+            if ($(this).is('input[type="number"], input[type="date"]')) {
+                $(this).attr('title', 'Fase Operação: implantação somente leitura. Use Ajuste de Estoque.');
+            }
+        }
+    });
+    return meta;
+}
+
 function montarHtmlCamposEstoqueProduto(produto, isEdit, opcoes = {}) {
     const temMovimentacoes = Boolean(opcoes.temMovimentacoes ?? produto?.tem_movimentacoes);
-    const permiteEditarSaldos = !isEdit || !temMovimentacoes;
+    const faseMeta = avaliarFaseCadastroProduto(isEdit, temMovimentacoes);
+    const permiteEditarSaldos = !faseMeta.camposImplantacaoSomenteLeitura;
     const modoFiscal = typeof isModoFiscalVisualizacaoAtivo === 'function' && isModoFiscalVisualizacaoAtivo();
     const saldoFiscal = Number(produto?.saldo_fiscal ?? 0);
     const saldoNaoFiscal = Number(produto?.saldo_nao_fiscal ?? 0);
@@ -374,45 +1136,124 @@ function montarHtmlCamposEstoqueProduto(produto, isEdit, opcoes = {}) {
     const unidade = produto?.unidade || '';
     const usaConversao = produtoEhFracionado(produto);
     const stepEstoque = obterStepEstoqueProduto(unidade, usaConversao);
+    const usaFisica = Number(produto?.utiliza_conversao_fisica || 0) === 1
+        || ($('#utiliza_conversao_fisica').length ? $('#utiliza_conversao_fisica').is(':checked') : false);
+    const unidadeFisica = (produto?.unidade_conversao_fisica
+        || ($('#unidade_conversao_fisica').val() || '')
+        || 'KG').toUpperCase();
+    const mostrarFisicaInicial = usaFisica && permiteEditarSaldos && estoqueTotal > 0;
+
+    const bannerFase = permiteEditarSaldos
+        ? `<div class="col-12 mb-3" id="bannerFaseCadastroProduto" data-fase="IMPLANTACAO">
+             <div class="alert alert-info py-2 mb-0 border-0">
+               <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
+                 <strong><i class="fas fa-seedling me-1"></i> Fase 1 — Implantação</strong>
+                 <span class="badge bg-info text-dark">Sem movimentações</span>
+               </div>
+               <small class="d-block mt-1">
+                 Informe a quantidade inicial (e o peso do estoque, se o produto for pesado na entrada).
+                 Após a primeira movimentação, estes campos ficam <strong>somente leitura</strong>.
+               </small>
+             </div>
+           </div>`
+        : `<div class="col-12 mb-3" id="bannerFaseCadastroProduto" data-fase="OPERACAO">
+             <div class="alert alert-secondary py-2 mb-0 border-0">
+               <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
+                 <strong><i class="fas fa-lock me-1"></i> Fase 2 — Operação</strong>
+                 <span class="badge bg-secondary">Implantação bloqueada</span>
+               </div>
+               <small class="d-block mt-1">
+                 Após a implantação, alterações de estoque devem ser realizadas pelo módulo
+                 <strong>Ajuste de Estoque</strong> (ou Inventário / Compra).
+               </small>
+             </div>
+           </div>`;
+
+    const blocoFisicaInicial = permiteEditarSaldos ? `
+        <div class="col-12 mb-3 ${mostrarFisicaInicial ? '' : 'd-none'}" id="blocoConversaoFisicaInicial">
+            <div class="border rounded p-3 bg-primary bg-opacity-10 border-primary border-opacity-25">
+                <strong class="d-block mb-1">
+                  Peso atual do estoque
+                </strong>
+                <small class="text-muted d-block mb-2">
+                    Informe o peso correspondente à quantidade inicial
+                    (unidade: <strong>${escapeHtml(unidadeFisica)}</strong>).
+                    O peso real da operação continua sendo informado na Entrada da Compra.
+                    <em class="d-block mt-1">(Preparação visual — persistência do lote inicial em sprint futura.)</em>
+                </small>
+                ${modoFiscal ? `
+                    <div class="row g-2">
+                        <div class="col-md-6">
+                            <label class="form-label" for="peso_fisico_inicial_fiscal">Peso físico Fiscal — ${escapeHtml(unidadeFisica)}</label>
+                            <input type="number" step="0.001" min="0" class="form-control" id="peso_fisico_inicial_fiscal"
+                                data-campo-implantacao="1"
+                                placeholder="Ex.: 6,750" disabled title="Persistência em sprint futura">
+                        </div>
+                    </div>
+                ` : `
+                    <div class="row g-2">
+                        <div class="col-md-6">
+                            <label class="form-label" for="peso_fisico_inicial_fiscal">Peso físico Fiscal — ${escapeHtml(unidadeFisica)}</label>
+                            <input type="number" step="0.001" min="0" class="form-control" id="peso_fisico_inicial_fiscal"
+                                data-campo-implantacao="1"
+                                placeholder="Ex.: 6,750" disabled title="Persistência em sprint futura">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label" for="peso_fisico_inicial_nao_fiscal">Peso físico Não Fiscal — ${escapeHtml(unidadeFisica)}</label>
+                            <input type="number" step="0.001" min="0" class="form-control" id="peso_fisico_inicial_nao_fiscal"
+                                data-campo-implantacao="1"
+                                placeholder="Opcional" disabled title="Persistência em sprint futura">
+                        </div>
+                    </div>
+                `}
+            </div>
+        </div>
+    ` : '';
 
     if (permiteEditarSaldos) {
         if (modoFiscal) {
             return `
+                ${bannerFase}
                 <div class="col-md-6 mb-3">
-                    <label for="saldo_fiscal_inicial" class="form-label">Estoque Fiscal Inicial</label>
+                    <label for="saldo_fiscal_inicial" class="form-label">Quantidade Inicial Fiscal</label>
                     <input
                         type="number"
                         step="${stepEstoque}"
                         min="0"
                         class="form-control"
                         id="saldo_fiscal_inicial"
+                        data-campo-implantacao="1"
                         value="${isEdit ? saldoFiscal : 0}"
                     >
-                    <input type="hidden" id="saldo_nao_fiscal_inicial" value="${isEdit ? saldoNaoFiscal : 0}">
+                    <input type="hidden" id="saldo_nao_fiscal_inicial" data-campo-implantacao="1" value="${isEdit ? saldoNaoFiscal : 0}">
                 </div>
+                ${blocoFisicaInicial}
             `;
         }
 
         return `
+            ${bannerFase}
             <div class="col-md-4 mb-3">
-                <label for="saldo_fiscal_inicial" class="form-label">Estoque Fiscal Inicial</label>
+                <label for="saldo_fiscal_inicial" class="form-label">Quantidade Inicial Fiscal</label>
                 <input
                     type="number"
                     step="${stepEstoque}"
                     min="0"
                     class="form-control"
                     id="saldo_fiscal_inicial"
+                    data-campo-implantacao="1"
                     value="${isEdit ? saldoFiscal : 0}"
                 >
             </div>
             <div class="col-md-4 mb-3">
-                <label for="saldo_nao_fiscal_inicial" class="form-label">Estoque Não Fiscal Inicial</label>
+                <label for="saldo_nao_fiscal_inicial" class="form-label">Quantidade Inicial Não Fiscal</label>
                 <input
                     type="number"
                     step="${stepEstoque}"
                     min="0"
                     class="form-control"
                     id="saldo_nao_fiscal_inicial"
+                    data-campo-implantacao="1"
                     value="${isEdit ? saldoNaoFiscal : 0}"
                 >
             </div>
@@ -426,44 +1267,55 @@ function montarHtmlCamposEstoqueProduto(produto, isEdit, opcoes = {}) {
                     value="${formatarEstoqueProduto(estoqueTotal, unidade, { produtoFracionado: usaConversao })}"
                 >
             </div>
+            ${blocoFisicaInicial}
         `;
     }
 
-    const avisoAjuste = temMovimentacoes && podeAjustarEstoque()
-        ? '<small class="text-muted d-block mt-1">Use o botão <strong>Ajustar Estoque</strong> na lista para alterar saldos.</small>'
-        : '';
+    const avisoAjuste = `
+        <div class="col-12 mb-2">
+          <small class="text-muted">
+            Após a implantação, alterações de estoque devem ser realizadas pelo módulo
+            <strong>Ajuste de Estoque</strong>${podeAjustarEstoque() ? ' (botão na lista de produtos)' : ''}.
+          </small>
+        </div>`;
 
     if (modoFiscal) {
         return `
+            ${bannerFase}
+            ${avisoAjuste}
             <div class="col-md-6 mb-3">
-                <label class="form-label">Estoque Fiscal</label>
+                <label class="form-label">Estoque Fiscal <span class="badge bg-secondary">somente leitura</span></label>
                 <input
                     type="text"
                     class="form-control bg-light"
                     readonly
+                    data-campo-implantacao="1"
                     value="${formatarEstoqueProduto(saldoFiscal, unidade, { produtoFracionado: usaConversao })}"
                 >
-                ${avisoAjuste}
             </div>
         `;
     }
 
     return `
+        ${bannerFase}
+        ${avisoAjuste}
         <div class="col-md-4 mb-3">
-            <label class="form-label">Estoque Fiscal</label>
+            <label class="form-label">Estoque Fiscal <span class="badge bg-secondary">somente leitura</span></label>
             <input
                 type="text"
                 class="form-control bg-light"
                 readonly
+                data-campo-implantacao="1"
                 value="${formatarEstoqueProduto(saldoFiscal, unidade, { produtoFracionado: usaConversao })}"
             >
         </div>
         <div class="col-md-4 mb-3">
-            <label class="form-label">Estoque Não Fiscal</label>
+            <label class="form-label">Estoque Não Fiscal <span class="badge bg-secondary">somente leitura</span></label>
             <input
                 type="text"
                 class="form-control bg-light"
                 readonly
+                data-campo-implantacao="1"
                 value="${formatarEstoqueProduto(saldoNaoFiscal, unidade, { produtoFracionado: usaConversao })}"
             >
         </div>
@@ -475,7 +1327,6 @@ function montarHtmlCamposEstoqueProduto(produto, isEdit, opcoes = {}) {
                 readonly
                 value="${formatarEstoqueProduto(estoqueTotal, unidade, { produtoFracionado: usaConversao })}"
             >
-            ${avisoAjuste}
         </div>
     `;
 }
@@ -511,6 +1362,7 @@ function atualizarCamposEstoqueModalProduto() {
     };
 
     $area.html(montarHtmlCamposEstoqueProduto(produto, isEdit, { temMovimentacoes }));
+    prepararBloqueioImplantacaoProduto(avaliarFaseCadastroProduto(isEdit, temMovimentacoes));
 
     const permiteEditarSaldos = !isEdit || !temMovimentacoes;
     if (permiteEditarSaldos) {
@@ -566,13 +1418,11 @@ function atualizarPreviewEstoqueTotalInicial() {
         const unidade = $('#unidade').val() || 'un';
         const opcoesFormato = { produtoFracionado: produtoCadastroUsaConversaoUnidades() };
         $preview.val(formatarEstoqueProduto(saldos.estoque_total, unidade, opcoesFormato));
-
-        if (produtoCadastroUsaConversaoUnidades()) {
-            sincronizarQuantidadeTotalReferenciaCadastro();
-        }
     }
 
-    atualizarPreviewValorTotalEstoqueCadastro();
+    if (!cpe1CalculosSuspensos()) {
+        atualizarPreviewValorTotalEstoqueCadastro();
+    }
 }
 
 function inicializarPreviewEstoqueTotalInicial() {
@@ -1280,7 +2130,7 @@ function renderProdutos(produtos) {
                                 <th>Categoria</th>
                                 <th>Unidade</th>
                                 <th>Preço Compra</th>
-                                <th>Preço Venda</th>
+                                <th>Preço de Segurança</th>
                                 <th>${tituloColunaEstoqueLista()}</th>
                                 <th>Ações</th>
                             </tr>
@@ -1429,7 +2279,7 @@ function toggleProdutosCategoriaMenu(categoriaId, categoriaNome) {
                                     <th>Categoria</th>
                                     <th>Unidade</th>
                                     <th>Preço Compra</th>
-                                    <th>Preço Venda</th>
+                                    <th>Preço de Segurança</th>
                                     <th>${tituloColunaEstoqueLista()}</th>
                                     <th>Ações</th>
                                 </tr>
@@ -1457,42 +2307,106 @@ function renderProdutosRows(produtos) {
 }
 
 
+/** UX-MASTER-01 — código automático (somente UI; payload inalterado) */
+function gerarCodigoProdutoAutomatico() {
+    const list = Array.isArray(window.produtosList) ? window.produtosList : [];
+    let max = 0;
+    list.forEach((p) => {
+        const n = parseInt(String(p?.codigo || '').replace(/\D/g, ''), 10);
+        if (Number.isFinite(n) && n > max) max = n;
+    });
+    return String(max + 1).padStart(4, '0');
+}
+
+function sugerirUnidadeFisicaPorCategoria() {
+    const catId = $('#categoria_id').val();
+    const cat = (window.categoriasSistema || []).find((c) => String(c.id) === String(catId));
+    const nome = normalizarTexto(cat?.nome || '');
+    if (/litro|bebida|suco|agua|leite|liquido/.test(nome)) return 'L';
+    if (/sorvete|picole|gelato|massa|carne|queijo|frios/.test(nome)) return 'KG';
+    return 'KG';
+}
+
+function montarResumoInteligenteProduto(produto, isEdit) {
+    const nome = isEdit ? (produto?.nome || '—') : 'Novo produto';
+    const fase = avaliarFaseCadastroProduto(isEdit, Boolean(produto?.tem_movimentacoes));
+
+    return `
+        <div class="col-12 mb-2" id="resumoInteligenteProduto">
+            <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 py-1">
+                <div class="fs-5 fw-semibold" id="resumo_produto_nome">${escapeHtml(nome)}</div>
+                <span class="badge ${fase.fase === 'OPERACAO' ? 'bg-secondary' : 'bg-info text-dark'}" id="resumo_produto_fase">
+                    ${escapeHtml(fase.label)}
+                </span>
+            </div>
+            <span class="d-none" id="resumo_unidade_base"></span>
+            <span class="d-none" id="resumo_conversao_fisica"></span>
+            <span class="d-none" id="resumo_ucs"></span>
+            <span class="d-none" id="resumo_produto_status"></span>
+        </div>
+    `;
+}
+
+function atualizarResumoInteligenteProduto() {
+    const $resumo = $('#resumoInteligenteProduto');
+    if (!$resumo.length) return;
+
+    const nome = ($('#nome').val() || '').trim() || 'Novo produto';
+    const base = String($('#unidade').val() || 'un').toUpperCase();
+    const fisicaOn = $('#utiliza_conversao_fisica').is(':checked');
+    const fisicaUn = fisicaOn
+        ? String($('#unidade_conversao_fisica').val() || 'KG').toUpperCase() || 'KG'
+        : 'Não';
+
+    $('#resumo_produto_nome').text(nome);
+    $('#resumo_unidade_base').text(base);
+    $('#resumo_conversao_fisica').text(fisicaUn);
+
+    const ucs = (window._uc01UnidadesCache || [])
+        .map((u) => String(u.unidade_comercial || '').toUpperCase())
+        .filter(Boolean);
+    $('#resumo_ucs').text(ucs.length ? ucs.join(' · ') : base);
+
+    const isEdit = Boolean($('#produtoId').val());
+    const temMov = $('#produtoModal').data('temMovimentacoes') === true;
+    const fase = avaliarFaseCadastroProduto(isEdit, temMov);
+    const $fase = $('#resumo_produto_fase');
+    if ($fase.length) {
+        $fase
+            .text(fase.label)
+            .toggleClass('bg-info text-dark', fase.fase === 'IMPLANTACAO')
+            .toggleClass('bg-secondary', fase.fase === 'OPERACAO');
+    }
+    $('#resumo_produto_status').text('');
+}
+
+function cabecalhoDominioProduto(icone, titulo, badgeHtml = '') {
+    return `
+        <div class="col-12 mb-2 mt-3">
+            <h6 class="text-uppercase text-muted small fw-semibold mb-0 border-bottom pb-1 d-flex align-items-center justify-content-between">
+                <span><i class="${icone} me-1"></i> ${titulo}</span>
+                ${badgeHtml}
+            </h6>
+        </div>
+    `;
+}
+
 // Abre modal de produto
 function showProdutoModal(produto = null) {
+    window._cpe1SuspenderCalculosProduto = true;
     const isEdit = produto !== null;
     const title = isEdit ? 'Editar Produto' : 'Novo Produto';
-    const lucro = (() => {
-        if (!isEdit || !produto) return '';
-        if (produto.lucro_percentual !== undefined && produto.lucro_percentual !== null && produto.lucro_percentual !== '') {
-            return produto.lucro_percentual;
-        }
-        const precoCompra = isEdit && produtoEhFracionado(produto)
-            ? resolverCustoUnitarioProdutoCadastro(produto)
-            : Number(produto.preco_compra || 0);
-        const precoVenda = Number(produto.preco_venda || 0);
-        if (precoCompra > 0 && precoVenda > 0) {
-            return Number((((precoVenda - precoCompra) / precoCompra) * 100).toFixed(2));
-        }
-        return '';
-    })();
     const usaConversaoInicial = isEdit && produtoEhFracionado(produto);
     const custoUnitarioInicial = isEdit && usaConversaoInicial
         ? resolverCustoUnitarioProdutoCadastro(produto)
         : Number(isEdit ? produto.preco_compra : 0);
+    // input type=number exige ponto; rótulos usam formatarCustoUnitarioCadastro (pt-BR)
     const precoCompraInicial = isEdit
-        ? formatarCustoUnitarioCadastro(custoUnitarioInicial, usaConversaoInicial)
+        ? (Number.isFinite(custoUnitarioInicial) ? Number(custoUnitarioInicial).toFixed(2) : '0')
         : '0';
-    const refValorInicial = isEdit && usaConversaoInicial
-        ? (Number(produto.valor_total_compra || 0) > 0
-            ? Number(produto.valor_total_compra)
-            : (Math.abs(Number(produto.preco_compra || 0) - custoUnitarioInicial) > 0.01
-                ? Number(produto.preco_compra || 0)
-                : ''))
-        : '';
-    const refQtdInicial = isEdit && usaConversaoInicial
-        ? (Number(produto.saldo_fiscal || 0) + Number(produto.saldo_nao_fiscal || 0))
-            || Number(produto.peso_total_compra || 0)
-        : '';
+    const custoMedioExibicao = (isEdit && produto && produto.custo_medio != null && produto.custo_medio !== '')
+        ? Number(produto.custo_medio).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+        : 'Não calculado';
     const permiteVendaUnidadeInicial = isEdit && Number(produto?.permite_venda_unidade ?? 0) === 1;
     const pesoMedioUnidadeInicial = isEdit ? Number(produto?.peso_medio_unidade ?? 0) : 0;
     const precoUnidadeInicial = isEdit ? Number(produto?.preco_unidade ?? 0) : 0;
@@ -1504,7 +2418,8 @@ function showProdutoModal(produto = null) {
     $('#produtoModal').remove();
     $('#viewProdutoModal').remove();
     const modalHtml = `
-        <div class="modal fade" id="produtoModal" tabindex="-1" aria-hidden="true">
+        <div class="modal fade" id="produtoModal" tabindex="-1" aria-hidden="true"
+             data-bs-backdrop="static" data-bs-keyboard="true">
             <div class="modal-dialog modal-lg modal-dialog-scrollable">
                 <div class="modal-content">
                     <div class="modal-header d-flex align-items-center justify-content-between">
@@ -1521,162 +2436,30 @@ function showProdutoModal(produto = null) {
                         <form id="produtoForm">
                             <input type="hidden" id="produtoId" value="${isEdit ? (produto.id || '') : ''}">
 
-                            <div class="row">
-                                <div class="col-md-6 mb-3">
-                                    <label for="codigo" class="form-label">Código</label>
-                                    <input
-                                        type="text"
-                                        class="form-control"
-                                        id="codigo"
-                                        value="${isEdit ? escapeHtml(produto.codigo || '') : ''}"
-                                    >
-                                </div>
+                            <div class="row" id="produtoFormDominios">
+                                ${montarResumoInteligenteProduto(produto, isEdit)}
 
-                                <div class="col-md-6 mb-3">
-                                    <label for="nome" class="form-label">Nome *</label>
-                                    <input
-                                        type="text"
-                                        class="form-control"
-                                        id="nome"
-                                        required
-                                        value="${isEdit ? escapeHtml(produto.nome || '') : ''}"
-                                    >
-                                </div>
-
-                                <div class="col-md-6 mb-3">
-                                    <label for="categoria_id" class="form-label">Categoria</label>
-                                    <select class="form-control" id="categoria_id">
-                                        <option value="">Carregando...</option>
-                                    </select>
-                                </div>
-
-                                <div class="col-md-6 mb-3">
-                                    <label for="subcategoria_id" class="form-label">Subcategoria</label>
-                                    <select class="form-control" id="subcategoria_id">
-                                        <option value="">Selecione uma categoria</option>
-                                    </select>
-                                </div>
-
-                                <div class="col-md-6 mb-3">
-                                    <label for="unidade" class="form-label" id="label_unidade_produto">Unidade</label>
-                                    <select class="form-control" id="unidade">
-                                        <option value="un" ${isEdit && produto.unidade === 'un' ? 'selected' : ''}>Unidade</option>
-                                        <option value="kg" ${isEdit && produto.unidade === 'kg' ? 'selected' : ''}>Quilograma</option>
-                                        <option value="g" ${isEdit && produto.unidade === 'g' ? 'selected' : ''}>Grama</option>
-                                        <option value="l" ${isEdit && produto.unidade === 'l' ? 'selected' : ''}>Litro</option>
-                                        <option value="ml" ${isEdit && produto.unidade === 'ml' ? 'selected' : ''}>Mililitro</option>
-                                        <option value="mt" ${isEdit && produto.unidade === 'mt' ? 'selected' : ''}>Metro</option>
-                                        <option value="m2" ${isEdit && produto.unidade === 'm2' ? 'selected' : ''}>Metro Quadrado</option>
-                                        <option value="m3" ${isEdit && produto.unidade === 'm3' ? 'selected' : ''}>Metro Cúbico</option>
-                                    </select>
-                                </div>
-
+                                ${cabecalhoDominioProduto('fas fa-id-card', '1 · Identificação')}
                                 <div class="col-12 mb-3">
-                                    <div class="form-check form-switch">
-                                        <input
-                                            class="form-check-input"
-                                            type="checkbox"
-                                            id="produto_fracionado"
-                                            ${isEdit && produtoEhFracionado(produto) ? 'checked' : ''}
-                                        >
-                                        <label class="form-check-label" for="produto_fracionado">
-                                            Vendido por Peso
-                                        </label>
-                                    </div>
-
-                                    <div class="ms-4 mt-2 d-none" id="painelVendaUnidadeCadastro">
-                                        <div class="form-check form-switch mb-2">
-                                            <input
-                                                class="form-check-input"
-                                                type="checkbox"
-                                                id="permite_venda_unidade"
-                                                ${permiteVendaUnidadeInicial ? 'checked' : ''}
-                                            >
-                                            <label class="form-check-label" for="permite_venda_unidade">
-                                                Permitir venda por unidade
-                                            </label>
-                                        </div>
-
-                                        <div class="ms-4 d-none" id="painelCamposVendaUnidadeCadastro">
+                                    <div class="card">
+                                        <div class="card-body">
                                             <div class="row">
-                                                <div class="col-md-6 mb-3 mb-md-0">
-                                                    <label for="peso_medio_unidade" class="form-label">Peso médio da unidade (KG)</label>
-                                                    <input
-                                                        type="number"
-                                                        step="0.001"
-                                                        min="0"
-                                                        class="form-control"
-                                                        id="peso_medio_unidade"
-                                                        placeholder="Ex.: 0,450"
-                                                        value="${pesoMedioUnidadeInicial > 0 ? pesoMedioUnidadeInicial : ''}"
-                                                    >
+                                                <div class="col-md-8 mb-3">
+                                                    <label for="nome" class="form-label">Nome / Descrição *</label>
+                                                    <input type="text" class="form-control" id="nome" required value="${isEdit ? escapeHtml(produto.nome || '') : ''}">
                                                 </div>
-                                                <div class="col-md-6">
-                                                    <label for="preco_unidade" class="form-label">Preço por unidade (R$)</label>
-                                                    <input
-                                                        type="number"
-                                                        step="0.01"
-                                                        min="0"
-                                                        class="form-control"
-                                                        id="preco_unidade"
-                                                        placeholder="Ex.: 3,50"
-                                                        value="${precoUnidadeInicial > 0 ? precoUnidadeInicial : ''}"
-                                                    >
+                                                <div class="col-md-4 mb-3">
+                                                    <label for="codigo_barras" class="form-label">Código de barras</label>
+                                                    <input type="text" class="form-control" id="codigo_barras" value="${isEdit ? escapeHtml(produto.codigo_barras || '') : ''}">
                                                 </div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <div class="col-12 d-none" id="painelInfoConversaoUnidadesCadastro">
-                                    <div class="alert alert-info py-2 mb-2">
-                                        <strong>Motor de Conversão de Unidades</strong>
-                                        <small class="d-block mt-1">
-                                            Informe o <strong>valor total pago</strong> e a <strong>quantidade convertida</strong>.
-                                            O sistema calcula automaticamente o custo por unidade de venda.
-                                        </small>
-                                        <small class="text-warning d-none mt-1" id="avisoUnidadeConversaoCadastro">
-                                            Selecione uma unidade fracionável (KG, MT, LT, M², M³, etc.).
-                                        </small>
-                                    </div>
-                                </div>
-
-                                <div class="col-12 d-none" id="painelCalcularCustoUnitarioCadastro">
-                                    <div class="card border-primary mb-2">
-                                        <div class="card-body py-2">
-                                            <div class="row g-2 align-items-end">
-                                                <div class="col-md-4">
-                                                    <label for="cadastro_valor_total_referencia" class="form-label">Valor Total Pago (R$)</label>
-                                                    <input
-                                                        type="number"
-                                                        step="0.01"
-                                                        min="0"
-                                                        class="form-control"
-                                                        id="cadastro_valor_total_referencia"
-                                                        placeholder="Ex.: 50,67"
-                                                        value="${refValorInicial !== '' ? refValorInicial : ''}"
-                                                    >
-                                                </div>
-                                                <div class="col-md-4">
-                                                    <label for="cadastro_quantidade_total_referencia" class="form-label">
-                                                        Quantidade Total
-                                                        <small class="text-muted">(Fiscal + Não Fiscal)</small>
-                                                    </label>
-                                                    <input
-                                                        type="number"
-                                                        step="0.001"
-                                                        min="0"
-                                                        class="form-control bg-light"
-                                                        id="cadastro_quantidade_total_referencia"
-                                                        placeholder="Soma automática do estoque"
-                                                        value="${refQtdInicial !== '' ? refQtdInicial : ''}"
-                                                        readonly
-                                                    >
-                                                </div>
-                                                <div class="col-md-4">
-                                                    <label class="form-label">Fórmula</label>
-                                                    <div class="form-control bg-light" id="formula_custo_unitario_cadastro" style="min-height: 38px;">
-                                                        —
+                                                <div class="col-12 mb-2" id="wrapCodigoUxMaster">
+                                                    <div class="d-flex align-items-center gap-2 flex-wrap">
+                                                        <span class="text-muted small" id="codigoAutoHintUx">Código gerado automaticamente ao salvar</span>
+                                                        <button type="button" class="btn btn-link btn-sm px-0" id="btnEditarCodigoUx">Editar código</button>
+                                                    </div>
+                                                    <div class="${isEdit ? '' : 'd-none'}" id="areaCodigoManualUx">
+                                                        <label for="codigo" class="form-label">Código</label>
+                                                        <input type="text" class="form-control" id="codigo" value="${isEdit ? escapeHtml(produto.codigo || '') : ''}" ${isEdit ? '' : 'readonly'}>
                                                     </div>
                                                 </div>
                                             </div>
@@ -1684,268 +2467,528 @@ function showProdutoModal(produto = null) {
                                     </div>
                                 </div>
 
-                                <div class="col-md-4 mb-3">
-                                    <label for="preco_compra" class="form-label" id="label_preco_compra_produto">Preço de Compra</label>
-                                    <input
-                                        type="number"
-                                        step="${usaConversaoInicial ? '0.0001' : '0.01'}"
-                                        class="form-control${usaConversaoInicial ? ' bg-light' : ''}"
-                                        id="preco_compra"
-                                        value="${precoCompraInicial}"
-                                        ${usaConversaoInicial ? 'readonly' : ''}
-                                    >
-                                    <small class="text-muted d-none" id="hint_preco_compra_produto">
-                                        Calculado automaticamente. Ex.: R$ 50,67 ÷ 50 MT = R$ 1,1334/MT
-                                    </small>
+                                ${cabecalhoDominioProduto('fas fa-store', '2 · Comercial')}
+                                <div class="col-12 mb-3">
+                                    <div class="card border-primary border-opacity-25" id="cardComercialRcm82">
+                                        <div class="card-header bg-primary bg-opacity-10 py-2 d-flex justify-content-between align-items-start flex-wrap gap-2">
+                                            <div>
+                                                <strong class="text-uppercase small tracking-wide">Comercial</strong>
+                                                <small class="text-muted d-block">O que o Produto conhece — preços ficam na Central de Precificação</small>
+                                            </div>
+                                            <div class="d-flex flex-wrap gap-1">
+                                                <span id="indicadorComercialRcm871" class="badge bg-secondary align-self-center">—</span>
+                                                <button type="button" class="btn btn-sm btn-outline-secondary" id="btnVerificarCoberturaRcm871" title="Verificação de Consistência">Cobertura</button>
+                                                <button type="button" class="btn btn-sm btn-outline-success" id="btnSimularPrecoRcm871" ${isEdit && produto?.id ? '' : 'disabled'}>Simular Preço</button>
+                                                <button type="button" class="btn btn-sm btn-outline-primary" id="btnAnalisarProdutoRcm87" ${isEdit && produto?.id ? '' : 'disabled'} title="Auditoria Comercial via Motor Oficial">
+                                                    <i class="fas fa-stethoscope me-1"></i> Analisar
+                                                </button>
+                                                <button type="button" class="btn btn-sm btn-outline-dark" id="btnCopiarConfigComercialRcm871" title="Copiar Grupo, Linha, Forma e Atacado de outro produto">Copiar</button>
+                                            </div>
+                                        </div>
+                                        <div class="card-body">
+                                            <div class="row g-3">
+                                                <div class="col-md-6">
+                                                    <label for="categoria_id" class="form-label">
+                                                        Grupo Comercial
+                                                        <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip" title="Classificação do produto. Não define preço."></i>
+                                                    </label>
+                                                    <div class="input-group">
+                                                        <select class="form-control" id="categoria_id"><option value="">Carregando...</option></select>
+                                                        <button type="button" class="btn btn-outline-secondary" id="btnAbrirGrupoComercialRcm871" title="Abrir Grupo Comercial">Abrir</button>
+                                                    </div>
+                                                </div>
+                                                <div class="col-md-6 d-none" id="wrapSubcategoriaUxMaster">
+                                                    <label for="subcategoria_id" class="form-label">Subcategoria</label>
+                                                    <select class="form-control" id="subcategoria_id"><option value="">Selecione um grupo</option></select>
+                                                </div>
+
+                                                <div class="col-md-6">
+                                                    <label for="unidade" class="form-label" id="label_unidade_produto">Unidade Base</label>
+                                                    <select class="form-control" id="unidade">
+                                                        <option value="un" ${!isEdit || produto.unidade === 'un' || !produto.unidade ? 'selected' : ''}>Unidade (UN)</option>
+                                                        <option value="kg" ${isEdit && produto.unidade === 'kg' ? 'selected' : ''}>Quilograma</option>
+                                                        <option value="g" ${isEdit && produto.unidade === 'g' ? 'selected' : ''}>Grama</option>
+                                                        <option value="l" ${isEdit && produto.unidade === 'l' ? 'selected' : ''}>Litro</option>
+                                                        <option value="ml" ${isEdit && produto.unidade === 'ml' ? 'selected' : ''}>Mililitro</option>
+                                                        <option value="mt" ${isEdit && produto.unidade === 'mt' ? 'selected' : ''}>Metro</option>
+                                                        <option value="m2" ${isEdit && produto.unidade === 'm2' ? 'selected' : ''}>Metro Quadrado</option>
+                                                        <option value="m3" ${isEdit && produto.unidade === 'm3' ? 'selected' : ''}>Metro Cúbico</option>
+                                                    </select>
+                                                    <small class="text-muted">Unidade de estoque. A unidade de venda vem da Central de Precificação.</small>
+                                                </div>
+
+                                                <div class="col-12">
+                                                    <label for="linha_comercial_trigger" class="form-label">
+                                                        Linha de Precificação
+                                                        <span class="badge bg-secondary ms-1">Opcional</span>
+                                                        <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip"
+                                                           title="Produtos da mesma Linha de Precificação compartilham os preços cadastrados na Central de Precificação."></i>
+                                                    </label>
+                                                    <div class="d-flex flex-wrap gap-2 align-items-start">
+                                                        <div class="cds-linha-picker flex-grow-1" id="linha_comercial_picker" style="min-width:220px;">
+                                                            <input type="hidden" id="linha_comercial_id" value="">
+                                                            <button type="button" class="form-select text-start cds-linha-picker__trigger"
+                                                                    id="linha_comercial_trigger"
+                                                                    aria-haspopup="listbox"
+                                                                    aria-expanded="false">
+                                                                Sem linha — Produto com Precificação Própria
+                                                            </button>
+                                                            <div class="cds-linha-picker__panel d-none" id="linha_comercial_panel" role="listbox">
+                                                                <div class="p-2 border-bottom sticky-top bg-white">
+                                                                    <input type="search" class="form-control form-control-sm" id="linha_comercial_busca"
+                                                                        placeholder="Pesquisar código ou nome..." autocomplete="off">
+                                                                </div>
+                                                                <div id="linha_comercial_lista"></div>
+                                                            </div>
+                                                        </div>
+                                                        <button type="button" class="btn btn-outline-primary btn-sm" id="btnAbrirCentralLinhaRcm871" title="Abrir Central filtrando a Linha">Central</button>
+                                                        <button type="button" class="btn btn-outline-secondary btn-sm" id="btnSugerirLinhaRcm871" title="Em breve: sugestão automática de Linha">✨ Sugerir Linha</button>
+                                                    </div>
+                                                    <div id="painelLinhaInteligenteRcm87" class="border rounded p-3 mt-2 bg-light"></div>
+                                                    <div id="painelOndeVendidoRcm871" class="border rounded p-3 mt-2"></div>
+                                                    <div id="painelResumoComercialRcm871" class="border rounded p-3 mt-2 bg-white"></div>
+                                                </div>
+
+                                                <div class="col-md-6" id="grupoPrecoSeguranca">
+                                                    <div class="border border-warning rounded p-3 bg-warning bg-opacity-10 h-100">
+                                                        <label for="preco_venda" class="form-label fw-semibold mb-1">
+                                                            Preço de Segurança (Fallback) *
+                                                            <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip"
+                                                               title="Utilizado apenas quando não existir preço na Central de Precificação."></i>
+                                                        </label>
+                                                        <input type="number" step="0.01" class="form-control border-warning" id="preco_venda" required value="${isEdit ? Number(produto.preco_venda || 0) : 0}">
+                                                        <small class="text-muted d-block mt-1">Utilizado apenas quando não existir um preço configurado na Central de Precificação.</small>
+                                                    </div>
+                                                </div>
+
+                                                <div class="col-md-6">
+                                                    <label class="form-label d-block">
+                                                        Participa do Atacado
+                                                        <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip"
+                                                           title="Define apenas se o produto pode participar das operações de atacado. O preço sempre será obtido na Central de Precificação."></i>
+                                                    </label>
+                                                    <div class="btn-group" role="group" aria-label="Participa do Atacado">
+                                                        <input type="radio" class="btn-check" name="participa_atacado" id="participa_atacado_sim" value="1"
+                                                            ${(isEdit ? Number(produto.participa_atacado ?? 1) !== 0 : true) ? 'checked' : ''}>
+                                                        <label class="btn btn-outline-success btn-sm" for="participa_atacado_sim">Sim</label>
+                                                        <input type="radio" class="btn-check" name="participa_atacado" id="participa_atacado_nao" value="0"
+                                                            ${(isEdit && Number(produto.participa_atacado ?? 1) === 0) ? 'checked' : ''}>
+                                                        <label class="btn btn-outline-secondary btn-sm" for="participa_atacado_nao">Não</label>
+                                                    </div>
+                                                    <small class="text-muted d-block mt-1">Não é preço — só elegibilidade na operação Atacado.</small>
+                                                </div>
+
+                                                <div class="col-12"><hr class="my-1"></div>
+                                                <div class="col-12">
+                                                    <label class="form-label d-block mb-2">Forma de Comercialização</label>
+                                                    <div class="d-flex flex-wrap gap-3" id="grupoFormaComercializacao">
+                                                        ${['UNIDADE', 'PESO', 'VOLUME', 'CASQUINHA', 'PERSONALIZADA'].map((forma) => {
+                                                            const labels = {
+                                                                UNIDADE: 'Unidade',
+                                                                PESO: 'Peso',
+                                                                VOLUME: 'Volume',
+                                                                CASQUINHA: 'Casquinha',
+                                                                PERSONALIZADA: 'Personalizada'
+                                                            };
+                                                            const checked = (isEdit
+                                                                ? String(produto.forma_comercializacao || (produtoEhFracionado(produto)
+                                                                    ? (['l', 'ml'].includes(String(produto.unidade || '').toLowerCase()) ? 'VOLUME' : 'PESO')
+                                                                    : 'UNIDADE')).toUpperCase()
+                                                                : 'UNIDADE') === forma;
+                                                            return `
+                                                            <div class="form-check">
+                                                                <input class="form-check-input" type="radio" name="forma_comercializacao"
+                                                                    id="forma_${forma.toLowerCase()}" value="${forma}" ${checked ? 'checked' : ''}>
+                                                                <label class="form-check-label" for="forma_${forma.toLowerCase()}">${labels[forma]}</label>
+                                                            </div>`;
+                                                        }).join('')}
+                                                    </div>
+                                                </div>
+
+                                                <div class="col-12 d-none" id="painelFormaPesoVolume">
+                                                    <div class="row g-2">
+                                                        <div class="col-md-4">
+                                                            <label for="unidade_venda" class="form-label">Unidade de Venda *</label>
+                                                            <select class="form-select" id="unidade_venda">
+                                                                <option value="">Selecione</option>
+                                                                <option value="KG">Kg</option>
+                                                                <option value="G">g</option>
+                                                                <option value="L">Litro</option>
+                                                                <option value="ML">ml</option>
+                                                            </select>
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                <div class="col-12 d-none" id="painelFormaCasquinha">
+                                                    <div class="row g-2">
+                                                        <div class="col-md-3">
+                                                            <label for="bolas_min" class="form-label">Qtd. mínima de bolas *</label>
+                                                            <input type="number" step="1" min="1" class="form-control" id="bolas_min"
+                                                                value="${isEdit && Number(produto.bolas_min || produto.quantidade_bolas || 0) > 0
+                                                                    ? Number(produto.bolas_min || 1)
+                                                                    : (isEdit && Number(produto.quantidade_bolas || 0) > 0 ? 1 : '')}">
+                                                        </div>
+                                                        <div class="col-md-3">
+                                                            <label for="bolas_max" class="form-label">Qtd. máxima de bolas *</label>
+                                                            <input type="number" step="1" min="1" class="form-control" id="bolas_max"
+                                                                value="${isEdit && Number(produto.bolas_max || produto.quantidade_bolas || 0) > 0
+                                                                    ? Number(produto.bolas_max || produto.quantidade_bolas)
+                                                                    : ''}">
+                                                        </div>
+                                                        <div class="col-md-3">
+                                                            <label for="peso_medio_bola" class="form-label">Peso médio/bola (g)</label>
+                                                            <input type="number" step="0.01" min="0" class="form-control" id="peso_medio_bola"
+                                                                value="${isEdit && Number(produto.peso_medio_bola || 0) > 0 ? Number(produto.peso_medio_bola) : ''}"
+                                                                placeholder="Opcional (estoque futuro)">
+                                                        </div>
+                                                        <input type="hidden" id="quantidade_bolas" value="${isEdit && Number(produto.quantidade_bolas || 0) > 0 ? Number(produto.quantidade_bolas) : ''}">
+                                                    </div>
+                                                    <small class="text-muted">O PDV abre o Montador de Casquinha com as opções entre mínimo e máximo.</small>
+                                                </div>
+
+                                                <div class="col-12 d-none" id="painelFormaPersonalizada">
+                                                    <div class="row g-2">
+                                                        <div class="col-md-6">
+                                                            <label for="forma_personalizada_nome" class="form-label">Nome da Forma *</label>
+                                                            <input type="text" class="form-control" id="forma_personalizada_nome" maxlength="120"
+                                                                value="${isEdit ? escapeHtml(produto.forma_personalizada_nome || '') : ''}">
+                                                        </div>
+                                                        <div class="col-md-4">
+                                                            <label for="forma_personalizada_unidade" class="form-label">Unidade *</label>
+                                                            <input type="text" class="form-control" id="forma_personalizada_unidade" maxlength="40"
+                                                                placeholder="Ex.: UN, CX, PCT"
+                                                                value="${isEdit ? escapeHtml(produto.forma_personalizada_unidade || '') : ''}">
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                <!-- Flags internas sincronizadas pela Forma de Comercialização -->
+                                                <input type="hidden" id="tabela_preco_id" value="">
+                                                <input type="checkbox" class="d-none" id="produto_fracionado" ${isEdit && produtoEhFracionado(produto) ? 'checked' : ''} tabindex="-1" aria-hidden="true">
+                                                <input type="checkbox" class="d-none" id="permite_venda_unidade" ${permiteVendaUnidadeInicial ? 'checked' : ''} tabindex="-1" aria-hidden="true">
+                                                <input type="hidden" id="peso_medio_unidade" value="${pesoMedioUnidadeInicial > 0 ? pesoMedioUnidadeInicial : ''}">
+                                                <input type="hidden" id="preco_unidade" value="${precoUnidadeInicial > 0 ? precoUnidadeInicial : ''}">
+                                            </div>
+                                        </div>
+                                    </div>
                                 </div>
 
-                                <div class="col-md-4 mb-3">
-                                    <label for="lucro_percentual" class="form-label">% Lucro Real</label>
-                                    <input
-                                        type="number"
-                                        step="0.01"
-                                        class="form-control"
-                                        id="lucro_percentual"
-                                        placeholder="%"
-                                        value="${lucro}"
-                                    >
+                                ${cabecalhoDominioProduto('fas fa-balance-scale', '3 · Unidades')}
+                                <div class="col-12 mb-3">
+                                    <div class="card" id="cardPesoProdutoUx">
+                                        <div class="card-body">
+                                            <div class="form-check form-switch mb-2">
+                                                <input class="form-check-input" type="checkbox" id="utiliza_conversao_fisica" ${isEdit && Number(produto.utiliza_conversao_fisica || 0) === 1 ? 'checked' : ''} ${isEdit && produto?.tem_movimentacoes && Number(produto.utiliza_conversao_fisica || 0) === 1 ? 'disabled' : ''}>
+                                                <label class="form-check-label" for="utiliza_conversao_fisica">Este produto é pesado na entrada da compra</label>
+                                            </div>
+                                            <div class="${isEdit && Number(produto.utiliza_conversao_fisica || 0) === 1 ? '' : 'd-none'}" id="painelConversaoFisicaUc01">
+                                                <div class="row g-2 align-items-end">
+                                                    <div class="col-md-12">
+                                                        <label class="form-label mb-1">Converter</label>
+                                                        <div class="d-flex flex-wrap align-items-center gap-2">
+                                                            <span class="fw-semibold">1 <span id="uc01_unidade_base_readonly_label">${escapeHtml(String((isEdit ? produto.unidade : 'un') || 'un').toUpperCase())}</span></span>
+                                                            <span class="text-muted">equivale aproximadamente a</span>
+                                                            <input type="number" step="0.001" min="0" class="form-control" style="max-width: 120px;" id="peso_referencia_aproximado" placeholder="Ex.: 1" title="Referência visual — não altera regras do sistema">
+                                                            <select class="form-control" style="max-width: 140px;" id="unidade_conversao_fisica">
+                                                                <option value="">Selecione</option>
+                                                                <option value="KG" ${isEdit && String(produto.unidade_conversao_fisica || '').toUpperCase() === 'KG' ? 'selected' : ''}>kg</option>
+                                                                <option value="G" ${isEdit && String(produto.unidade_conversao_fisica || '').toUpperCase() === 'G' ? 'selected' : ''}>gramas</option>
+                                                                <option value="L" ${isEdit && String(produto.unidade_conversao_fisica || '').toUpperCase() === 'L' ? 'selected' : ''}>litros</option>
+                                                                <option value="ML" ${isEdit && String(produto.unidade_conversao_fisica || '').toUpperCase() === 'ML' ? 'selected' : ''}>ml</option>
+                                                                <option value="UN" ${isEdit && String(produto.unidade_conversao_fisica || '').toUpperCase() === 'UN' ? 'selected' : ''}>unidade</option>
+                                                                <option value="MT" ${isEdit && String(produto.unidade_conversao_fisica || '').toUpperCase() === 'MT' ? 'selected' : ''}>metro</option>
+                                                                <option value="CM" ${isEdit && String(produto.unidade_conversao_fisica || '').toUpperCase() === 'CM' ? 'selected' : ''}>cm</option>
+                                                            </select>
+                                                        </div>
+                                                        <input type="hidden" id="uc01_unidade_base_readonly" value="${escapeHtml(String((isEdit ? produto.unidade : 'un') || 'un').toUpperCase())}">
+                                                        <small class="text-muted d-block mt-2">Esse valor serve apenas como referência. O peso real será informado na Entrada da Compra.</small>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="alert alert-secondary py-2 mb-0 mt-2 ${isEdit && produto?.tem_movimentacoes && Number(produto.utiliza_conversao_fisica || 0) === 1 ? '' : 'd-none'}" id="avisoPesoControladoPorLote">
+                                                Controlado por lote. Ajuste o peso nas entradas e no Ajuste de Estoque.
+                                            </div>
+                                        </div>
+                                    </div>
                                 </div>
 
-                                <div class="col-md-4 mb-3">
-                                    <label for="preco_venda" class="form-label">Preço de Venda *</label>
-                                    <input
-                                        type="number"
-                                        step="0.01"
-                                        class="form-control"
-                                        id="preco_venda"
-                                        required
-                                        value="${isEdit ? Number(produto.preco_venda || 0) : 0}"
-                                    >
+                                ${cabecalhoDominioProduto('fas fa-exchange-alt', '3a · Conversões')}
+                                <div class="col-12 mb-3" id="secaoConversoesProdutoRcm89" style="${isEdit ? '' : 'display:none;'}">
+                                    <div class="card" id="cardConversoesProdutoRcm89">
+                                        <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2 py-2">
+                                            <div>
+                                                <strong>Conversões</strong>
+                                                <span class="badge bg-secondary ms-1">MUC</span>
+                                            </div>
+                                            <button type="button" class="btn btn-sm btn-outline-primary" id="btnTestarConversaoRcm89" ${isEdit ? '' : 'disabled'}>
+                                                <i class="fas fa-flask me-1"></i> Testar Conversão
+                                            </button>
+                                        </div>
+                                        <div class="card-body">
+                                            <p class="small text-muted mb-3">
+                                                Conversões específicas deste produto (ex.: densidade LT→KG).
+                                                Pares universais (L↔ML, KG↔G, M↔CM, M²↔CM², M³↔CM³) já são conhecidos pelo MUC e não precisam ser cadastrados.
+                                                Não altera preço — só estoque.
+                                            </p>
+                                            <div class="row g-2 align-items-end mb-3" id="formNovaConversaoRcm89">
+                                                <div class="col-md-3">
+                                                    <label class="form-label small mb-1" for="conv_origem_rcm89">Origem</label>
+                                                    <input type="text" class="form-control form-control-sm text-uppercase" id="conv_origem_rcm89"
+                                                        maxlength="12" placeholder="Ex.: LT"
+                                                        value="${isEdit ? escapeHtml(String((produto.unidade || 'UN')).toUpperCase()) : ''}">
+                                                </div>
+                                                <div class="col-md-3">
+                                                    <label class="form-label small mb-1" for="conv_destino_rcm89">Destino</label>
+                                                    <input type="text" class="form-control form-control-sm text-uppercase" id="conv_destino_rcm89"
+                                                        maxlength="12" placeholder="Ex.: KG" list="conv_unidades_sugeridas_rcm89">
+                                                    <datalist id="conv_unidades_sugeridas_rcm89">
+                                                        <option value="LT"><option value="L"><option value="ML">
+                                                        <option value="KG"><option value="G">
+                                                        <option value="UN"><option value="M"><option value="CM">
+                                                        <option value="M2"><option value="CM2"><option value="M3"><option value="CM3">
+                                                        <option value="PEÇA"><option value="CX">
+                                                    </datalist>
+                                                </div>
+                                                <div class="col-md-2">
+                                                    <label class="form-label small mb-1" for="conv_fator_rcm89">Fator</label>
+                                                    <input type="number" step="any" min="0" class="form-control form-control-sm" id="conv_fator_rcm89" placeholder="0,58">
+                                                </div>
+                                                <div class="col-md-2">
+                                                    <label class="form-label small mb-1" for="conv_tipo_rcm89">Tipo</label>
+                                                    <select class="form-control form-control-sm" id="conv_tipo_rcm89">
+                                                        <option value="FIXA" selected>Fixa</option>
+                                                    </select>
+                                                </div>
+                                                <div class="col-md-2">
+                                                    <button type="button" class="btn btn-sm btn-primary w-100" id="btnAdicionarConversaoRcm89" ${isEdit ? '' : 'disabled'}>
+                                                        <i class="fas fa-plus me-1"></i> Adicionar
+                                                    </button>
+                                                </div>
+                                            </div>
+                                            <div class="table-responsive">
+                                                <table class="table table-sm table-hover mb-0 align-middle">
+                                                    <thead class="table-light">
+                                                        <tr>
+                                                            <th>Origem</th>
+                                                            <th>Destino</th>
+                                                            <th>Fator</th>
+                                                            <th>Tipo</th>
+                                                            <th class="text-end" style="width:90px;"></th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody id="tbodyConversoesRcm89">
+                                                        <tr><td colspan="5" class="text-muted text-center py-3">Salve o produto para cadastrar conversões.</td></tr>
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                            <div id="painelSimularConversaoRcm89" class="border rounded p-3 mt-3 bg-light d-none">
+                                                <div class="fw-semibold mb-2">Testar Conversão</div>
+                                                <div class="row g-2 align-items-end">
+                                                    <div class="col-md-3">
+                                                        <label class="form-label small mb-1" for="sim_qtd_rcm89">Quantidade</label>
+                                                        <input type="number" step="any" min="0" class="form-control form-control-sm" id="sim_qtd_rcm89" value="1">
+                                                    </div>
+                                                    <div class="col-md-3">
+                                                        <label class="form-label small mb-1" for="sim_origem_rcm89">De</label>
+                                                        <input type="text" class="form-control form-control-sm text-uppercase" id="sim_origem_rcm89" maxlength="12">
+                                                    </div>
+                                                    <div class="col-md-3">
+                                                        <label class="form-label small mb-1" for="sim_destino_rcm89">Para</label>
+                                                        <input type="text" class="form-control form-control-sm text-uppercase" id="sim_destino_rcm89" maxlength="12">
+                                                    </div>
+                                                    <div class="col-md-3">
+                                                        <button type="button" class="btn btn-sm btn-success w-100" id="btnExecutarSimulacaoRcm89">Calcular</button>
+                                                    </div>
+                                                </div>
+                                                <div id="sim_resultado_rcm89" class="mt-2 small"></div>
+                                            </div>
+                                        </div>
+                                    </div>
                                 </div>
 
+                                ${cabecalhoDominioProduto('fas fa-cubes', '3b · Formas de Venda (Unidades Comerciais)')}
+                                <div class="row" id="secaoUnidadesComercializacaoUc01" style="${isEdit ? '' : 'display:none;'}">
+                                    <div class="col-12 mb-3">
+                                        <div class="card">
+                                            <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2 py-2">
+                                                <strong>Formas de Venda</strong>
+                                                <button type="button" class="btn btn-sm btn-primary" id="btnAdicionarUnidadeUc01" ${isEdit ? '' : 'disabled'}>
+                                                    <i class="fas fa-plus me-1"></i> Adicionar
+                                                </button>
+                                            </div>
+                                            <div class="card-body">
+                                                <p class="small text-muted mb-3">
+                                                    Estoque na unidade <strong id="uc01UnidadeBaseLabel">${isEdit ? escapeHtml((produto.unidade || 'UN').toUpperCase()) : '—'}</strong>.
+                                                    ${isEdit ? 'Cada card é uma forma de comprar ou vender.' : 'Salve o produto para liberar as formas de venda.'}
+                                                </p>
+                                                <div class="row g-2 mb-3 align-items-end d-none" id="uc01ToolbarCards">
+                                                    <div class="col-md-5">
+                                                        <label class="form-label small mb-1" for="uc01BuscaCards">Pesquisar</label>
+                                                        <input type="search" class="form-control form-control-sm" id="uc01BuscaCards"
+                                                            placeholder="Nome ou unidade…" autocomplete="off">
+                                                    </div>
+                                                    <div class="col-md-7">
+                                                        <label class="form-label small mb-1 d-block">Filtros</label>
+                                                        <div class="btn-group btn-group-sm flex-wrap" role="group" id="uc01FiltrosCards">
+                                                            <button type="button" class="btn btn-outline-secondary active" data-filtro-uc01="todos">Todos</button>
+                                                            <button type="button" class="btn btn-outline-secondary" data-filtro-uc01="compra">Compra</button>
+                                                            <button type="button" class="btn btn-outline-secondary" data-filtro-uc01="venda">Venda</button>
+                                                            <button type="button" class="btn btn-outline-secondary" data-filtro-uc01="pdv">PDV</button>
+                                                            <button type="button" class="btn btn-outline-secondary" data-filtro-uc01="ativos">Ativos</button>
+                                                            <button type="button" class="btn btn-outline-secondary" data-filtro-uc01="inativos">Inativos</button>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div id="gradeCardsUnidadesUc01" class="row g-3">
+                                                    <div class="col-12 text-muted text-center py-3">Carregando...</div>
+                                                </div>
+                                                <div id="tbodyUnidadesUc01" class="d-none" aria-hidden="true"></div>
+                                                <table id="tabelaUnidadesUc01" class="d-none" aria-hidden="true"><tbody></tbody></table>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-12 mb-3" id="avisoUc01NovoProduto" style="${isEdit ? 'display:none;' : ''}">
+                                    <small class="text-muted">Após salvar, o sistema cria a forma de venda padrão automaticamente.</small>
+                                </div>
+
+                                ${cabecalhoDominioProduto('fas fa-warehouse', '4 · Estoque')}
                                 <div id="areaCamposEstoqueProduto" style="display: contents;">
                                 ${montarHtmlCamposEstoqueProduto(produto, isEdit, {
                                     temMovimentacoes: produto?.tem_movimentacoes
                                 })}
                                 </div>
-
                                 <div class="col-md-4 mb-3">
                                     <label for="estoque_minimo" class="form-label">Estoque Mínimo</label>
-                                    <input
-                                        type="number"
-                                        step="${usaConversaoInicial ? '0.001' : '0.01'}"
-                                        class="form-control"
-                                        id="estoque_minimo"
-                                        value="${isEdit ? Number(produto.estoque_minimo || 0) : 0}"
-                                    >
+                                    <input type="number" step="${usaConversaoInicial ? '0.001' : '0.01'}" class="form-control" id="estoque_minimo" value="${isEdit ? Number(produto.estoque_minimo || 0) : 0}">
                                 </div>
-
-                                <div class="col-md-4 mb-3">
-                                    <label for="valor_total_compra_preview" class="form-label">Valor Total Compra</label>
-                                    <input
-                                        type="text"
-                                        class="form-control bg-light fw-semibold"
-                                        id="valor_total_compra_preview"
-                                        readonly
-                                        value="${formatCurrency((estoqueTotalInicial || 0) * (Number(precoCompraInicial) || 0))}"
-                                    >
-                                    <small class="text-muted">Estoque total × preço de compra</small>
-                                </div>
-
-                                <div class="col-md-4 mb-3">
-                                    <label for="valor_total_venda_preview" class="form-label">Valor Total Venda</label>
-                                    <input
-                                        type="text"
-                                        class="form-control bg-light fw-semibold text-success"
-                                        id="valor_total_venda_preview"
-                                        readonly
-                                        value="${formatCurrency((estoqueTotalInicial || 0) * (Number(isEdit ? produto.preco_venda : 0) || 0))}"
-                                    >
-                                    <small class="text-muted">Estoque total × preço de venda</small>
-                                </div>
-
-                                <div class="col-md-12 mb-3 position-relative">
-                                    <label for="fornecedor" class="form-label">Fornecedor</label>
-                                    <input
-                                        type="text"
-                                        class="form-control"
-                                        id="fornecedor"
-                                        autocomplete="off"
-                                        value="${isEdit ? escapeHtml(produto.fornecedor || '') : ''}"
-                                    >
-                                    <div
-                                        id="fornecedor-autocomplete"
-                                        class="list-group position-absolute w-100"
-                                        style="z-index: 9999; display: none;"
-                                    ></div>
-                                </div>
-
                                 <div class="col-12">
                                     <div class="row g-3 border rounded p-3 mb-2 bg-light">
                                         <div class="col-md-12">
                                             <div class="form-check">
-                                                <input
-                                                    class="form-check-input"
-                                                    type="checkbox"
-                                                    id="controlar_validade"
-                                                    ${isEdit && Number(produto.controlar_validade || 0) === 1 ? 'checked' : ''}
-                                                >
-                                                <label class="form-check-label" for="controlar_validade">
-                                                    Controlar validade deste produto
-                                                </label>
+                                                <input class="form-check-input" type="checkbox" id="controlar_validade" ${isEdit && Number(produto.controlar_validade || 0) === 1 ? 'checked' : ''}>
+                                                <label class="form-check-label" for="controlar_validade">Controlar validade deste produto</label>
                                             </div>
                                         </div>
                                     </div>
                                 </div>
-
-                                <!-- Campos para lote inicial (apenas quando controlar_validade está marcado) -->
                                 <div class="col-12" id="areaLoteInicial" style="display: none;">
                                     <div class="row g-3 border rounded p-3 mb-2 bg-info bg-opacity-10">
                                         <div class="col-md-12">
-                                            <strong>Informações do Lote Inicial</strong>
-                                            <small class="text-muted d-block">Informe a validade do estoque. Em produtos novos ou sem lote, o sistema cria o lote automaticamente.</small>
+                                            <strong>Validade inicial</strong>
+                                            <small class="text-muted d-block">Informe a validade do estoque. Em produtos novos, o sistema cria o lote automaticamente.</small>
                                         </div>
                                         <div class="col-md-4">
                                             <label for="data_validade_inicial" class="form-label">Data Validade *</label>
-                                            <input
-                                                type="date"
-                                                id="data_validade_inicial"
-                                                class="form-control"
-                                                value="${isEdit ? (produto.data_validade_inicial || produto.data_validade || '') : ''}"
-                                            >
+                                            <input type="date" id="data_validade_inicial" class="form-control" data-campo-implantacao="1" value="${isEdit ? (produto.data_validade_inicial || produto.data_validade || '') : ''}">
                                         </div>
                                         <div class="col-md-4">
                                             <label for="dias_alerta_validade" class="form-label">Alertar (dias)</label>
-                                            <input
-                                                type="number"
-                                                id="dias_alerta_validade"
-                                                class="form-control"
-                                                value="${isEdit ? Number(produto.dias_alerta_validade || 30) : 30}"
-                                                min="1"
-                                            >
+                                            <input type="number" id="dias_alerta_validade" class="form-control" data-campo-implantacao="1" value="${isEdit ? Number(produto.dias_alerta_validade || 30) : 30}" min="1">
                                         </div>
                                     </div>
                                 </div>
-                            </div>
 
-                            <div class="card mt-3">
-                                <div class="card-header p-2">
-                                    <button class="btn btn-link text-decoration-none" type="button" data-bs-toggle="collapse" data-bs-target="#dadosFiscaisSection" aria-expanded="true" aria-controls="dadosFiscaisSection">
-                                        Dados Fiscais
-                                    </button>
-                                </div>
-                                <div id="dadosFiscaisSection" class="collapse show">
-                                    <div class="card-body">
-                                        <div class="row">
-                                            <div class="col-md-3 mb-3">
-                                                <label for="ncm" class="form-label">NCM</label>
-                                                <input type="text" class="form-control" id="ncm" value="${isEdit ? escapeHtml(produto.ncm || '') : ''}">
-                                            </div>
-                                            <div class="col-md-3 mb-3">
-                                                <label for="cfop" class="form-label">CFOP</label>
-                                                <input type="text" class="form-control" id="cfop" value="${isEdit ? escapeHtml(produto.cfop || '') : ''}">
-                                            </div>
-                                            <div class="col-md-3 mb-3">
-                                                <label for="csosn" class="form-label">CSOSN</label>
-                                                <input type="text" class="form-control" id="csosn" value="${isEdit ? escapeHtml(produto.csosn || '') : ''}">
-                                            </div>
-                                            <div class="col-md-3 mb-3">
-                                                <label for="origem" class="form-label">Origem</label>
-                                                <input type="number" class="form-control" id="origem" value="${isEdit ? Number(produto.origem || 0) : 0}">
-                                            </div>
-
-                                            <div class="col-md-4 mb-3">
-                                                <label for="cest" class="form-label">CEST</label>
-                                                <input type="text" class="form-control" id="cest" value="${isEdit ? escapeHtml(produto.cest || '') : ''}">
-                                            </div>
-                                            <div class="col-md-4 mb-3">
-                                                <label for="codigo_barras" class="form-label">Código de barras</label>
-                                                <input type="text" class="form-control" id="codigo_barras" value="${isEdit ? escapeHtml(produto.codigo_barras || '') : ''}">
-                                            </div>
-                                            <div class="col-md-4 mb-3">
-                                                <label for="aliquota_icms" class="form-label">Alíquota ICMS</label>
-                                                <input type="number" step="0.01" class="form-control" id="aliquota_icms" value="${isEdit ? Number(produto.aliquota_icms || 0) : 0}">
-                                            </div>
-                                            <div class="col-md-4 mb-3">
-                                                <label for="aliquota_pis" class="form-label">Alíquota PIS</label>
-                                                <input type="number" step="0.01" class="form-control" id="aliquota_pis" value="${isEdit ? Number(produto.aliquota_pis || 0) : 0}">
-                                            </div>
-                                            <div class="col-md-4 mb-3">
-                                                <label for="aliquota_cofins" class="form-label">Alíquota COFINS</label>
-                                                <input type="number" step="0.01" class="form-control" id="aliquota_cofins" value="${isEdit ? Number(produto.aliquota_cofins || 0) : 0}">
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <!-- Venda em Atacado -->
-                                    <div class="col-12">
-                                        <div class="card mt-2">
-                                            <div class="card-header d-flex align-items-center justify-content-between">
-                                                <strong>Venda em Atacado</strong>
-                                                <div class="form-check form-switch mb-0">
-                                                    <input class="form-check-input" type="checkbox" id="venda_atacado" ${isEdit && Number(produto.venda_atacado || 0) === 1 ? 'checked' : ''}>
+                                ${cabecalhoDominioProduto('fas fa-coins', '5 · Custos')}
+                                <div class="col-12 mb-3" id="dominioCustosProduto">
+                                    <div class="card">
+                                        <div class="card-body">
+                                            <p class="text-muted small mb-3">
+                                                Esta seção apresenta o custo atual do produto.<br>
+                                                O cálculo do custo é realizado durante o processo de Compra ou pela importação de NF-e.<br>
+                                                O Último Custo pode ser informado manualmente quando a empresa não utilizar o módulo de Compras.
+                                            </p>
+                                            <div class="row g-2">
+                                                <div class="col-md-4 mb-3">
+                                                    <label for="preco_compra" class="form-label" id="label_preco_compra_produto">Último Custo</label>
+                                                    <input type="number" step="0.01" class="form-control" id="preco_compra" value="${precoCompraInicial}">
+                                                    <small class="text-muted" id="hint_preco_compra_produto">Editável para implantação, ajustes manuais ou empresas sem módulo de Compras.</small>
                                                 </div>
-                                            </div>
-                                            <div class="card-body" id="areaVendaAtacado" style="display: none;">
-                                                <div class="table-responsive">
-                                                    <table class="table table-sm table-striped" id="tabelaAtacado">
-                                                        <thead>
-                                                            <tr>
-                                                                <th>Quantidade</th>
-                                                                <th>%</th>
-                                                                <th>Preço Atacado</th>
-                                                                <th></th>
-                                                            </tr>
-                                                        </thead>
-                                                        <tbody>
-                                                            <!-- Faixas serão carregadas dinamicamente -->
-                                                        </tbody>
-                                                    </table>
+                                                <div class="col-md-4 mb-3">
+                                                    <label class="form-label">Custo Médio</label>
+                                                    <input type="text" class="form-control bg-light" id="custo_medio_produto_readonly" readonly
+                                                        value="${custoMedioExibicao}">
+                                                    <small class="text-muted">Somente leitura. Calculado nas entradas de compra.</small>
                                                 </div>
-                                                <div class="d-flex gap-2">
-                                                    <button type="button" class="btn btn-success btn-sm" id="btnAdicionarFaixa">+ Adicionar Faixa</button>
+                                                <div class="col-md-4 mb-3 position-relative">
+                                                    <label for="fornecedor" class="form-label">Fornecedor Preferencial</label>
+                                                    <input type="text" class="form-control" id="fornecedor" autocomplete="off" value="${isEdit ? escapeHtml(produto.fornecedor || '') : ''}">
+                                                    <div id="fornecedor-autocomplete" class="list-group position-absolute w-100" style="z-index: 9999; display: none;"></div>
+                                                </div>
+                                                <div class="col-md-8 mb-2">
+                                                    <label class="form-label">Última Compra</label>
+                                                    <div class="form-control bg-light" id="ultima_compra_produto_readonly" style="min-height: 38px;">
+                                                        Sem histórico
+                                                    </div>
+                                                    <small class="text-muted">Data · Documento · Fornecedor — disponível quando houver histórico de compras.</small>
+                                                </div>
+                                                <div class="col-md-4 mb-2 d-flex align-items-end">
+                                                    <button type="button" class="btn btn-outline-secondary w-100" id="btnVerHistoricoCustosProduto"
+                                                        disabled title="Disponível em breve">
+                                                        Ver Histórico de Custos
+                                                    </button>
                                                 </div>
                                             </div>
                                         </div>
                                     </div>
                                 </div>
 
-                                <div class="row mt-3" id="secaoUnidadesComerciaisMuc" style="${isEdit ? '' : 'display:none;'}">
-                                    <div class="col-12">
-                                        <div class="card border-primary">
-                                            <div class="card-header d-flex justify-content-between align-items-center">
-                                                <strong><i class="fas fa-balance-scale me-2"></i>Unidades Comerciais (MUC)</strong>
-                                                <button type="button" class="btn btn-sm btn-primary" id="btnAdicionarUnidadeMuc" ${isEdit ? '' : 'disabled'}>
-                                                    + Adicionar Unidade
-                                                </button>
-                                            </div>
+                                ${cabecalhoDominioProduto('fas fa-file-invoice', '6 · Fiscal')}
+                                <div class="col-12 mb-3" id="dominioFiscalProduto">
+                                    <div class="card">
+                                        <div class="card-header p-2">
+                                            <button class="btn btn-link text-decoration-none" type="button" data-bs-toggle="collapse" data-bs-target="#dadosFiscaisSection" aria-expanded="false" aria-controls="dadosFiscaisSection">
+                                                <i class="fas fa-file-invoice me-1"></i> Abrir dados fiscais
+                                            </button>
+                                        </div>
+                                        <div id="dadosFiscaisSection" class="collapse" data-cpe1-lazy="fiscal">
                                             <div class="card-body">
-                                                <p class="small text-muted mb-2">
-                                                    Estoque e custo permanecem na unidade base (<strong id="mucUnidadeBaseLabel">${isEdit ? escapeHtml((produto.unidade || 'UN').toUpperCase()) : '—'}</strong>).
-                                                    ${isEdit ? '' : 'Salve o produto primeiro para cadastrar unidades adicionais.'}
-                                                </p>
-                                                <div class="table-responsive">
-                                                    <table class="table table-sm table-striped mb-0" id="tabelaUnidadesMuc">
-                                                        <thead>
-                                                            <tr>
-                                                                <th>Unidade</th>
-                                                                <th>Fator → base</th>
-                                                                <th>Preço</th>
-                                                                <th>Cód. barras</th>
-                                                                <th>Principal</th>
-                                                                <th>Ativo</th>
-                                                                <th></th>
-                                                            </tr>
-                                                        </thead>
-                                                        <tbody id="tbodyUnidadesMuc">
-                                                            <tr><td colspan="7" class="text-muted text-center">Carregando...</td></tr>
-                                                        </tbody>
-                                                    </table>
+                                                <div class="row">
+                                                    <div class="col-md-3 mb-3"><label for="ncm" class="form-label">NCM</label><input type="text" class="form-control" id="ncm" value="${isEdit ? escapeHtml(produto.ncm || '') : ''}"></div>
+                                                    <div class="col-md-3 mb-3"><label for="cfop" class="form-label">CFOP</label><input type="text" class="form-control" id="cfop" value="${isEdit ? escapeHtml(produto.cfop || '') : ''}"></div>
+                                                    <div class="col-md-3 mb-3"><label for="csosn" class="form-label">CSOSN</label><input type="text" class="form-control" id="csosn" value="${isEdit ? escapeHtml(produto.csosn || '') : ''}"></div>
+                                                    <div class="col-md-3 mb-3"><label for="origem" class="form-label">Origem</label><input type="number" class="form-control" id="origem" value="${isEdit ? Number(produto.origem || 0) : 0}"></div>
+                                                    <div class="col-md-4 mb-3"><label for="cest" class="form-label">CEST</label><input type="text" class="form-control" id="cest" value="${isEdit ? escapeHtml(produto.cest || '') : ''}"></div>
+                                                    <div class="col-md-4 mb-3"><label for="aliquota_icms" class="form-label">Alíquota ICMS</label><input type="number" step="0.01" class="form-control" id="aliquota_icms" value="${isEdit ? Number(produto.aliquota_icms || 0) : 0}"></div>
+                                                    <div class="col-md-4 mb-3"><label for="aliquota_pis" class="form-label">Alíquota PIS</label><input type="number" step="0.01" class="form-control" id="aliquota_pis" value="${isEdit ? Number(produto.aliquota_pis || 0) : 0}"></div>
+                                                    <div class="col-md-4 mb-3"><label for="aliquota_cofins" class="form-label">Alíquota COFINS</label><input type="number" step="0.01" class="form-control" id="aliquota_cofins" value="${isEdit ? Number(produto.aliquota_cofins || 0) : 0}"></div>
                                                 </div>
                                             </div>
                                         </div>
                                     </div>
                                 </div>
+
+                                ${cabecalhoDominioProduto('fas fa-history', '7 · Histórico')}
+                                <div class="col-12 mb-3" id="dominioHistoricoProduto">
+                                    <div class="card bg-light">
+                                        <div class="card-body">
+                                            <p class="small text-muted mb-3">Somente leitura — referência operacional do produto.</p>
+                                            <div class="row g-2">
+                                                <div class="col-md-4"><label class="form-label small text-muted mb-0">Última Compra</label>
+                                                    <div class="fw-semibold">Sem histórico</div></div>
+                                                <div class="col-md-4"><label class="form-label small text-muted mb-0">Último Custo</label>
+                                                    <div class="fw-semibold">${isEdit ? ('R$ ' + Number(produto.preco_compra || 0).toFixed(2)) : '—'}</div></div>
+                                                <div class="col-md-4"><label class="form-label small text-muted mb-0">Custo Médio</label>
+                                                    <div class="fw-semibold">${isEdit && produto.custo_medio != null && produto.custo_medio !== '' ? ('R$ ' + Number(produto.custo_medio).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })) : 'Não calculado'}</div></div>
+                                                <div class="col-md-4"><label class="form-label small text-muted mb-0">Última Venda</label>
+                                                    <div class="fw-semibold">${isEdit ? escapeHtml(produto.data_ultima_venda || produto.ultima_venda || '—') : '—'}</div></div>
+                                                <div class="col-md-4"><label class="form-label small text-muted mb-0">Linha de Precificação</label>
+                                                    <div class="fw-semibold" id="hist_linha_precificacao">${isEdit && produto.linha_comercial_id
+                                                        ? ('#' + produto.linha_comercial_id)
+                                                        : 'Produto com precificação própria'}</div></div>
+                                                <div class="col-md-4"><label class="form-label small text-muted mb-0">Contexto de preço</label>
+                                                    <div class="fw-semibold">Tabela da operação → Resolver Oficial</div></div>
+                                                <div class="col-md-4"><label class="form-label small text-muted mb-0">Última Alteração</label>
+                                                    <div class="fw-semibold">${isEdit ? escapeHtml(produto.updated_at || produto.atualizado_em || '—') : '—'}</div></div>
+                                                <div class="col-md-4"><label class="form-label small text-muted mb-0">Usuário</label>
+                                                    <div class="fw-semibold">${isEdit ? escapeHtml(produto.updated_by || produto.usuario || '—') : '—'}</div></div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
+
                         </form>
                     </div>
 
@@ -1960,11 +3003,27 @@ function showProdutoModal(produto = null) {
 
     $('#modal-container').html(modalHtml);
 
-    $('#produtoModal').modal('show');
-    // inicializar armazenamento temporário de faixas (para produto novo)
-    const faixasInit = (produto && Array.isArray(produto.atacado_faixas)) ? produto.atacado_faixas : [];
-    $('#produtoModal').data('faixasTemp', faixasInit);
+    // Electron: backdrop static evita fechar ao clicar em lista/select nativo
+    const produtoModalEl = document.getElementById('produtoModal');
+    if (produtoModalEl && window.bootstrap?.Modal) {
+        bootstrap.Modal.getOrCreateInstance(produtoModalEl, {
+            backdrop: 'static',
+            keyboard: true,
+            focus: true
+        }).show();
+    } else {
+        $('#produtoModal').modal({ backdrop: 'static', keyboard: true, show: true });
+    }
+    // RA-6.5.1 — tooltips Bootstrap no cadastro
+    try {
+        document.querySelectorAll('#produtoModal [data-bs-toggle="tooltip"]').forEach(function (el) {
+            bootstrap.Tooltip.getOrCreateInstance(el);
+        });
+    } catch (_) { /* ignore */ }
     $('#produtoModal').data('temMovimentacoes', Boolean(produto?.tem_movimentacoes));
+    prepararBloqueioImplantacaoProduto(
+        avaliarFaseCadastroProduto(isEdit, Boolean(produto?.tem_movimentacoes))
+    );
     if (isEdit && produto) {
         $('#produtoModal').data('produtoSaldos', {
             saldo_fiscal: produto.saldo_fiscal,
@@ -1980,10 +3039,17 @@ function showProdutoModal(produto = null) {
     inicializarCalculoPreco(produto, isEdit);
     inicializarMotorConversaoUnidadesCadastro();
     inicializarVendaUnidadeCadastro(produto, isEdit);
-    inicializarVendaAtacado(produto, isEdit);
+    inicializarLinhaComercialProduto(produto, isEdit);
+    inicializarFormaComercializacaoProduto(produto, isEdit);
     if (isEdit && produto?.id) {
-        inicializarUnidadesComerciaisMuc(produto.id);
+        inicializarUnidadesComercializacaoUc01(produto.id);
+        inicializarConversoesProdutoRcm89(produto.id);
     }
+
+    inicializarConversaoFisicaUc01(produto, isEdit);
+    inicializarCodigoAutomaticoUxMaster(isEdit);
+    inicializarSubcategoriaProgressivaUxMaster();
+    atualizarResumoInteligenteProduto();
 
     if (isEdit && produto) {
         $('#controlar_validade').prop('checked', produto.controlar_validade == 1);
@@ -1995,6 +3061,15 @@ function showProdutoModal(produto = null) {
     inicializarControleLoteInicial();
     inicializarPreviewEstoqueTotalInicial();
     inicializarEspelhoCodigoBarras(produto, isEdit);
+
+    // CP-E1: libera cálculos só após montagem (evita validação/cálculo no open/reset)
+    setTimeout(function () {
+        window._cpe1SuspenderCalculosProduto = false;
+    }, 250);
+
+    $('#produtoModal').off('hidden.bs.modal.cpe1').on('hidden.bs.modal.cpe1', function () {
+        window._cpe1SuspenderCalculosProduto = true;
+    });
 
     if (!isEdit) {
         aplicarPadraoFiscalNovoProduto();
@@ -2039,6 +3114,97 @@ async function aplicarPadraoFiscalNovoProduto() {
     }
 }
 window.aplicarPadraoFiscalNovoProduto = aplicarPadraoFiscalNovoProduto;
+
+function inicializarCodigoAutomaticoUxMaster(isEdit) {
+    const $area = $('#areaCodigoManualUx');
+    const $hint = $('#codigoAutoHintUx');
+    const $btn = $('#btnEditarCodigoUx');
+    const $codigo = $('#codigo');
+    if (!$codigo.length) return;
+
+    if (isEdit) {
+        $area.removeClass('d-none');
+        $codigo.prop('readonly', false);
+        $hint.addClass('d-none');
+        $btn.addClass('d-none');
+        return;
+    }
+
+    $area.addClass('d-none');
+    $codigo.prop('readonly', true).val('');
+    $hint.removeClass('d-none');
+    $btn.removeClass('d-none');
+
+    $btn.off('click.uxMaster01').on('click.uxMaster01', function () {
+        $area.removeClass('d-none');
+        $codigo.prop('readonly', false);
+        if (!$codigo.val()) {
+            $codigo.val(gerarCodigoProdutoAutomatico());
+        }
+        $codigo.focus();
+        $hint.text('Código manual — deixe em branco para gerar automaticamente ao salvar.');
+    });
+}
+
+function inicializarSubcategoriaProgressivaUxMaster() {
+    const sync = () => {
+        const catId = $('#categoria_id').val();
+        const $wrap = $('#wrapSubcategoriaUxMaster');
+        if (!$wrap.length) return;
+        const cat = (window.categoriasSistema || []).find((c) => String(c.id) === String(catId));
+        const temSubs = Boolean(cat && Array.isArray(cat.subcategorias) && cat.subcategorias.length);
+        $wrap.toggleClass('d-none', !temSubs);
+        if (!temSubs) {
+            $('#subcategoria_id').val('');
+        }
+    };
+    $('#categoria_id').off('change.uxMaster01Sub').on('change.uxMaster01Sub', sync);
+    setTimeout(sync, 300);
+}
+
+function garantirUcPadraoAposCriacao(produtoSalvo) {
+    const dfd = $.Deferred();
+    const produtoId = produtoSalvo?.id;
+    if (!produtoId) {
+        return dfd.resolve().promise();
+    }
+
+    const unBase = String(produtoSalvo.unidade || $('#unidade').val() || 'un').toUpperCase();
+    const headers = { Authorization: 'Bearer ' + (localStorage.getItem('token') || '') };
+
+    $.get(`${API_URL}/produtos/${produtoId}/unidades-comercializacao`)
+        .done((payload) => {
+            const items = Array.isArray(payload?.items) ? payload.items : (Array.isArray(payload) ? payload : []);
+            if (items.length > 0) {
+                dfd.resolve(null);
+                return;
+            }
+            const body = {
+                descricao: unBase,
+                tipo: 'PADRAO',
+                unidade_comercial: unBase,
+                quantidade: 1,
+                unidade_base: unBase,
+                unidade_padrao: 1,
+                conversao_por_lote: 0,
+                canais_comercializacao: { compra: 1, venda: 1, pdv: 1 },
+                ativo: 1
+            };
+            $.ajax({
+                url: `${API_URL}/produtos/${produtoId}/unidades-comercializacao`,
+                method: 'POST',
+                contentType: 'application/json',
+                headers,
+                data: JSON.stringify(body)
+            }).done((res) => dfd.resolve(res)).fail(() => dfd.resolve(null));
+        })
+        .fail(() => dfd.resolve(null));
+
+    return dfd.promise();
+}
+
+window.garantirUcPadraoAposCriacao = garantirUcPadraoAposCriacao;
+window.gerarCodigoProdutoAutomatico = gerarCodigoProdutoAutomatico;
 
 function inicializarEspelhoCodigoBarras(produto, isEdit) {
     const $modal = $('#produtoModal');
@@ -2266,455 +3432,22 @@ function inicializarAutocompleteFornecedor() {
     });
 }
 
-// ---------- Venda em Atacado (frontend helpers) ----------
-function inicializarVendaAtacado(produto, isEdit) {
-    const produtoId = produto && produto.id ? String(produto.id) : null;
-    const ativo = isEdit && Number(produto.venda_atacado || 0) === 1;
+// RCM-8.6.2 — UI de faixas/margem atacado removida do Cadastro de Produtos.
+// Preço oficial: Linha (opcional) + Tabela da operação via Resolver; Preço de Segurança = fallback.
 
-    $('#venda_atacado').off('change').on('change', function() {
-        const checked = $(this).is(':checked');
-        $('#areaVendaAtacado').toggle(checked);
-        // atualizar flag local no produto (quando existir)
-        if (produto && produto.id) produto.venda_atacado = checked ? 1 : 0;
-    });
-
-    // Botão adicionar faixa
-    $('#btnAdicionarFaixa').off('click').on('click', function() {
-        adicionarFaixaPrompt(produtoId);
-    });
-
-    if (ativo) {
-        $('#areaVendaAtacado').show();
-        renderFaixasAtacado(produtoId);
-    } else {
-        $('#areaVendaAtacado').hide();
-    }
-}
-
-function renderFaixasAtacado(produtoId) {
-    const $tbody = $('#tabelaAtacado tbody');
-    $tbody.html('');
-    if (!produtoId) {
-        // carregar faixas temporárias do modal
-        const faixasTemp = $('#produtoModal').data('faixasTemp') || [];
-        faixasTemp.forEach((r, idx) => {
-            const tr = `
-                <tr data-temp-index="${idx}">
-                    <td>${r.quantidade_minima}</td>
-                    <td>${formatarPercentualPorPrecoAtacado(r.preco_atacado)}</td>
-                    <td>${formatCurrency(r.preco_atacado)}</td>
-                    <td class="text-end">
-                        <button class="btn btn-sm btn-outline-primary me-1" onclick="editarFaixaPromptTemp(${idx})">Editar</button>
-                        <button class="btn btn-sm btn-outline-danger" onclick="excluirFaixaTemp(${idx})">Excluir</button>
-                    </td>
-                </tr>
-            `;
-            $tbody.append(tr);
-        });
-        return;
-    }
-
-    $.ajax({
-        url: `${API_URL}/produtos/${produtoId}/atacado`,
-        method: 'GET',
-        headers: { Authorization: 'Bearer ' + (localStorage.getItem('token') || '') },
-        success: function(rows) {
-            (rows || []).forEach(r => {
-                const tr = `
-                    <tr data-id="${r.id}">
-                        <td>${r.quantidade_minima}</td>
-                        <td>${formatarPercentualPorPrecoAtacado(r.preco_atacado)}</td>
-                        <td>${formatCurrency(r.preco_atacado)}</td>
-                        <td class="text-end">
-                            <button class="btn btn-sm btn-outline-primary me-1" onclick="editarFaixaPrompt(${r.id})">Editar</button>
-                            <button class="btn btn-sm btn-outline-danger" onclick="excluirFaixa(${r.id}, ${produtoId})">Excluir</button>
-                        </td>
-                    </tr>
-                `;
-                $tbody.append(tr);
-            });
-        },
-        error: function() {
-            showNotification('Erro ao carregar faixas de atacado.', 'danger');
-        }
-    });
-}
-
-function adicionarFaixaPrompt(produtoId) {
-    // Abre uma linha de inserção embutida na tabela de faixas (não usa prompt())
-    const $tbody = $('#tabelaAtacado tbody');
-    if ($tbody.find('tr[data-editing="nova"]').length) return; // já aberta
-
-    const tr = $(
-        `
-        <tr data-editing="nova">
-            <td><input type="number" min="1" class="form-control form-control-sm input-quantidade" placeholder="Quantidade mínima"></td>
-            <td><input type="number" min="0" step="0.01" class="form-control form-control-sm input-percentual" placeholder="% Atacado"></td>
-            <td><input type="text" class="form-control form-control-sm input-preco" placeholder="Preço atacado"></td>
-            <td class="text-end">
-                <button type="button" class="btn btn-sm btn-success btn-salvar-nova me-1">Salvar faixa</button>
-                <button type="button" class="btn btn-sm btn-secondary btn-cancelar-nova">Cancelar</button>
-            </td>
-        </tr>
-    `);
-
-    $tbody.prepend(tr);
-    fixarEventosFaixaRow(tr);
-
-    // marcar o tr com o produtoId para que handlers genéricos o encontrem
-    if (produtoId) tr.attr('data-produto-id', produtoId);
-
-    // salvar ao pressionar Enter na linha ou ao sair do campo de preço; Esc cancela (remove a linha)
-    function salvarNova() {
-        const dados = extrairDadosFaixaLinha(tr);
-        if (!dados) {
-            showNotification('Informe quantidade mínima e percentual/preço válidos.', 'warning');
-            return;
-        }
-
-        const pid = tr.data('produto-id');
-        if (!pid) {
-            const faixasTemp = $('#produtoModal').data('faixasTemp') || [];
-            faixasTemp.push(dados);
-            $('#produtoModal').data('faixasTemp', faixasTemp);
-            tr.remove();
-            renderFaixasAtacado(null);
-            showNotification('Faixa adicionada. Salve o produto para persistir.', 'success');
-            return;
-        }
-
-        $.ajax({
-            url: `${API_URL}/produtos/${pid}/atacado`,
-            method: 'POST',
-            global: false,
-            headers: { Authorization: 'Bearer ' + (localStorage.getItem('token') || '') },
-            contentType: 'application/json',
-            data: JSON.stringify(dados),
-            success: function() {
-                renderFaixasAtacado(pid);
-                showNotification('Faixa adicionada com sucesso', 'success');
-            },
-            error: function(xhr) {
-                console.error('Erro ao adicionar faixa:', xhr.status, xhr.responseJSON);
-                let err = xhr.responseJSON?.error || 'Erro ao adicionar faixa';
-                if (xhr.status === 403) {
-                    err = 'Você não tem permissão para gerenciar faixas de atacado';
-                } else if (xhr.status === 401) {
-                    err = 'Sua sessão expirou. Faça login novamente';
-                }
-                showNotification(err, 'danger');
-            }
-        });
-    }
-
-    tr.find('input').on('keydown', function(e) {
-        if (e.key === 'Enter') {
-            e.preventDefault();
-            salvarNova();
-        } else if (e.key === 'Escape') {
-            tr.remove();
-        }
-    });
-
-    tr.find('.btn-salvar-nova').on('click', function() {
-        salvarNova();
-    });
-
-    tr.find('.btn-cancelar-nova').on('click', function() {
-        tr.remove();
-    });
-}
-
-function editarFaixaPrompt(faixaId) {
-    // Editar faixa existente no servidor inline na tabela
-    const $tr = $(`#tabelaAtacado tr[data-id='${faixaId}']`);
-    if ($tr.length === 0) return showNotification('Faixa não encontrada', 'danger');
-    // buscar dados atuais
-    $.ajax({ url: `${API_URL}/produtos/atacado/${faixaId}`, method: 'GET', headers: { Authorization: 'Bearer ' + (localStorage.getItem('token') || '') }, success: function(faixa) {
-        if (!faixa) return showNotification('Faixa não encontrada', 'danger');
-        const originalHtml = $tr.html();
-        $tr.html(`
-            <td><input type="number" min="1" class="form-control form-control-sm input-quantidade" value="${faixa.quantidade_minima}"></td>
-            <td><input type="number" min="0" step="0.01" class="form-control form-control-sm input-percentual" value="${calcularPercentualPorPrecoAtacado(faixa.preco_atacado).toFixed(2)}"></td>
-            <td><input type="text" class="form-control form-control-sm input-preco" value="${faixa.preco_atacado}"></td>
-            <td class="text-end">
-                <button class="btn btn-sm btn-success me-1 btn-salvar-edicao">Salvar</button>
-                <button class="btn btn-sm btn-secondary btn-cancelar-edicao">Cancelar</button>
-            </td>
-        `);
-
-        $tr.find('.btn-cancelar-edicao').on('click', function() { $tr.html(originalHtml); });
-        fixarEventosFaixaRow($tr);
-
-        $tr.find('.btn-salvar-edicao').on('click', function() {
-            const q = parseInt($tr.find('.input-quantidade').val(), 10);
-            const percentual = parseNumero($tr.find('.input-percentual').val());
-            const precoStr = $tr.find('.input-preco').val() || '';
-            const precoManual = parseFloat(precoStr.replace(',', '.'));
-            let preco = (!isNaN(precoManual) && precoManual > 0) ? precoManual : 0;
-            if ((!preco || preco <= 0) && percentual > 0) {
-                preco = obterPrecoPorPercentual(percentual);
-            }
-            if (!q || q <= 0) { showNotification('Quantidade inválida', 'warning'); return; }
-            if (isNaN(preco) || preco <= 0) { showNotification('Preço inválido', 'warning'); return; }
-
-            $.ajax({
-                url: `${API_URL}/produtos/atacado/${faixaId}`,
-                method: 'PUT',
-                global: false,
-                headers: { Authorization: 'Bearer ' + (localStorage.getItem('token') || '') },
-                contentType: 'application/json',
-                data: JSON.stringify({ quantidade_minima: q, preco_atacado: preco }),
-                success: function() {
-                    const pid = $('#produtoId').val();
-                    renderFaixasAtacado(pid);
-                    showNotification('Faixa atualizada', 'success');
-                },
-                error: function(xhr) {
-                    console.error('Erro ao atualizar faixa:', xhr.status, xhr.responseJSON);
-                    let err = xhr.responseJSON?.error || 'Erro ao atualizar faixa';
-                    if (xhr.status === 403) {
-                        err = 'Você não tem permissão para gerenciar faixas de atacado';
-                    } else if (xhr.status === 401) {
-                        err = 'Sua sessão expirou. Faça login novamente';
-                    }
-                    showNotification(err, 'danger');
-                }
-            });
-        });
-    }, error: function() { showNotification('Erro ao buscar faixa', 'danger'); } });
-}
-
-function editarFaixaPromptTemp(index) {
-    const $tr = $(`#tabelaAtacado tr[data-temp-index='${index}']`);
-    const faixasTemp = $('#produtoModal').data('faixasTemp') || [];
-    const faixa = faixasTemp[index];
-    if (!$tr.length || !faixa) return showNotification('Faixa não encontrada localmente', 'danger');
-    const originalHtml = $tr.html();
-    $tr.html(`
-        <td><input type="number" min="1" class="form-control form-control-sm input-quantidade" value="${faixa.quantidade_minima}"></td>
-        <td><input type="number" min="0" step="0.01" class="form-control form-control-sm input-percentual" value="${calcularPercentualPorPrecoAtacado(faixa.preco_atacado).toFixed(2)}"></td>
-        <td><input type="text" class="form-control form-control-sm input-preco" value="${faixa.preco_atacado}"></td>
-        <td class="text-end"></td>
-    `);
-
-    fixarEventosFaixaRow($tr);
-
-    function salvarEdicaoTemp() {
-        const q = parseInt($tr.find('.input-quantidade').val(), 10);
-        const percentual = parseNumero($tr.find('.input-percentual').val());
-        const precoStr = $tr.find('.input-preco').val() || '';
-        const precoManual = parseFloat(precoStr.replace(',', '.'));
-        let preco = (!isNaN(precoManual) && precoManual > 0) ? precoManual : 0;
-        if ((!preco || preco <= 0) && percentual > 0) {
-            preco = obterPrecoPorPercentual(percentual);
-        }
-        if (!q || q <= 0) { showNotification('Quantidade inválida', 'warning'); return; }
-        if (isNaN(preco) || preco <= 0) { showNotification('Preço inválido', 'warning'); return; }
-
-        faixasTemp[index] = { quantidade_minima: q, preco_atacado: preco };
-        $('#produtoModal').data('faixasTemp', faixasTemp);
-        renderFaixasAtacado(null);
-        showNotification('Faixa atualizada localmente. Salve o produto para persistir.', 'success');
-    }
-
-    $tr.find('input').on('keydown', function(e) {
-        if (e.key === 'Enter') {
-            e.preventDefault();
-            salvarEdicaoTemp();
-        } else if (e.key === 'Escape') {
-            $tr.html(originalHtml);
-        }
-    });
-}
-
-function excluirFaixaTemp(index) {
-    if (!confirm('Deseja realmente excluir esta faixa temporária?')) return;
-    const faixasTemp = $('#produtoModal').data('faixasTemp') || [];
-    faixasTemp.splice(index, 1);
-    $('#produtoModal').data('faixasTemp', faixasTemp);
-    renderFaixasAtacado(null);
-}
-
-function excluirFaixa(faixaId, produtoId) {
-    if (!confirm('Deseja realmente excluir esta faixa de atacado?')) return;
-    $.ajax({
-        url: `${API_URL}/produtos/atacado/${faixaId}`,
-        method: 'DELETE',
-        global: false,
-        headers: { Authorization: 'Bearer ' + (localStorage.getItem('token') || '') },
-        success: function() {
-            renderFaixasAtacado(produtoId || $('#produtoId').val());
-            showNotification('Faixa excluída', 'success');
-        },
-        error: function() {
-            showNotification('Erro ao excluir faixa', 'danger');
-        }
-    });
-}
-
-function parseNumero(valor) {
-    return parseFloat(String(valor || '0').replace(',', '.')) || 0;
-}
-
-function calcularPercentualPorPrecoAtacado(precoAtacado) {
-    const precoVenda = parseNumero($('#preco_venda').val());
-    if (precoVenda <= 0) return 0;
-    const precoAtacadoConvertido = parseNumero(precoAtacado);
-    return ((precoVenda - precoAtacadoConvertido) / precoVenda) * 100;
-}
-
-function formatarPercentualPorPrecoAtacado(precoAtacado) {
-    const percentual = calcularPercentualPorPrecoAtacado(precoAtacado);
-    return `${percentual.toFixed(2)}%`;
-}
-
-function obterPrecoPorPercentual(percentual) {
-    const precoVenda = parseNumero($('#preco_venda').val());
-    if (precoVenda <= 0) return 0;
-    return precoVenda * (1 - (parseNumero(percentual) / 100));
-}
-
-function extrairDadosFaixaLinha($tr) {
-    const q = parseInt($tr.find('.input-quantidade').val(), 10);
-    const percentual = parseNumero($tr.find('.input-percentual').val());
-    const precoStr = $tr.find('.input-preco').val() || '';
-    const precoManual = parseFloat(String(precoStr).replace(',', '.'));
-    let preco = (!isNaN(precoManual) && precoManual > 0) ? precoManual : 0;
-
-    if ((!preco || preco <= 0) && percentual > 0) {
-        preco = obterPrecoPorPercentual(percentual);
-    }
-
-    if (!q || q <= 0 || isNaN(preco) || preco <= 0) {
-        return null;
-    }
-
-    return {
-        quantidade_minima: q,
-        preco_atacado: Number(preco.toFixed(2))
-    };
-}
-
-async function commitFaixaAtacadoPendente(produtoId) {
-    const $tr = $('#tabelaAtacado tr[data-editing="nova"]');
-    if (!$tr.length) {
-        return true;
-    }
-
-    const dados = extrairDadosFaixaLinha($tr);
-    if (!dados) {
-        showNotification('Informe quantidade mínima e percentual/preço da faixa de atacado.', 'warning');
-        return false;
-    }
-
-    if (!produtoId) {
-        const faixasTemp = $('#produtoModal').data('faixasTemp') || [];
-        faixasTemp.push(dados);
-        $('#produtoModal').data('faixasTemp', faixasTemp);
-        $tr.remove();
-        return true;
-    }
-
-    try {
-        const response = await fetch(`${API_URL}/produtos/${produtoId}/atacado`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                Authorization: 'Bearer ' + (localStorage.getItem('token') || '')
-            },
-            body: JSON.stringify(dados)
-        });
-
-        if (!response.ok) {
-            const err = await response.json().catch(() => ({}));
-            showNotification(err.error || 'Erro ao salvar faixa de atacado.', 'danger');
-            return false;
-        }
-
-        $tr.remove();
-        renderFaixasAtacado(String(produtoId));
-        return true;
-    } catch (error) {
-        console.error('Erro ao salvar faixa de atacado pendente:', error);
-        showNotification('Erro ao salvar faixa de atacado.', 'danger');
-        return false;
-    }
-}
-
-function fixarEventosFaixaRow($row) {
-    const $percentual = $row.find('.input-percentual');
-    const $preco = $row.find('.input-preco');
-
-    $percentual.off('input').on('input', function() {
-        const valor = parseNumero($percentual.val());
-        const preco = obterPrecoPorPercentual(valor);
-        if (preco > 0) {
-            $preco.val(preco.toFixed(2));
-        }
-    });
-
-    $preco.off('input').on('input', function() {
-        const valor = parseNumero($preco.val());
-        if (valor <= 0) {
-            $percentual.val('0.00');
-            return;
-        }
-        const percentual = calcularPercentualPorPrecoAtacado(valor);
-        $percentual.val(percentual.toFixed(2));
-    });
-}
-
-
-// Inicializa cálculo automático do preço de venda
-function sincronizarFormacaoPrecoProduto(origem = 'init') {
-    const $precoCompra = $('#preco_compra');
-    const $lucro = $('#lucro_percentual');
-    const $precoVenda = $('#preco_venda');
-    if (!$precoCompra.length || !$lucro.length || !$precoVenda.length) return;
-
-    const numero = (valor) => parseFloat(String(valor ?? '').replace(',', '.')) || 0;
-    const precoCompra = numero($precoCompra.val());
-    const precoVenda = numero($precoVenda.val());
-    const lucroInformado = String($lucro.val() ?? '').trim() !== '';
-
-    if (origem === 'venda') {
-        if (precoCompra > 0 && precoVenda > 0) {
-            const lucro = ((precoVenda - precoCompra) / precoCompra) * 100;
-            $lucro.val(lucro.toFixed(2));
-        }
-        atualizarPreviewValorTotalEstoqueCadastro();
-        return;
-    }
-
-    if (origem === 'init' && precoCompra > 0 && precoVenda > 0 && !lucroInformado) {
-        const lucro = ((precoVenda - precoCompra) / precoCompra) * 100;
-        $lucro.val(lucro.toFixed(2));
-        atualizarPreviewValorTotalEstoqueCadastro();
-        return;
-    }
-
-    if (precoCompra > 0) {
-        const lucro = lucroInformado ? numero($lucro.val()) : 0;
-        const novoPrecoVenda = precoCompra + (precoCompra * lucro / 100);
-        $precoVenda.val(novoPrecoVenda.toFixed(2));
-    }
-
+// Atualiza preview de estoque quando custos/preço de segurança mudam (sem formação por margem)
+function sincronizarFormacaoPrecoProduto(_origem = 'init') {
+    if (!$('#preco_compra').length || !$('#preco_venda').length) return;
     atualizarPreviewValorTotalEstoqueCadastro();
 }
 
 function inicializarCalculoPreco(produto, isEdit) {
     const $precoCompra = $('#preco_compra');
-    const $lucro = $('#lucro_percentual');
     const $precoVenda = $('#preco_venda');
 
     $precoCompra
         .off('input.precoMotor change.precoMotor')
         .on('input.precoMotor change.precoMotor', () => sincronizarFormacaoPrecoProduto('compra'));
-
-    $lucro
-        .off('input.precoMotor change.precoMotor')
-        .on('input.precoMotor change.precoMotor', () => sincronizarFormacaoPrecoProduto('lucro'));
 
     $precoVenda
         .off('input.precoMotor change.precoMotor')
@@ -2728,38 +3461,21 @@ function inicializarCalculoPreco(produto, isEdit) {
 async function saveProduto() {
     const id = $('#produtoId').val();
 
-    if ($('#venda_atacado').is(':checked')) {
-        const faixaSalva = await commitFaixaAtacadoPendente(id || null);
-        if (!faixaSalva) {
-            return;
-        }
-    }
-
     const saldosIniciais = obterSaldosIniciaisDoFormulario();
 
     sincronizarFormacaoPrecoProduto('init');
+    sincronizarFlagsLegadasDaForma();
 
-    if ($('#produto_fracionado').is(':checked') && !unidadeVendaSuportaConversao($('#unidade').val())) {
-        showNotification(
-            'Vendido por Peso exige unidade de venda fracionável (KG, MT, LT, M², M³, etc.).',
-            'warning'
-        );
+    if (!validarFormaComercializacaoAntesSalvar()) {
         return;
     }
 
-    if ($('#produto_fracionado').is(':checked')) {
-        calcularCustoUnitarioReferenciaCadastro();
-        const valorRef = parseNumeroCadastro($('#cadastro_valor_total_referencia').val());
-        const qtdRef = parseNumeroCadastro($('#cadastro_quantidade_total_referencia').val());
-        const precoCompra = parseFloat($('#preco_compra').val()) || 0;
-        if (valorRef <= 0 || qtdRef <= 0) {
-            showNotification('Informe valor total pago e quantidade total para calcular o custo por unidade.', 'warning');
-            return;
-        }
-        if (precoCompra <= 0) {
-            showNotification('Não foi possível calcular o custo unitário. Verifique valor e quantidade.', 'warning');
-            return;
-        }
+    if ($('#produto_fracionado').is(':checked') && !unidadeVendaSuportaConversao($('#unidade').val())) {
+        showNotification(
+            'Forma Peso/Volume exige unidade de estoque fracionável (KG, MT, LT, M², M³, etc.).',
+            'warning'
+        );
+        return;
     }
 
     const fracionadoAtivo = $('#produto_fracionado').is(':checked');
@@ -2784,22 +3500,23 @@ async function saveProduto() {
     }
 
     const data = {
-        codigo: ($('#codigo').val() || '').trim(),
+        codigo: ($('#codigo').val() || '').trim() || (!$('#produtoId').val() ? gerarCodigoProdutoAutomatico() : ''),
         nome: ($('#nome').val() || '').trim(),
         categoria_id: $('#categoria_id').val() ? String($('#categoria_id').val()) : null,
         subcategoria_id: $('#subcategoria_id').val() ? String($('#subcategoria_id').val()) : null,
         unidade: ($('#unidade').val() || '').trim(),
         preco_compra: parseFloat($('#preco_compra').val()) || 0,
         preco_venda: parseFloat($('#preco_venda').val()) || 0,
-        lucro_percentual: $('#lucro_percentual').val() !== '' ? parseFloat($('#lucro_percentual').val()) : (
-            (parseFloat($('#preco_compra').val()) || 0) > 0 && (parseFloat($('#preco_venda').val()) || 0) > 0
-                ? parseFloat(((((parseFloat($('#preco_venda').val()) - parseFloat($('#preco_compra').val())) / parseFloat($('#preco_compra').val())) * 100).toFixed(2)))
-                : null
-        ),
+        lucro_percentual: (() => {
+            const compra = parseFloat($('#preco_compra').val()) || 0;
+            const venda = parseFloat($('#preco_venda').val()) || 0;
+            if (compra > 0 && venda > 0) {
+                return Number((((venda - compra) / compra) * 100).toFixed(2));
+            }
+            return null;
+        })(),
         estoque_minimo: parseFloat($('#estoque_minimo').val()) || 0,
         fornecedor: ($('#fornecedor').val() || '').trim(),
-        data_validade: ($('#data_validade').val() || '').trim() || null,
-        lote: ($('#lote').val() || '').trim(),
         dias_alerta_validade: parseInt($('#dias_alerta_validade').val(), 10) || 30,
         controlar_validade: $('#controlar_validade').is(':checked') ? 1 : 0,
         ncm: ($('#ncm').val() || '').trim(),
@@ -2816,21 +3533,26 @@ async function saveProduto() {
         permite_venda_unidade: permiteVendaUnidade ? 1 : 0,
         peso_medio_unidade: permiteVendaUnidade ? pesoMedioUnidade : 0,
         preco_unidade: permiteVendaUnidade ? precoUnidadeVenda : 0,
-        venda_atacado: $('#venda_atacado').is(':checked') ? 1 : 0,
-        // Campos para lote inicial (apenas para novos produtos)
+        // RCM-8.6.2 — faixas produto_atacado fora do cadastro; canal Atacado = Tabela + Resolver
+        venda_atacado: 0,
+        participa_atacado: $('input[name="participa_atacado"]:checked').val() === '0' ? 0 : 1,
+        // RA-6.3: cadastro não vincula produto à tabela (compat DB: sempre null no fluxo oficial)
+        tabela_preco_id: null,
+        linha_comercial_id: $('#linha_comercial_id').val() ? Number($('#linha_comercial_id').val()) : null,
+        forma_comercializacao: obterFormaComercializacaoSelecionada(),
+        unidade_venda: ($('#unidade_venda').val() || '').trim().toUpperCase() || null,
+        quantidade_bolas: parseFloat($('#quantidade_bolas').val()) || parseFloat($('#bolas_max').val()) || 0,
+        bolas_min: parseInt($('#bolas_min').val(), 10) || null,
+        bolas_max: parseInt($('#bolas_max').val(), 10) || null,
+        peso_medio_bola: parseFloat($('#peso_medio_bola').val()) || 0,
+        forma_personalizada_nome: ($('#forma_personalizada_nome').val() || '').trim() || null,
+        forma_personalizada_unidade: ($('#forma_personalizada_unidade').val() || '').trim() || null,
+        utiliza_conversao_fisica: $('#utiliza_conversao_fisica').is(':checked') ? 1 : 0,
+        unidade_conversao_fisica: $('#utiliza_conversao_fisica').is(':checked')
+            ? (($('#unidade_conversao_fisica').val() || '').trim().toUpperCase() || null)
+            : null,
         data_validade_inicial: ($('#data_validade_inicial').val() || '').trim() || null
     };
-
-    if ($('#produto_fracionado').is(':checked')) {
-        const valorRef = parseNumeroCadastro($('#cadastro_valor_total_referencia').val());
-        const qtdRef = parseNumeroCadastro($('#cadastro_quantidade_total_referencia').val());
-        if (valorRef > 0 && qtdRef > 0) {
-            data.valor_total_compra = valorRef;
-            data.peso_total_compra = qtdRef;
-            data.custo_por_kg = parseFloat($('#preco_compra').val()) || 0;
-            data.preco_compra = custoUnitarioVendaCadastro(valorRef / qtdRef);
-        }
-    }
 
     if ($('#saldo_fiscal_inicial').length) {
         data.saldo_fiscal_inicial = saldosIniciais.saldo_fiscal_inicial;
@@ -2859,15 +3581,19 @@ async function saveProduto() {
         return;
     }
 
-    if (data.preco_venda <= 0) {
-        showNotification('Informe um preço de venda válido.', 'warning');
+    if (data.preco_venda <= 0 && !data.linha_comercial_id) {
+        showNotification('Informe um Preço de Segurança válido (ou selecione uma Linha de Precificação).', 'warning');
         $('#preco_venda').focus();
         return;
     }
 
     if (data.preco_compra < 0) {
-        showNotification('Preço de compra inválido.', 'warning');
+        showNotification('Último Custo inválido. Informe um valor maior ou igual a zero na seção Custos.', 'warning');
         $('#preco_compra').focus();
+        const $custos = $('#dominioCustosProduto');
+        if ($custos.length) {
+            $custos[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
         return;
     }
 
@@ -2891,11 +3617,6 @@ async function saveProduto() {
 
     const url = id ? `${API_URL}/produtos/${id}` : `${API_URL}/produtos`;
     const method = id ? 'PUT' : 'POST';
-    // incluir faixas temporárias (se houver) para salvar junto com o produto
-    const faixasTemp = $('#produtoModal').data('faixasTemp');
-    if (!id && Array.isArray(faixasTemp) && faixasTemp.length > 0) {
-        data.atacado_faixas = faixasTemp;
-    }
 
     $.ajax({
         url: url,
@@ -2906,29 +3627,51 @@ async function saveProduto() {
         },
         data: JSON.stringify(data),
         success: function (produtoSalvo) {
-            $('#produtoModal').modal('hide');
-            showNotification('Produto salvo com sucesso!', 'success');
-            // Atualiza lista local se necessário
-            if (window.produtosList && Array.isArray(window.produtosList)) {
-                const produtoNormalizado = normalizarProduto(produtoSalvo, window.categoriasSistema || []);
-                const indexExistente = window.produtosList.findIndex(p => String(p.id) === String(produtoNormalizado.id));
+            const eraCriacao = !id;
+            // CP-E1: suspende cálculos/validações antes de fechar/limpar o modal
+            window._cpe1SuspenderCalculosProduto = true;
+            const finalizar = () => {
+                try {
+                    $('#produtoModal').off('input.previewEstoqueTotal change.previewEstoqueTotal');
+                    $('#produtoModal').off('change.motorConversaoUnidades input.motorConversaoUnidades');
+                    $('#produtoModal').modal('hide');
+                } finally {
+                    setTimeout(function () {
+                        window._cpe1SuspenderCalculosProduto = false;
+                    }, 400);
+                }
+                showNotification('Produto salvo com sucesso!', 'success');
+                if (window.produtosList && Array.isArray(window.produtosList)) {
+                    const produtoNormalizado = normalizarProduto(produtoSalvo, window.categoriasSistema || []);
+                    const indexExistente = window.produtosList.findIndex(p => String(p.id) === String(produtoNormalizado.id));
 
-                if (indexExistente >= 0) {
-                    window.produtosList[indexExistente] = produtoNormalizado;
+                    if (indexExistente >= 0) {
+                        window.produtosList[indexExistente] = produtoNormalizado;
+                    } else {
+                        window.produtosList.unshift(produtoNormalizado);
+                    }
+
+                    if (typeof renderProdutos === 'function') {
+                        renderProdutos(window.produtosList);
+                    }
                 } else {
-                    window.produtosList.unshift(produtoNormalizado);
+                    loadProdutos();
                 }
+            };
 
-                if (typeof renderProdutos === 'function') {
-                    renderProdutos(window.produtosList);
-                }
+            if (eraCriacao && produtoSalvo?.id) {
+                garantirUcPadraoAposCriacao(produtoSalvo).always(finalizar);
             } else {
-                loadProdutos();
+                finalizar();
             }
         },
         error: function (xhr) {
+            window._cpe1SuspenderCalculosProduto = false;
             const erro = xhr.responseJSON?.error || 'Erro desconhecido';
-            showNotification('Erro ao salvar produto: ' + erro, 'danger');
+            showNotification(
+                'Não foi possível salvar o produto: ' + erro + '. Corrija os dados e tente novamente.',
+                'danger'
+            );
         }
     });
 }
@@ -3165,11 +3908,12 @@ function abrirModalAjustarEstoque(produtoId) {
             const opcoesFormato = { produtoFracionado: produtoUsaConversaoUnidades(produto) };
             const stepAjuste = obterStepEstoqueProduto(unidade, opcoesFormato.produtoFracionado);
             const controlaValidade = Number(produto.controlar_validade || 0) === 1;
+            const usaFisica = Number(produto.utiliza_conversao_fisica || 0) === 1;
 
             const camposFiscal = modoFiscal ? `
                 <div class="col-md-6 mb-3">
                     <label class="form-label">Saldo Fiscal Atual</label>
-                    <input type="text" class="form-control bg-light" readonly value="${formatarEstoqueProduto(saldoFiscal, unidade, opcoesFormato)}">
+                    <input type="text" class="form-control bg-light" id="ajuste_saldo_fiscal_atual" readonly value="${formatarEstoqueProduto(saldoFiscal, unidade, opcoesFormato)}">
                 </div>
                 <div class="col-md-6 mb-3">
                     <label for="ajuste_fiscal" class="form-label">Ajuste Fiscal (+/-)</label>
@@ -3178,15 +3922,15 @@ function abrirModalAjustarEstoque(produtoId) {
             ` : `
                 <div class="col-md-4 mb-3">
                     <label class="form-label">Saldo Fiscal Atual</label>
-                    <input type="text" class="form-control bg-light" readonly value="${formatarEstoqueProduto(saldoFiscal, unidade, opcoesFormato)}">
+                    <input type="text" class="form-control bg-light" id="ajuste_saldo_fiscal_atual" readonly value="${formatarEstoqueProduto(saldoFiscal, unidade, opcoesFormato)}">
                 </div>
                 <div class="col-md-4 mb-3">
                     <label class="form-label">Saldo Não Fiscal Atual</label>
-                    <input type="text" class="form-control bg-light" readonly value="${formatarEstoqueProduto(saldoNaoFiscal, unidade, opcoesFormato)}">
+                    <input type="text" class="form-control bg-light" id="ajuste_saldo_nao_fiscal_atual" readonly value="${formatarEstoqueProduto(saldoNaoFiscal, unidade, opcoesFormato)}">
                 </div>
                 <div class="col-md-4 mb-3">
                     <label class="form-label">Estoque Total</label>
-                    <input type="text" class="form-control bg-light" readonly value="${formatarEstoqueProduto(estoqueTotal, unidade, opcoesFormato)}">
+                    <input type="text" class="form-control bg-light" id="ajuste_estoque_total_atual" readonly value="${formatarEstoqueProduto(estoqueTotal, unidade, opcoesFormato)}">
                 </div>
                 <div class="col-md-6 mb-3">
                     <label for="ajuste_fiscal" class="form-label">Ajuste Fiscal (+/-)</label>
@@ -3216,7 +3960,7 @@ function abrirModalAjustarEstoque(produtoId) {
 
             const modalHtml = `
                 <div class="modal fade" id="ajustarEstoqueModal" tabindex="-1" aria-hidden="true">
-                    <div class="modal-dialog">
+                    <div class="modal-dialog modal-lg">
                         <div class="modal-content">
                             <div class="modal-header">
                                 <h5 class="modal-title">Ajustar Estoque — ${escapeHtml(produto.nome || '')}</h5>
@@ -3226,8 +3970,34 @@ function abrirModalAjustarEstoque(produtoId) {
                                 <form id="ajustarEstoqueForm">
                                     <input type="hidden" id="ajuste_produto_id" value="${produtoId}">
                                     <input type="hidden" id="ajuste_controla_validade" value="${controlaValidade ? 1 : 0}">
+                                    <input type="hidden" id="ajuste_unidade_base" value="${escapeHtml(unidade)}">
+                                    <input type="hidden" id="ajuste_utiliza_fisica" value="${usaFisica ? 1 : 0}">
                                     <div class="row">
+                                        <div class="col-md-6 mb-3">
+                                            <label for="ajuste_unidade_origem" class="form-label">Unidade do Ajuste *</label>
+                                            <select class="form-select" id="ajuste_unidade_origem">
+                                                <option value="${escapeHtml(unidade)}">${escapeHtml(unidade || 'UN')} (base)</option>
+                                            </select>
+                                            <small class="text-muted">Unidades carregadas pelo MCC — sem lista fixa.</small>
+                                        </div>
+                                        <div class="col-md-6 mb-3 d-flex align-items-end">
+                                            <div id="ajuste_aviso_fisica" class="small text-muted ${usaFisica ? '' : 'd-none'}">
+                                                Conversão Física: informe apenas a quantidade. A conversão é feita automaticamente pelo sistema.
+                                            </div>
+                                        </div>
                                         ${camposFiscal}
+                                        <div class="col-12 mb-3">
+                                            <div class="card border-0 bg-light">
+                                                <div class="card-body py-2" id="ajuste_preview_mcc">
+                                                    <div class="small text-muted mb-1">Preview (MCC)</div>
+                                                    <div><strong>Quantidade Informada:</strong> <span id="prev_qtd_informada">—</span></div>
+                                                    <div><strong>Quantidade Base:</strong> <span id="prev_qtd_base">—</span></div>
+                                                    <div><strong>Saldo Atual:</strong> <span id="prev_saldo_atual">—</span></div>
+                                                    <div><strong>Saldo Final:</strong> <span id="prev_saldo_final">—</span></div>
+                                                    <div id="prev_erro" class="text-danger small mt-1 d-none"></div>
+                                                </div>
+                                            </div>
+                                        </div>
                                         ${camposValidade}
                                         <div class="col-12 mb-3">
                                             <label for="ajuste_motivo" class="form-label">Motivo *</label>
@@ -3238,7 +4008,7 @@ function abrirModalAjustarEstoque(produtoId) {
                             </div>
                             <div class="modal-footer">
                                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
-                                <button type="button" class="btn btn-primary" onclick="salvarAjusteEstoque()">Confirmar Ajuste</button>
+                                <button type="button" class="btn btn-primary" id="btnConfirmarAjusteEstoque" onclick="salvarAjusteEstoque()">Confirmar Ajuste</button>
                             </div>
                         </div>
                     </div>
@@ -3248,6 +4018,13 @@ function abrirModalAjustarEstoque(produtoId) {
             $('#ajustarEstoqueModal').remove();
             $('#modal-container').append(modalHtml);
             $('#ajustarEstoqueModal').modal('show');
+
+            carregarUnidadesAjusteEstoque(produtoId, unidade).then(() => {
+                atualizarPreviewAjusteEstoque();
+            });
+
+            $('#ajuste_fiscal, #ajuste_nao_fiscal, #ajuste_unidade_origem').off('input.ajusteMcc change.ajusteMcc')
+                .on('input.ajusteMcc change.ajusteMcc', () => atualizarPreviewAjusteEstoque());
         },
         error: function () {
             showNotification('Erro ao carregar produto para ajuste de estoque.', 'danger');
@@ -3256,6 +4033,90 @@ function abrirModalAjustarEstoque(produtoId) {
 }
 window.abrirModalAjustarEstoque = abrirModalAjustarEstoque;
 
+function carregarUnidadesAjusteEstoque(produtoId, unidadeFallback) {
+    return $.ajax({
+        url: `${API_URL}/produtos/${produtoId}/ajuste-estoque/unidades`,
+        method: 'GET',
+        headers: {
+            Authorization: 'Bearer ' + (localStorage.getItem('token') || '')
+        }
+    }).then((meta) => {
+        const $sel = $('#ajuste_unidade_origem');
+        if (!$sel.length) return meta;
+        $sel.empty();
+        const unidades = Array.isArray(meta?.unidades) ? meta.unidades : [];
+        if (!unidades.length) {
+            const base = meta?.unidade_base || unidadeFallback || 'UN';
+            $sel.append(`<option value="${escapeHtml(base)}">${escapeHtml(base)} (base)</option>`);
+            return meta;
+        }
+        unidades.forEach((u) => {
+            const cod = String(u.unidade_comercial || '').toUpperCase();
+            const desc = u.descricao || cod;
+            $sel.append(`<option value="${escapeHtml(cod)}">${escapeHtml(desc)}</option>`);
+        });
+        if (meta.utiliza_conversao_fisica) {
+            $('#ajuste_aviso_fisica').removeClass('d-none');
+            if (!meta.tem_conversao_fisica_ativa) {
+                $('#ajuste_aviso_fisica').html(
+                    'Conversão Física sem lote ativo: ajuste em Unidade Base ou registre a física na Entrada.'
+                );
+            }
+        }
+        return meta;
+    }).catch(() => {
+        const base = unidadeFallback || 'UN';
+        const $sel = $('#ajuste_unidade_origem');
+        if ($sel.length && $sel.find('option').length === 0) {
+            $sel.append(`<option value="${escapeHtml(base)}">${escapeHtml(base)} (base)</option>`);
+        }
+        return null;
+    });
+}
+window.carregarUnidadesAjusteEstoque = carregarUnidadesAjusteEstoque;
+
+let _previewAjusteTimer = null;
+function atualizarPreviewAjusteEstoque() {
+    clearTimeout(_previewAjusteTimer);
+    _previewAjusteTimer = setTimeout(() => {
+        const produtoId = $('#ajuste_produto_id').val();
+        if (!produtoId) return;
+        const modoFiscal = typeof isModoFiscalVisualizacaoAtivo === 'function' && isModoFiscalVisualizacaoAtivo();
+        const payload = {
+            unidade_origem: $('#ajuste_unidade_origem').val(),
+            quantidade_fiscal: parseFloat($('#ajuste_fiscal').val()) || 0,
+            quantidade_nao_fiscal: modoFiscal ? 0 : (parseFloat($('#ajuste_nao_fiscal').val()) || 0)
+        };
+        if (payload.quantidade_fiscal === 0 && payload.quantidade_nao_fiscal === 0) {
+            $('#prev_qtd_informada, #prev_qtd_base, #prev_saldo_atual, #prev_saldo_final').text('—');
+            $('#prev_erro').addClass('d-none').text('');
+            return;
+        }
+        $.ajax({
+            url: `${API_URL}/produtos/${produtoId}/ajuste-estoque/preview`,
+            method: 'POST',
+            contentType: 'application/json',
+            headers: {
+                Authorization: 'Bearer ' + (localStorage.getItem('token') || '')
+            },
+            data: JSON.stringify(payload),
+            success: function (prev) {
+                $('#prev_erro').addClass('d-none').text('');
+                const t = prev.preview_texto || {};
+                $('#prev_qtd_informada').text(t.quantidade_informada || '—');
+                $('#prev_qtd_base').text(t.quantidade_base || '—');
+                $('#prev_saldo_atual').text(t.saldo_atual || '—');
+                $('#prev_saldo_final').text(t.saldo_final || '—');
+            },
+            error: function (xhr) {
+                const erro = xhr.responseJSON?.error || 'Falha no preview MCC';
+                $('#prev_erro').removeClass('d-none').text(erro);
+                $('#prev_qtd_informada, #prev_qtd_base, #prev_saldo_atual, #prev_saldo_final').text('—');
+            }
+        });
+    }, 280);
+}
+window.atualizarPreviewAjusteEstoque = atualizarPreviewAjusteEstoque;
 
 function salvarAjusteEstoque() {
     const produtoId = $('#ajuste_produto_id').val();
@@ -3264,6 +4125,7 @@ function salvarAjusteEstoque() {
     const ajusteNaoFiscal = parseFloat($('#ajuste_nao_fiscal').val()) || 0;
     const controlaValidade = $('#ajuste_controla_validade').val() === '1';
     const modoFiscal = typeof isModoFiscalVisualizacaoAtivo === 'function' && isModoFiscalVisualizacaoAtivo();
+    const unidadeOrigem = ($('#ajuste_unidade_origem').val() || '').trim();
 
     if (!motivo) {
         showNotification('Informe o motivo do ajuste.', 'warning');
@@ -3277,6 +4139,12 @@ function salvarAjusteEstoque() {
         return;
     }
 
+    if (!unidadeOrigem) {
+        showNotification('Selecione a unidade do ajuste.', 'warning');
+        $('#ajuste_unidade_origem').focus();
+        return;
+    }
+
     const ajustePositivo = Math.max(0, ajusteFiscal) + Math.max(0, (modoFiscal ? 0 : ajusteNaoFiscal));
     if (controlaValidade && ajustePositivo > 0 && !($('#ajuste_data_validade').val() || '').trim()) {
         showNotification('Informe a data de validade para ajuste positivo em produto com controle de validade.', 'warning');
@@ -3285,6 +4153,7 @@ function salvarAjusteEstoque() {
     }
 
     const payload = {
+        unidade_origem: unidadeOrigem,
         ajuste_fiscal: ajusteFiscal,
         ajuste_nao_fiscal: modoFiscal ? 0 : ajusteNaoFiscal,
         motivo
@@ -3346,16 +4215,23 @@ function viewProduto(id) {
                             <div class="modal-body">
                                 <p><strong>Nome:</strong> ${escapeHtml(produtoNormalizado.nome || '-')}</p>
                                 <p><strong>Código:</strong> ${escapeHtml(produtoNormalizado.codigo || '-')}</p>
-                                <p><strong>Categoria:</strong> ${escapeHtml(produtoNormalizado.categoria || '-')}</p>
+                                <p><strong>Grupo Comercial:</strong> ${escapeHtml(produtoNormalizado.categoria || '-')}</p>
                                 <p><strong>Subcategoria:</strong> ${escapeHtml(produtoNormalizado.subcategoria || '-')}</p>
-                                <p><strong>Unidade:</strong> ${escapeHtml(produtoNormalizado.unidade || '-')}</p>
+                                <p><strong>Unidade Base:</strong> ${escapeHtml(produtoNormalizado.unidade || '-')}</p>
+                                <p><strong>Linha de Precificação:</strong> ${
+                                    produto.linha_comercial_id
+                                        ? escapeHtml(
+                                            (produto.linha_comercial_descricao || produto.linha_comercial_codigo || ('#' + produto.linha_comercial_id))
+                                          )
+                                        : '<em>Produto com precificação própria</em>'
+                                }</p>
                                 <p><strong>Conversão de Unidades:</strong> ${produtoUsaConversaoUnidades(produtoNormalizado) ? 'Sim (venda fracionada)' : 'Não'}</p>
                                 <p><strong>Preço de Compra:</strong> ${
                                     produtoUsaConversaoUnidades(produtoNormalizado)
                                         ? `R$ ${formatarCustoUnitarioCadastro(produtoNormalizado.preco_compra, true)} / ${escapeHtml(String(produtoNormalizado.unidade || 'un').toUpperCase())}`
                                         : formatCurrency(produtoNormalizado.preco_compra || 0)
                                 }</p>
-                                <p><strong>Preço de Venda:</strong> ${formatCurrency(produtoNormalizado.preco_venda || 0)}</p>
+                                <p><strong>Preço de Segurança:</strong> ${formatCurrency(produtoNormalizado.preco_venda || 0)}</p>
                                 ${formatarEstoqueDetalheProduto(produto)}
                                 <p><strong>Estoque Mínimo:</strong> ${Number(produtoNormalizado.estoque_minimo || 0)}</p>
                                 <p><strong>Fornecedor:</strong> ${escapeHtml(produtoNormalizado.fornecedor || '-')}</p>
@@ -4754,7 +5630,709 @@ function fecharModalVencimentosProdutos() {
     }
 }
 
-/* ========== MUC — Unidades Comerciais ========== */
+/* ========== UC-01.1 — Unidades de Comercialização ========== */
+
+const UC01_TIPOS = [
+    { value: 'PADRAO', label: 'Padrão (estoque)', icone: '', tooltip: 'Mesma unidade do estoque. Quantidade = 1.' },
+    { value: 'AGRUPAMENTO', label: 'Agrupamento', icone: '', tooltip: 'Agrupa várias unidades (ex.: Caixa = 12 UN).' },
+    { value: 'FRACIONAMENTO', label: 'Fracionamento', icone: '', tooltip: 'Fraciona a unidade do estoque (ex.: Pote 200 ml).' },
+    { value: 'CONVERSAO_FISICA', label: 'Medida física', icone: '', tooltip: 'Medida física (ex.: L ↔ Kg). O peso real é informado na Entrada.' }
+];
+
+const UC01_CANAIS = [
+    { key: 'compra', label: 'Compra' },
+    { key: 'venda_erp', label: 'Venda ERP' },
+    { key: 'venda_atacado', label: 'Venda Atacado' },
+    { key: 'venda_varejo', label: 'Venda Varejo' },
+    { key: 'pdv', label: 'PDV' },
+    { key: 'nfce', label: 'NFC-e' },
+    { key: 'nfe', label: 'NF-e' },
+    { key: 'comercial', label: 'Comercial' },
+    { key: 'orcamento', label: 'Orçamento' }
+];
+
+const UC01_FILTRO_PADRAO = 'todos';
+
+function metaTipoUc01(tipo) {
+    const key = String(tipo || '').toUpperCase();
+    const fromCatalog = (window._uc01Catalogo?.tipos || []).find((t) => String(t.value || '').toUpperCase() === key);
+    if (fromCatalog) {
+        const iconeOficial = ({
+            PADRAO: '⭐',
+            AGRUPAMENTO: '📦',
+            FRACIONAMENTO: '✂',
+            CONVERSAO_FISICA: '⚖'
+        })[key];
+        return {
+            value: fromCatalog.value,
+            label: key === 'CONVERSAO_FISICA'
+                ? 'Medida Física'
+                : (fromCatalog.label || key),
+            icone: iconeOficial || fromCatalog.icone || '•',
+            tooltip: fromCatalog.tooltip || ''
+        };
+    }
+    return UC01_TIPOS.find((t) => t.value === key)
+        || { value: tipo, label: key === 'CONVERSAO_FISICA' ? 'Medida Física' : (tipo || '—'), icone: '•', tooltip: '' };
+}
+
+function flagSimNaoBadge(v) {
+    return Number(v) === 1
+        ? '<span class="badge bg-success">✔</span>'
+        : '<span class="badge bg-secondary">✘</span>';
+}
+
+function canaisUc01De(unidade) {
+    const c = unidade?.canais_comercializacao || {};
+    return {
+        compra: Number(c.compra ?? unidade?.permite_compra) === 1 ? 1 : 0,
+        venda_erp: Number(c.venda_erp ?? unidade?.permite_venda) === 1 ? 1 : 0,
+        venda_atacado: Number(c.venda_atacado ?? unidade?.permite_venda) === 1 ? 1 : 0,
+        venda_varejo: Number(c.venda_varejo ?? unidade?.permite_venda) === 1 ? 1 : 0,
+        pdv: Number(c.pdv ?? unidade?.permite_pdv) === 1 ? 1 : 0,
+        nfce: Number(c.nfce ?? unidade?.permite_pdv) === 1 ? 1 : 0,
+        nfe: Number(c.nfe ?? unidade?.permite_venda) === 1 ? 1 : 0,
+        comercial: Number(c.comercial ?? unidade?.permite_venda) === 1 ? 1 : 0,
+        orcamento: Number(c.orcamento ?? unidade?.permite_venda) === 1 ? 1 : 0
+    };
+}
+
+function unidadeUc01TemVenda(canais) {
+    return Boolean(
+        canais.venda_erp || canais.venda_atacado || canais.venda_varejo
+        || canais.comercial || canais.nfe || canais.nfce || canais.orcamento
+    );
+}
+
+function ordenarUnidadesUc01(unidades) {
+    return [...(unidades || [])].sort((a, b) => {
+        const padA = Number(a.unidade_padrao) === 1 ? 0 : 1;
+        const padB = Number(b.unidade_padrao) === 1 ? 0 : 1;
+        if (padA !== padB) return padA - padB;
+        const priA = Number(a.prioridade || 9999);
+        const priB = Number(b.prioridade || 9999);
+        if (priA !== priB) return priA - priB;
+        return String(a.descricao || a.unidade_comercial || '')
+            .localeCompare(String(b.descricao || b.unidade_comercial || ''), 'pt-BR', { sensitivity: 'base' });
+    });
+}
+
+function filtrarUnidadesUc01(unidades, filtro, busca) {
+    const q = String(busca || '').trim().toLowerCase();
+    return (unidades || []).filter((u) => {
+        const canais = canaisUc01De(u);
+        const ativo = Number(u.ativo) !== 0;
+        if (filtro === 'compra' && !canais.compra) return false;
+        if (filtro === 'venda' && !unidadeUc01TemVenda(canais)) return false;
+        if (filtro === 'pdv' && !canais.pdv) return false;
+        if (filtro === 'ativos' && !ativo) return false;
+        if (filtro === 'inativos' && ativo) return false;
+        if (!q) return true;
+        const meta = metaTipoUc01(u.tipo);
+        const hay = [
+            u.descricao, u.unidade_comercial, u.unidade_base, u.tipo, meta.label
+        ].map((x) => String(x || '').toLowerCase()).join(' ');
+        return hay.includes(q);
+    });
+}
+
+function resumoQuantidadeUc01(u) {
+    const qtd = Number(u.quantidade || 0);
+    const base = String(u.unidade_base || '').toUpperCase() || 'UN';
+    const tipo = String(u.tipo || '').toUpperCase();
+    if (tipo === 'PADRAO') return `1 ${escapeHtml(base)} (estoque)`;
+    if (tipo === 'CONVERSAO_FISICA') {
+        return `${escapeHtml(String(u.unidade_comercial || '').toUpperCase())} ↔ ${escapeHtml(base)}`;
+    }
+    const qtdFmt = Number.isInteger(qtd) ? String(qtd) : String(qtd);
+    return `${escapeHtml(qtdFmt)} ${escapeHtml(base)}`;
+}
+
+function badgesCanaisUc01Card(canais) {
+    const chips = [];
+    if (canais.compra) chips.push('<span class="badge rounded-pill text-bg-light border me-1 mb-1">🛒 Compra</span>');
+    if (unidadeUc01TemVenda(canais)) chips.push('<span class="badge rounded-pill text-bg-light border me-1 mb-1">🏪 Venda</span>');
+    if (canais.pdv) chips.push('<span class="badge rounded-pill text-bg-light border me-1 mb-1">💳 PDV</span>');
+    return chips.length ? chips.join('') : '<span class="text-muted small">Sem canais</span>';
+}
+
+function montarCardUnidadeUc01(u) {
+    const canais = canaisUc01De(u);
+    const nome = escapeHtml(u.descricao || u.unidade_comercial || 'Forma de venda');
+    const codigoUn = escapeHtml(String(u.unidade_comercial || '').toUpperCase());
+    const padrao = Number(u.unidade_padrao) === 1;
+    const ativo = Number(u.ativo) !== 0;
+    const ondeVende = [];
+    if (canais.compra) ondeVende.push('Compra');
+    if (unidadeUc01TemVenda(canais)) ondeVende.push('Venda');
+    if (canais.pdv) ondeVende.push('PDV');
+
+    return `
+        <div class="col-12 col-md-6 col-xl-4" data-uc01-card-id="${u.id}">
+            <div class="card h-100 ${ativo ? '' : 'opacity-75 border-secondary'} ${padrao ? 'border-primary border-opacity-50' : ''}">
+                <div class="card-body d-flex flex-column">
+                    <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
+                        <div>
+                            <div class="fs-5 fw-semibold mb-0">${nome}</div>
+                            <div class="text-muted small">${resumoQuantidadeUc01(u)} · <strong>${codigoUn}</strong></div>
+                        </div>
+                        ${padrao ? '<span class="badge bg-primary">Padrão</span>' : ''}
+                    </div>
+                    <div class="mb-3 small">
+                        <span class="text-muted">Onde vende:</span>
+                        <strong>${ondeVende.length ? escapeHtml(ondeVende.join(' · ')) : '—'}</strong>
+                        ${ativo ? '' : ' <span class="badge bg-secondary">Inativo</span>'}
+                    </div>
+                    <div class="mt-auto">
+                        <div class="btn-group btn-group-sm w-100" role="group">
+                            <button type="button" class="btn btn-outline-primary" title="Editar" onclick="editarUnidadeUc01PorId(${u.id})">
+                                <i class="fas fa-edit"></i> Editar
+                            </button>
+                            <button type="button" class="btn btn-outline-secondary" title="Duplicar" onclick="duplicarUnidadeUc01(${u.id})">
+                                <i class="fas fa-copy"></i>
+                            </button>
+                            <button type="button" class="btn btn-outline-danger" title="Excluir" onclick="excluirUnidadeUc01(${u.id})">
+                                <i class="fas fa-trash"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>`;
+}
+
+function atualizarBlocoConversaoFisicaInicial() {
+    const $bloco = $('#blocoConversaoFisicaInicial');
+    if (!$bloco.length) return;
+    const fisica = $('#utiliza_conversao_fisica').is(':checked');
+    const fiscal = parseFloat($('#saldo_fiscal_inicial').val()) || 0;
+    const nf = parseFloat($('#saldo_nao_fiscal_inicial').val()) || 0;
+    const total = fiscal + nf;
+    $bloco.toggleClass('d-none', !(fisica && total > 0));
+}
+
+function inicializarConversaoFisicaUc01(produto, isEdit) {
+    const syncPainel = () => {
+        const ativo = $('#utiliza_conversao_fisica').is(':checked');
+        const temMov = $('#produtoModal').data('temMovimentacoes') === true;
+        $('#painelConversaoFisicaUc01').toggleClass('d-none', !ativo);
+        const unBase = String($('#unidade').val() || 'un').toUpperCase();
+        $('#uc01_unidade_base_readonly').val(unBase);
+        $('#uc01_unidade_base_readonly_label').text(unBase);
+        $('#uc01UnidadeBaseLabel').text(unBase);
+        $('#avisoPesoControladoPorLote').toggleClass('d-none', !(ativo && temMov));
+        if (ativo && temMov) {
+            $('#utiliza_conversao_fisica').prop('disabled', true);
+            $('#unidade_conversao_fisica, #peso_referencia_aproximado').prop('disabled', true);
+        }
+        if (ativo && !$('#unidade_conversao_fisica').val()) {
+            const sugerida = sugerirUnidadeFisicaPorCategoria();
+            $('#unidade_conversao_fisica').val(sugerida);
+        }
+        atualizarBlocoConversaoFisicaInicial();
+        atualizarResumoInteligenteProduto();
+    };
+
+    $('#utiliza_conversao_fisica')
+        .off('change.uc01')
+        .on('change.uc01', syncPainel);
+    $('#unidade, #unidade_conversao_fisica, #nome, #categoria_id')
+        .off('change.uc01Base input.resumoUx03')
+        .on('change.uc01Base input.resumoUx03 change.resumoUx03', syncPainel);
+    $(document)
+        .off('input.uxProd01Fisica', '#saldo_fiscal_inicial, #saldo_nao_fiscal_inicial')
+        .on('input.uxProd01Fisica', '#saldo_fiscal_inicial, #saldo_nao_fiscal_inicial', atualizarBlocoConversaoFisicaInicial);
+
+    syncPainel();
+}
+
+function inicializarToolbarCardsUc01() {
+    window._uc01FiltroAtivo = window._uc01FiltroAtivo || UC01_FILTRO_PADRAO;
+    window._uc01BuscaAtiva = window._uc01BuscaAtiva || '';
+
+    $('#uc01FiltrosCards').off('click.uxProd05').on('click.uxProd05', '[data-filtro-uc01]', function () {
+        window._uc01FiltroAtivo = $(this).data('filtro-uc01') || UC01_FILTRO_PADRAO;
+        $('#uc01FiltrosCards [data-filtro-uc01]').removeClass('active');
+        $(this).addClass('active');
+        renderGradeUnidadesUc01(window._uc01UnidadesCache || [], { preservarCache: true });
+    });
+
+    $('#uc01BuscaCards').off('input.uxProd05').on('input.uxProd05', function () {
+        window._uc01BuscaAtiva = $(this).val() || '';
+        renderGradeUnidadesUc01(window._uc01UnidadesCache || [], { preservarCache: true });
+    });
+
+    $(document)
+        .off('click.uxProd05Det', '[data-uc01-toggle-detalhes]')
+        .on('click.uxProd05Det', '[data-uc01-toggle-detalhes]', function () {
+            const id = $(this).data('uc01-toggle-detalhes');
+            const $det = $(`#uc01Detalhes_${id}`);
+            const aberto = !$det.hasClass('d-none');
+            $det.toggleClass('d-none', aberto);
+            $(this).text(aberto ? '▼ Mais detalhes' : '▲ Menos detalhes');
+        });
+}
+
+function inicializarConversoesProdutoRcm89(produtoId) {
+    window._rcm89ProdutoId = Number(produtoId);
+    const unBase = String($('#unidade').val() || 'UN').toUpperCase();
+    if (!$('#conv_origem_rcm89').val()) {
+        $('#conv_origem_rcm89').val(unBase);
+    }
+    $('#sim_origem_rcm89').val(unBase);
+    $('#secaoConversoesProdutoRcm89').show();
+    $('#btnAdicionarConversaoRcm89, #btnTestarConversaoRcm89').prop('disabled', false);
+
+    $('#btnAdicionarConversaoRcm89').off('click').on('click', adicionarConversaoProdutoRcm89);
+    $('#btnTestarConversaoRcm89').off('click').on('click', () => {
+        $('#painelSimularConversaoRcm89').toggleClass('d-none');
+        if (!$('#sim_origem_rcm89').val()) {
+            $('#sim_origem_rcm89').val(String($('#unidade').val() || 'UN').toUpperCase());
+        }
+    });
+    $('#btnExecutarSimulacaoRcm89').off('click').on('click', simularConversaoProdutoRcm89);
+
+    carregarConversoesProdutoRcm89(produtoId);
+}
+
+function carregarConversoesProdutoRcm89(produtoId) {
+    const $tb = $('#tbodyConversoesRcm89');
+    if (!$tb.length) return;
+    $tb.html('<tr><td colspan="5" class="text-muted text-center py-3">Carregando...</td></tr>');
+
+    $.get(`${API_URL}/produtos/${produtoId}/conversoes`)
+        .done((lista) => {
+            window._rcm89ConversoesCache = Array.isArray(lista) ? lista : [];
+            renderConversoesProdutoRcm89(window._rcm89ConversoesCache);
+        })
+        .fail((xhr) => {
+            const msg = escapeHtml(xhr.responseJSON?.error || 'Erro ao carregar conversões');
+            $tb.html(`<tr><td colspan="5" class="text-danger text-center py-3">${msg}</td></tr>`);
+        });
+}
+
+function renderConversoesProdutoRcm89(lista) {
+    const $tb = $('#tbodyConversoesRcm89');
+    if (!$tb.length) return;
+    const items = Array.isArray(lista) ? lista : [];
+    if (!items.length) {
+        $tb.html('<tr><td colspan="5" class="text-muted text-center py-3">Nenhuma conversão específica cadastrada.</td></tr>');
+        return;
+    }
+    $tb.html(items.map((c) => {
+        const id = Number(c.id);
+        const fator = Number(c.fator);
+        const fatorTxt = Number.isFinite(fator)
+            ? String(fator).replace('.', ',')
+            : '—';
+        return `
+            <tr data-conversao-id="${id}">
+                <td><strong>${escapeHtml(String(c.origem || '').toUpperCase())}</strong></td>
+                <td><strong>${escapeHtml(String(c.destino || '').toUpperCase())}</strong></td>
+                <td>${escapeHtml(fatorTxt)}</td>
+                <td><span class="badge bg-light text-dark border">${escapeHtml(String(c.tipo || 'FIXA'))}</span></td>
+                <td class="text-end">
+                    <button type="button" class="btn btn-sm btn-outline-danger" title="Remover"
+                        onclick="excluirConversaoProdutoRcm89(${id})">
+                        <i class="fas fa-trash"></i>
+                    </button>
+                </td>
+            </tr>`;
+    }).join(''));
+}
+
+function adicionarConversaoProdutoRcm89() {
+    const produtoId = window._rcm89ProdutoId;
+    if (!produtoId) {
+        showNotification('Salve o produto antes de adicionar conversões.', 'warning');
+        return;
+    }
+    const origem = String($('#conv_origem_rcm89').val() || '').trim().toUpperCase();
+    const destino = String($('#conv_destino_rcm89').val() || '').trim().toUpperCase();
+    const fatorRaw = String($('#conv_fator_rcm89').val() || '').replace(',', '.');
+    const fator = Number(fatorRaw);
+    const tipo = String($('#conv_tipo_rcm89').val() || 'FIXA').toUpperCase();
+
+    if (!origem || !destino) {
+        showNotification('Informe origem e destino.', 'warning');
+        return;
+    }
+    if (!Number.isFinite(fator) || fator <= 0) {
+        showNotification('Informe um fator válido maior que zero.', 'warning');
+        return;
+    }
+
+    $.ajax({
+        url: `${API_URL}/produtos/${produtoId}/conversoes`,
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({ origem, destino, fator, tipo })
+    })
+        .done(() => {
+            $('#conv_destino_rcm89').val('');
+            $('#conv_fator_rcm89').val('');
+            carregarConversoesProdutoRcm89(produtoId);
+            showNotification('Conversão adicionada.', 'success');
+        })
+        .fail((xhr) => {
+            showNotification(xhr.responseJSON?.error || 'Erro ao adicionar conversão.', 'danger');
+        });
+}
+
+function excluirConversaoProdutoRcm89(conversaoId) {
+    const produtoId = window._rcm89ProdutoId;
+    if (!produtoId || !conversaoId) return;
+    if (!confirm('Remover esta conversão?')) return;
+
+    $.ajax({
+        url: `${API_URL}/produtos/${produtoId}/conversoes/${conversaoId}`,
+        method: 'DELETE'
+    })
+        .done(() => {
+            carregarConversoesProdutoRcm89(produtoId);
+            showNotification('Conversão removida.', 'success');
+        })
+        .fail((xhr) => {
+            showNotification(xhr.responseJSON?.error || 'Erro ao remover conversão.', 'danger');
+        });
+}
+window.excluirConversaoProdutoRcm89 = excluirConversaoProdutoRcm89;
+window.inicializarConversoesProdutoRcm89 = inicializarConversoesProdutoRcm89;
+
+function simularConversaoProdutoRcm89() {
+    const produtoId = window._rcm89ProdutoId;
+    if (!produtoId) return;
+    const quantidade = Number(String($('#sim_qtd_rcm89').val() || '').replace(',', '.'));
+    const origem = String($('#sim_origem_rcm89').val() || '').trim().toUpperCase();
+    const destino = String($('#sim_destino_rcm89').val() || '').trim().toUpperCase();
+    const $out = $('#sim_resultado_rcm89');
+
+    $.ajax({
+        url: `${API_URL}/produtos/${produtoId}/conversoes/simular`,
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({ quantidade, origem, destino })
+    })
+        .done((r) => {
+            const qDest = Number(r.quantidade_destino);
+            const qBase = Number(r.quantidade_base);
+            $out.html(`
+                <div class="alert alert-success mb-0 py-2">
+                    <strong>${escapeHtml(String(r.quantidade_origem))} ${escapeHtml(r.unidade_origem)}</strong>
+                    →
+                    <strong>${escapeHtml(String(qDest))} ${escapeHtml(r.unidade_destino)}</strong>
+                    <span class="text-muted">(${escapeHtml(String(qBase))} ${escapeHtml(r.unidade_base)} na base · fonte ${escapeHtml(r.fonte || '—')})</span>
+                </div>`);
+        })
+        .fail((xhr) => {
+            $out.html(`<div class="alert alert-danger mb-0 py-2">${escapeHtml(xhr.responseJSON?.error || 'Conversão não cadastrada.')}</div>`);
+        });
+}
+
+function inicializarUnidadesComercializacaoUc01(produtoId) {
+    window._uc01ProdutoIdAtual = Number(produtoId);
+    const unBase = String($('#unidade').val() || 'UN').toUpperCase();
+    $('#uc01UnidadeBaseLabel').text(unBase);
+    window._uc01FiltroAtivo = UC01_FILTRO_PADRAO;
+    window._uc01BuscaAtiva = '';
+    $('#uc01BuscaCards').val('');
+    $('#uc01FiltrosCards [data-filtro-uc01]').removeClass('active');
+    $('#uc01FiltrosCards [data-filtro-uc01="todos"]').addClass('active');
+    inicializarToolbarCardsUc01();
+    carregarGradeUnidadesUc01(produtoId);
+    $('#btnAdicionarUnidadeUc01').off('click').on('click', () => abrirModalEditarUnidadeUc01(null));
+}
+
+function carregarGradeUnidadesUc01(produtoId) {
+    const $grade = $('#gradeCardsUnidadesUc01');
+    const $tbody = $('#tbodyUnidadesUc01');
+    if (!$grade.length && !$tbody.length) return;
+
+    if ($grade.length) {
+        $grade.html('<div class="col-12 text-muted text-center py-3">Carregando...</div>');
+    }
+
+    $.get(`${API_URL}/produtos/${produtoId}/unidades-comercializacao`)
+        .done((payload) => {
+            const items = Array.isArray(payload?.items) ? payload.items : (Array.isArray(payload) ? payload : []);
+            if (payload?.unidade_base) {
+                $('#uc01UnidadeBaseLabel').text(String(payload.unidade_base).toUpperCase());
+            }
+            if (payload?.catalogo?.tipos) {
+                window._uc01Catalogo = payload.catalogo;
+            }
+            renderGradeUnidadesUc01(items);
+            atualizarResumoInteligenteProduto();
+        })
+        .fail((xhr) => {
+            const msg = escapeHtml(xhr.responseJSON?.error || 'Erro ao carregar unidades');
+            if ($grade.length) {
+                $grade.html(`<div class="col-12 text-danger text-center py-3">${msg}</div>`);
+            }
+            atualizarResumoInteligenteProduto();
+        });
+}
+
+function renderGradeUnidadesUc01(unidades, opcoes = {}) {
+    const $grade = $('#gradeCardsUnidadesUc01');
+    if (!opcoes.preservarCache) {
+        window._uc01UnidadesCache = unidades || [];
+    }
+    const cache = window._uc01UnidadesCache || [];
+    if (!$grade.length) return;
+
+    const $toolbar = $('#uc01ToolbarCards');
+    if ($toolbar.length) {
+        $toolbar.toggleClass('d-none', cache.length < 3);
+    }
+
+    if (!cache.length) {
+        $grade.html('<div class="col-12 text-muted text-center py-3">Nenhuma forma de venda cadastrada.</div>');
+        return;
+    }
+
+    const filtradas = ordenarUnidadesUc01(
+        filtrarUnidadesUc01(cache, window._uc01FiltroAtivo || UC01_FILTRO_PADRAO, window._uc01BuscaAtiva || '')
+    );
+
+    if (!filtradas.length) {
+        $grade.html('<div class="col-12 text-muted text-center py-3">Nenhuma forma corresponde ao filtro/pesquisa.</div>');
+        return;
+    }
+
+    $grade.html(filtradas.map(montarCardUnidadeUc01).join(''));
+}
+
+function editarUnidadeUc01PorId(unidadeId) {
+    const unidade = (window._uc01UnidadesCache || []).find((u) => Number(u.id) === Number(unidadeId));
+    abrirModalEditarUnidadeUc01(unidade || null);
+}
+
+function duplicarUnidadeUc01(unidadeId) {
+    const origem = (window._uc01UnidadesCache || []).find((u) => Number(u.id) === Number(unidadeId));
+    if (!origem) {
+        showNotification('Unidade não encontrada para duplicar.', 'warning');
+        return;
+    }
+    const clone = {
+        ...origem,
+        id: undefined,
+        unidade_padrao: 0,
+        descricao: `${origem.descricao || origem.unidade_comercial || 'Unidade'} (cópia)`,
+        prioridade: undefined
+    };
+    abrirModalEditarUnidadeUc01(clone);
+}
+
+function alternarAtivoUnidadeUc01(unidadeId) {
+    const produtoId = window._uc01ProdutoIdAtual;
+    const unidade = (window._uc01UnidadesCache || []).find((u) => Number(u.id) === Number(unidadeId));
+    if (!unidade) {
+        showNotification('Unidade não encontrada.', 'warning');
+        return;
+    }
+    const novoAtivo = Number(unidade.ativo) !== 0 ? 0 : 1;
+    const label = novoAtivo ? 'ativar' : 'desativar';
+    if (!confirm(`Deseja ${label} esta unidade de comercialização?`)) return;
+
+    const canais = canaisUc01De(unidade);
+    const payload = {
+        descricao: unidade.descricao,
+        tipo: unidade.tipo,
+        unidade_comercial: unidade.unidade_comercial,
+        quantidade: Number(unidade.quantidade),
+        unidade_base: unidade.unidade_base,
+        prioridade: unidade.prioridade != null ? Number(unidade.prioridade) : undefined,
+        unidade_padrao: Number(unidade.unidade_padrao) === 1 ? 1 : 0,
+        conversao_por_lote: Number(unidade.conversao_por_lote) === 1 ? 1 : 0,
+        canais_comercializacao: canais,
+        ativo: novoAtivo
+    };
+
+    $.ajax({
+        url: `${API_URL}/produtos/${produtoId}/unidades-comercializacao/${unidadeId}`,
+        method: 'PUT',
+        contentType: 'application/json',
+        data: JSON.stringify(payload)
+    }).done(() => {
+        showNotification(novoAtivo ? 'Unidade ativada.' : 'Unidade desativada.', 'success');
+        carregarGradeUnidadesUc01(produtoId);
+    }).fail((xhr) => {
+        showNotification(xhr.responseJSON?.error || 'Erro ao atualizar status.', 'danger');
+    });
+}
+
+function abrirModalEditarUnidadeUc01(unidade) {
+    $('#modalUnidadeUc01Editor').remove();
+    const isEdit = Boolean(unidade && unidade.id);
+    const unBase = String($('#unidade').val() || 'UN').toUpperCase();
+    const tipoAtual = String(unidade?.tipo || 'AGRUPAMENTO').toUpperCase();
+    const canais = canaisUc01De(unidade || {});
+    const tipoOptions = UC01_TIPOS.map((t) =>
+        `<option value="${t.value}" title="${escapeHtml(t.tooltip)}" ${tipoAtual === t.value ? 'selected' : ''}>${t.icone} ${t.label}</option>`
+    ).join('');
+
+    const canaisHtmlFinal = isEdit || unidade
+        ? UC01_CANAIS.map((c) => `
+            <div class="col-md-4">
+                <div class="form-check">
+                    <input class="form-check-input uc01-canal" type="checkbox" id="uc01_canal_${c.key}" data-canal="${c.key}" ${Number(canais[c.key]) === 1 ? 'checked' : ''}>
+                    <label class="form-check-label" for="uc01_canal_${c.key}">${escapeHtml(c.label)}</label>
+                </div>
+            </div>
+        `).join('')
+        : UC01_CANAIS.map((c) => `
+            <div class="col-md-4">
+                <div class="form-check">
+                    <input class="form-check-input uc01-canal" type="checkbox" id="uc01_canal_${c.key}" data-canal="${c.key}" checked>
+                    <label class="form-check-label" for="uc01_canal_${c.key}">${escapeHtml(c.label)}</label>
+                </div>
+            </div>
+        `).join('');
+
+    const html = `
+        <div class="modal fade" id="modalUnidadeUc01Editor" tabindex="-1">
+            <div class="modal-dialog modal-lg">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">${isEdit ? 'Editar' : (unidade ? 'Duplicar' : 'Nova')} Forma de Venda</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="row g-2">
+                            <div class="col-md-8">
+                                <label class="form-label">Descrição *</label>
+                                <input type="text" class="form-control" id="uc01_descricao" value="${escapeHtml(unidade?.descricao || '')}" placeholder="Ex.: Caixa 5 Litros">
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label">Tipo *</label>
+                                <select class="form-control" id="uc01_tipo">${tipoOptions}</select>
+                                <small class="text-muted" id="uc01_tipo_hint"></small>
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label">Unidade Comercial *</label>
+                                <input type="text" class="form-control" id="uc01_unidade_comercial" value="${escapeHtml(unidade?.unidade_comercial || '')}" placeholder="Ex.: CX, UN">
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label">Quantidade *</label>
+                                <input type="number" step="0.000001" min="0.000001" class="form-control" id="uc01_quantidade" value="${unidade?.quantidade != null ? unidade.quantidade : '1'}">
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label">Unidade do estoque</label>
+                                <input type="text" class="form-control bg-light" id="uc01_unidade_base" value="${escapeHtml(unBase)}" readonly>
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label">Prioridade *</label>
+                                <input type="number" step="1" min="1" class="form-control" id="uc01_prioridade" value="${unidade?.prioridade != null ? unidade.prioridade : ''}" placeholder="Auto">
+                            </div>
+                            <div class="col-md-4">
+                                <div class="form-check mt-4">
+                                    <input class="form-check-input" type="checkbox" id="uc01_unidade_padrao" ${Number(unidade?.unidade_padrao) === 1 ? 'checked' : ''}>
+                                    <label class="form-check-label" for="uc01_unidade_padrao">Unidade Comercial Padrão</label>
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <div class="form-check mt-4">
+                                    <input class="form-check-input" type="checkbox" id="uc01_conversao_por_lote" ${Number(unidade?.conversao_por_lote) === 1 ? 'checked' : ''}>
+                                    <label class="form-check-label" for="uc01_conversao_por_lote">Conversão por Lote (prep. UC-02)</label>
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <div class="form-check mt-4">
+                                    <input class="form-check-input" type="checkbox" id="uc01_ativo" ${!unidade || Number(unidade.ativo) !== 0 ? 'checked' : ''}>
+                                    <label class="form-check-label" for="uc01_ativo">Ativo</label>
+                                </div>
+                            </div>
+                            <div class="col-12 mt-2">
+                                <strong class="d-block mb-2">Canal de Comercialização</strong>
+                                <div class="row g-2">${canaisHtmlFinal}</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                        <button type="button" class="btn btn-primary" id="btnSalvarUnidadeUc01">Salvar</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+
+    $('body').append(html);
+    const modal = new bootstrap.Modal(document.getElementById('modalUnidadeUc01Editor'));
+    modal.show();
+
+    const syncTipoHint = () => {
+        const meta = metaTipoUc01($('#uc01_tipo').val());
+        $('#uc01_tipo_hint').text(meta.tooltip || '');
+        if ($('#uc01_tipo').val() === 'PADRAO') {
+            $('#uc01_quantidade').val('1');
+            $('#uc01_unidade_comercial').val(unBase);
+        }
+    };
+    $('#uc01_tipo').off('change').on('change', syncTipoHint);
+    syncTipoHint();
+
+    $('#btnSalvarUnidadeUc01').off('click').on('click', function () {
+        const produtoId = window._uc01ProdutoIdAtual;
+        const canaisPayload = {};
+        $('.uc01-canal').each(function () {
+            canaisPayload[$(this).data('canal')] = $(this).is(':checked') ? 1 : 0;
+        });
+
+        const payload = {
+            descricao: $('#uc01_descricao').val(),
+            tipo: $('#uc01_tipo').val(),
+            unidade_comercial: $('#uc01_unidade_comercial').val(),
+            quantidade: Number($('#uc01_quantidade').val()),
+            unidade_base: unBase,
+            prioridade: $('#uc01_prioridade').val() !== '' ? Number($('#uc01_prioridade').val()) : undefined,
+            unidade_padrao: $('#uc01_unidade_padrao').is(':checked') ? 1 : 0,
+            conversao_por_lote: $('#uc01_conversao_por_lote').is(':checked') ? 1 : 0,
+            canais_comercializacao: canaisPayload,
+            ativo: $('#uc01_ativo').is(':checked') ? 1 : 0
+        };
+
+        if (!payload.descricao || !payload.unidade_comercial || !(payload.quantidade > 0)) {
+            showNotification('Preencha descrição, unidade comercial e quantidade (> 0).', 'warning');
+            return;
+        }
+
+        const $btn = $(this).prop('disabled', true);
+        const req = isEdit
+            ? $.ajax({ url: `${API_URL}/produtos/${produtoId}/unidades-comercializacao/${unidade.id}`, method: 'PUT', contentType: 'application/json', data: JSON.stringify(payload) })
+            : $.ajax({ url: `${API_URL}/produtos/${produtoId}/unidades-comercializacao`, method: 'POST', contentType: 'application/json', data: JSON.stringify(payload) });
+
+        req.done(() => {
+            modal.hide();
+            showNotification('Unidade de comercialização salva.', 'success');
+            carregarGradeUnidadesUc01(produtoId);
+        }).fail((xhr) => {
+            showNotification(xhr.responseJSON?.error || 'Erro ao salvar unidade.', 'danger');
+        }).always(() => $btn.prop('disabled', false));
+    });
+}
+
+function excluirUnidadeUc01(unidadeId) {
+    const produtoId = window._uc01ProdutoIdAtual;
+    if (!confirm('Excluir esta unidade de comercialização?')) return;
+    $.ajax({
+        url: `${API_URL}/produtos/${produtoId}/unidades-comercializacao/${unidadeId}`,
+        method: 'DELETE'
+    }).done(() => {
+        showNotification('Unidade excluída.', 'success');
+        carregarGradeUnidadesUc01(produtoId);
+    }).fail((xhr) => {
+        showNotification(xhr.responseJSON?.error || 'Erro ao excluir.', 'danger');
+    });
+}
+
+window.editarUnidadeUc01PorId = editarUnidadeUc01PorId;
+window.excluirUnidadeUc01 = excluirUnidadeUc01;
+window.duplicarUnidadeUc01 = duplicarUnidadeUc01;
+window.alternarAtivoUnidadeUc01 = alternarAtivoUnidadeUc01;
+
+/* ========== MUC — Unidades Comerciais (API auxiliar; UI oficial = UC-01) ========== */
 
 function inicializarUnidadesComerciaisMuc(produtoId) {
     window._mucProdutoIdAtual = Number(produtoId);

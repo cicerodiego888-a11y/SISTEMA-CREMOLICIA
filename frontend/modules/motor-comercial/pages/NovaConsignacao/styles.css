@@ -2,11 +2,220 @@
  * NovaConsignacao Page Styles
  *
  * Sprint 3.2: Wizard de Nova Consignação — estilos do Wizard.
+ * RCM-7.4 / RCM-7.5: resumo da operação + resumo financeiro único + snapshot.
  *
  * @module frontend/modules/motor-comercial/pages/NovaConsignacao
  */
 
-/* Wizard Header */
+.cds-preparar-entrega__operacao-resumo,
+.cds-preparar-entrega__resumo-financeiro-host {
+  margin: 0 0 12px;
+}
+
+.cds-preparar-entrega__operacao-resumo[hidden],
+.cds-preparar-entrega__resumo-financeiro-host[hidden] {
+  display: none;
+}
+
+.cds-operacao-resumo {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  align-items: flex-start;
+  padding: 10px 14px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  max-width: 920px;
+}
+
+.cds-operacao-resumo__item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 120px;
+}
+
+.cds-operacao-resumo__label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.cds-operacao-resumo__value {
+  font-size: 13px;
+  font-weight: 600;
+  color: #0f172a;
+  line-height: 1.3;
+}
+
+.cds-operacao-resumo__value--status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #334155;
+}
+
+.cds-operacao-resumo__check {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.cds-resumo-financeiro {
+  padding: 12px 14px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  max-width: 560px;
+}
+
+.cds-resumo-financeiro__titulo {
+  margin: 0 0 10px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #475569;
+}
+
+.cds-resumo-financeiro__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 16px;
+}
+
+.cds-resumo-financeiro__item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cds-resumo-financeiro__item--utilizacao {
+  grid-column: 1 / -1;
+}
+
+.cds-resumo-financeiro__label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.cds-resumo-financeiro__value {
+  font-size: 15px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.cds-resumo-financeiro__bar {
+  margin-top: 6px;
+  height: 8px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  overflow: hidden;
+}
+
+.cds-resumo-financeiro__bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: #94a3b8;
+  transition: width 0.2s ease;
+}
+
+.cds-resumo-financeiro__bar-fill--verde { background: #86efac; }
+.cds-resumo-financeiro__bar-fill--amarelo { background: #fde68a; }
+.cds-resumo-financeiro__bar-fill--laranja { background: #fdba74; }
+.cds-resumo-financeiro__bar-fill--vermelho { background: #fca5a5; }
+.cds-resumo-financeiro__bar-fill--neutro { background: #cbd5e1; }
+
+.cds-item-snapshot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: #64748b;
+  line-height: 1.35;
+}
+
+.cds-item-snapshot em {
+  font-style: normal;
+  font-weight: 600;
+  color: #94a3b8;
+  margin-right: 4px;
+}
+
+.cds-item-snapshot__acoes {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+  margin-top: 2px;
+}
+
+.cds-link-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  color: #2563eb;
+  font-size: 11px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.cds-link-btn:hover {
+  color: #1d4ed8;
+}
+
+.cds-preparar-entrega__grade-preco {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cds-preparar-entrega__preco-seguranca {
+  display: block;
+  font-size: 11px;
+  color: #78716c;
+  font-weight: 500;
+}
+
+.cds-preparar-entrega__conferencia-itens--snapshot {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  overflow: hidden;
+  margin-top: 12px;
+}
+
+.cds-preparar-entrega__conferencia-itens-head,
+.cds-preparar-entrega__conferencia-itens--snapshot .cds-preparar-entrega__conferencia-linha {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1fr 0.5fr 0.8fr 0.9fr 0.6fr 0.8fr;
+  gap: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  align-items: start;
+}
+
+.cds-preparar-entrega__conferencia-itens-head {
+  background: #f1f5f9;
+  font-weight: 600;
+  color: #475569;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  font-size: 10px;
+}
+
+.cds-preparar-entrega__conferencia-itens--snapshot .cds-preparar-entrega__conferencia-linha {
+  border-top: 1px solid #e2e8f0;
+  color: #0f172a;
+}
+
 .cds-wizard-header {
   display: flex;
   flex-direction: column;

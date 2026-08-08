@@ -344,6 +344,27 @@ class ProjectionController {
       next(error);
     }
   }
+
+  /**
+   * GET /projections/rateio-perdas/indicadores — RC4.2 estrutura para relatórios
+   */
+  async indicadoresRateioPerdas(req, res, next) {
+    try {
+      const repo = this._container.rateioPerdaRepository;
+      if (!repo) {
+        const response = StandardResponse.internalError('rateioPerdaRepository indisponível');
+        return res.status(500).json(StandardResponse.enrich(response, req));
+      }
+      const dados = await repo.agregarIndicadores({
+        dataInicio: req.query.dataInicio || req.query.data_inicio || null,
+        dataFim: req.query.dataFim || req.query.data_fim || null
+      });
+      const response = StandardResponse.success(dados);
+      return res.status(200).json(StandardResponse.enrich(response, req));
+    } catch (error) {
+      next(error);
+    }
+  }
 }
 
 module.exports = ProjectionController;

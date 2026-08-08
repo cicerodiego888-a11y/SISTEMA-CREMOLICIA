@@ -26,173 +26,411 @@ function salvarDebug(nome, conteudo) {
   fs.writeFileSync(path.join(pasta, nome), String(conteudo ?? ''), 'utf8');
 }
 
+/**
+ * RCF-06 — Carrega venda + itens + pagamentos para emissão.
+ * Itens via LEFT JOIN produtos (INNER JOIN ocultava linhas órfãs → qtd_itens=0 falso).
+ */
 function carregarVenda(vendaId) {
   return new Promise((resolve, reject) => {
+    const id = Number(vendaId);
     db.get(`
       SELECT v.*, c.nome as cliente_nome, c.cpf_cnpj as cliente_cpf
       FROM vendas v
       LEFT JOIN clientes c ON c.id = v.cliente_id
       WHERE v.id = ?
-    `, [vendaId], (err, venda) => {
+    `, [id], (err, venda) => {
       if (err) return reject(err);
       if (!venda) return reject(new Error('Venda não encontrada.'));
 
-      db.all(`
-        SELECT
-          vi.*,
-          p.nome as produto_nome,
-          p.ncm as produto_ncm,
-          p.cfop,
-          p.csosn,
-          p.origem,
-          p.cest as produto_cest,
-          p.codigo_barras as produto_codigo_barras,
-          p.unidade,
-          p.produto_fracionado,
-          p.vendido_por_peso
-        FROM vendas_itens vi
-        INNER JOIN produtos p ON p.id = vi.produto_id
-        WHERE vi.venda_id = ?
-        ORDER BY vi.id
-      `, [vendaId], (itErr, itens) => {
-        if (itErr) return reject(itErr);
+      db.get(
+        'SELECT COUNT(*) AS total FROM vendas_itens WHERE venda_id = ?',
+        [id],
+        (cntErr, cntRow) => {
+          if (cntErr) return reject(cntErr);
+          const totalItensPersistidos = Number(cntRow?.total || 0);
 
-        const carregarTefEVoltar = () => {
-          db.get(
-            "SELECT * FROM tef_transacoes WHERE venda_id = ? LIMIT 1",
-            [vendaId],
-            (tefErr, tef) => {
-              if (tefErr) {
-                console.error('Erro ao carregar TEF:', tefErr);
+          db.all(`
+            SELECT
+              vi.*,
+              p.nome as produto_nome,
+              p.ncm as produto_ncm,
+              p.cfop,
+              p.csosn,
+              p.origem,
+              p.cest as produto_cest,
+              p.codigo_barras as produto_codigo_barras,
+              p.unidade,
+              p.produto_fracionado,
+              p.vendido_por_peso
+            FROM vendas_itens vi
+            LEFT JOIN produtos p ON p.id = vi.produto_id
+            WHERE vi.venda_id = ?
+            ORDER BY vi.id
+          `, [id], (itErr, itens) => {
+            if (itErr) return reject(itErr);
+
+            const carregarTefEVoltar = () => {
+              db.get(
+                'SELECT * FROM tef_transacoes WHERE venda_id = ? LIMIT 1',
+                [id],
+                (tefErr, tef) => {
+                  if (tefErr) {
+                    console.error('Erro ao carregar TEF:', tefErr);
+                  }
+                  if (tef) {
+                    venda.tef = tef;
+                  }
+                  resolve({
+                    venda,
+                    itens: itens || [],
+                    totalItensPersistidos
+                  });
+                }
+              );
+            };
+
+            db.all(`
+              SELECT
+                forma_pagamento,
+                valor,
+                tipo_recebimento,
+                tef_transacao_id,
+                nsu,
+                autorizacao
+              FROM venda_recebimentos
+              WHERE venda_id = ?
+                AND status = 'aprovado'
+              ORDER BY id
+            `, [id], (recErr, recebimentos) => {
+              if (recErr) return reject(recErr);
+
+              if (Array.isArray(recebimentos) && recebimentos.length > 0) {
+                venda.pagamentos = recebimentos;
+                carregarTefEVoltar();
+                return;
               }
-              if (tef) {
-                venda.tef = tef;
-              }
-              resolve({ venda, itens });
-            }
-          );
-        };
 
-        db.all(`
-          SELECT
-            forma_pagamento,
-            valor,
-            tipo_recebimento,
-            tef_transacao_id,
-            nsu,
-            autorizacao
-          FROM venda_recebimentos
-          WHERE venda_id = ?
-            AND status = 'aprovado'
-          ORDER BY id
-        `, [vendaId], (recErr, recebimentos) => {
-          if (recErr) return reject(recErr);
-
-          if (Array.isArray(recebimentos) && recebimentos.length > 0) {
-            venda.pagamentos = recebimentos;
-            carregarTefEVoltar();
-            return;
-          }
-
-          db.all(
-            "SELECT forma_pagamento, valor FROM venda_pagamentos WHERE venda_id = ?",
-            [vendaId],
-            (pgErr, pagamentos) => {
-              if (pgErr) return reject(pgErr);
-              venda.pagamentos = pagamentos || [];
-              carregarTefEVoltar();
-            }
-          );
-        });
-      });
+              db.all(
+                'SELECT forma_pagamento, valor FROM venda_pagamentos WHERE venda_id = ?',
+                [id],
+                (pgErr, pagamentos) => {
+                  if (pgErr) return reject(pgErr);
+                  venda.pagamentos = pagamentos || [];
+                  carregarTefEVoltar();
+                }
+              );
+            });
+          });
+        }
+      );
     });
   });
 }
 
+/** RCF-06 — Abortar emissão se a venda não tem itens persistidos. */
+function assertVendaComItens(vendaId, itens, totalItensPersistidos) {
+  const qtd = Array.isArray(itens) ? itens.length : 0;
+  const persistidos = totalItensPersistidos != null
+    ? Number(totalItensPersistidos)
+    : qtd;
+
+  if (persistidos <= 0 || qtd <= 0) {
+    const msg = `[RCF-06] Venda #${vendaId} sem itens persistidos (persistidos=${persistidos}, carregados=${qtd}). Emissão abortada.`;
+    console.error(msg);
+    const err = new Error(msg);
+    err.code = 'RCF06_SEM_ITENS';
+    throw err;
+  }
+}
+
+/**
+ * RCF-02 — Persiste NFC-e sempre amarrada a venda_id.
+ * Nunca faz UPDATE por chave_acesso global (pode sobrescrever nota de outra venda).
+ */
 function salvarNota(payload) {
   return new Promise((resolve, reject) => {
-    db.get(`
-      SELECT id
-      FROM nfce_notas
-      WHERE 
-        (chave_acesso = ? AND chave_acesso IS NOT NULL AND chave_acesso <> '')
-        OR (
-          venda_id = ?
-          AND numero = ?
-          AND serie = ?
-          AND ambiente = ?
-        )
-      ORDER BY id DESC
-      LIMIT 1
-    `, [
-      payload.chave_acesso || '',
-      payload.venda_id,
-      payload.numero,
-      payload.serie,
-      payload.ambiente
-    ], (selectErr, existente) => {
-      if (selectErr) return reject(selectErr);
+    const vendaId = Number(payload.venda_id);
+    if (!Number.isFinite(vendaId) || vendaId <= 0) {
+      return reject(new Error('[RCF-02] salvarNota: venda_id obrigatório'));
+    }
 
-      if (existente) {
+    const chave = String(payload.chave_acesso || '').trim();
+
+    const upsertPorVenda = () => {
+      db.get(`
+        SELECT id, venda_id, chave_acesso, status
+        FROM nfce_notas
+        WHERE venda_id = ?
+          AND CAST(numero AS INTEGER) = CAST(? AS INTEGER)
+          AND CAST(serie AS INTEGER) = CAST(? AS INTEGER)
+          AND CAST(ambiente AS INTEGER) = CAST(? AS INTEGER)
+        ORDER BY id DESC
+        LIMIT 1
+      `, [
+        vendaId,
+        payload.numero,
+        payload.serie,
+        payload.ambiente
+      ], (selectErr, existente) => {
+        if (selectErr) return reject(selectErr);
+
+        if (existente) {
+          console.log('[RCF-02] salvarNota UPDATE', {
+            nota_id: existente.id,
+            venda_id: vendaId,
+            numero: payload.numero,
+            status: payload.status,
+            chave: chave || null
+          });
+          db.run(`
+            UPDATE nfce_notas
+            SET
+              venda_id = ?,
+              chave_acesso = ?,
+              status = ?,
+              xml_enviado = ?,
+              xml_retorno = ?,
+              protocolo = ?,
+              recibo = ?,
+              qr_code_url = ?,
+              danfe_html = ?,
+              updated_at = datetime('now', 'localtime')
+            WHERE id = ?
+              AND venda_id = ?
+          `, [
+            vendaId,
+            chave || null,
+            payload.status,
+            payload.xml_enviado || null,
+            payload.xml_retorno || null,
+            payload.protocolo || null,
+            payload.recibo || null,
+            payload.qr_code_url || null,
+            payload.danfe_html || null,
+            existente.id,
+            vendaId
+          ], function(updateErr) {
+            if (updateErr) return reject(updateErr);
+            if (!this.changes) {
+              return reject(new Error(`[RCF-02] UPDATE nfce_notas id=${existente.id} não afetou venda_id=${vendaId}`));
+            }
+            resolve(existente.id);
+          });
+          return;
+        }
+
+        console.log('[RCF-02] salvarNota INSERT', {
+          venda_id: vendaId,
+          numero: payload.numero,
+          status: payload.status,
+          chave: chave || null
+        });
         db.run(`
-          UPDATE nfce_notas
-          SET
-            status = ?,
-            xml_enviado = ?,
-            xml_retorno = ?,
-            protocolo = ?,
-            recibo = ?,
-            qr_code_url = ?,
-            danfe_html = ?,
-            updated_at = datetime('now', 'localtime')
-          WHERE id = ?
+          INSERT INTO nfce_notas (
+            venda_id, numero, serie, chave_acesso, ambiente, status,
+            xml_enviado, xml_retorno, protocolo, recibo, qr_code_url, danfe_html,
+            created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'), datetime('now', 'localtime'))
         `, [
+          vendaId,
+          payload.numero,
+          payload.serie,
+          chave || null,
+          payload.ambiente,
           payload.status,
           payload.xml_enviado || null,
           payload.xml_retorno || null,
           payload.protocolo || null,
           payload.recibo || null,
           payload.qr_code_url || null,
-          payload.danfe_html || null,
-          existente.id
-        ], function(updateErr) {
-          if (updateErr) return reject(updateErr);
-          resolve(existente.id);
+          payload.danfe_html || null
+        ], function(err) {
+          if (err) return reject(err);
+          resolve(this.lastID);
         });
-
-        return;
-      }
-
-      db.run(`
-        INSERT INTO nfce_notas (
-          venda_id, numero, serie, chave_acesso, ambiente, status,
-          xml_enviado, xml_retorno, protocolo, recibo, qr_code_url, danfe_html,
-          created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'), datetime('now', 'localtime'))
-      `, [
-        payload.venda_id,
-        payload.numero,
-        payload.serie,
-        payload.chave_acesso,
-        payload.ambiente,
-        payload.status,
-        payload.xml_enviado || null,
-        payload.xml_retorno || null,
-        payload.protocolo || null,
-        payload.recibo || null,
-        payload.qr_code_url || null,
-        payload.danfe_html || null
-      ], function(err) {
-        if (err) return reject(err);
-        resolve(this.lastID);
       });
-    });
+    };
+
+    // Se a chave já existe em OUTRA venda, aborta (não sobrescrever)
+    if (chave) {
+      db.get(`
+        SELECT id, venda_id, status
+        FROM nfce_notas
+        WHERE chave_acesso = ?
+        ORDER BY id DESC
+        LIMIT 1
+      `, [chave], (errChave, rowChave) => {
+        if (errChave) return reject(errChave);
+        if (rowChave && Number(rowChave.venda_id) !== vendaId) {
+          console.error('[RCF-02] chave_acesso já vinculada a outra venda', {
+            chave,
+            venda_destino: vendaId,
+            nota_id: rowChave.id,
+            venda_origem: rowChave.venda_id
+          });
+          return reject(new Error(
+            `[RCF-02] Chave NFC-e ${chave} já pertence à venda #${rowChave.venda_id} (nota ${rowChave.id}). ` +
+            `Não é permitido sobrescrever para a venda #${vendaId}.`
+          ));
+        }
+        upsertPorVenda();
+      });
+      return;
+    }
+
+    upsertPorVenda();
   });
 }
 
+/**
+ * RCF-08 — Total de referência da NFC-e = valor FISCAL (nunca o total geral da venda mista).
+ */
+function resolverTotalFiscalReferencia(venda, itensFiscais = []) {
+  if (venda != null && venda.valor_fiscal != null && venda.valor_fiscal !== '') {
+    return Number(venda.valor_fiscal);
+  }
+  const somaItens = (itensFiscais || []).reduce(
+    (s, i) => s + Number(i.valor_fiscal || 0),
+    0
+  );
+  if (somaItens > 0) return Number(somaItens.toFixed(2));
+  // Fallback legado: venda 100% fiscal sem coluna valor_fiscal
+  return Number(venda?.total ?? venda?.valor_total ?? 0);
+}
+
+/**
+ * RCF-02/RCF-08 / RC4.31 — Compara totais FISCAIS da venda com o XML gerado.
+ * Com desconto: vProd = soma itens; vNF = valor_fiscal líquido (obterTotalFiscalFinal).
+ * @param {object} venda
+ * @param {string} xml
+ * @param {{ tolerancia?: number, itensFiscais?: Array }} [opcoes]
+ */
+function validarConsistenciaVendaXml(venda, xml, { tolerancia = 0.02, itensFiscais = null } = {}) {
+  const divergencias = [];
+  const xmlStr = String(xml || '');
+  const itensRef = Array.isArray(itensFiscais) ? itensFiscais : [];
+  const totalFiscalRef = resolverTotalFiscalReferencia(venda, itensRef);
+  const totalGeral = Number(venda?.total ?? venda?.valor_total ?? 0);
+  const valorNaoFiscal = Number(venda?.valor_nao_fiscal ?? 0);
+  const descontoVenda = Number(venda?.desconto || 0);
+
+  const vNF = xmlStr.match(/<vNF>([\d.]+)<\/vNF>/i);
+  const totalXml = vNF ? Number(vNF[1]) : null;
+  if (totalXml != null && Number.isFinite(totalFiscalRef) && Math.abs(totalXml - totalFiscalRef) > tolerancia) {
+    divergencias.push(`Total XML ${totalXml} ≠ valor fiscal ${totalFiscalRef}`);
+  }
+
+  const vProdMatch = xmlStr.match(/<ICMSTot>[\s\S]*?<vProd>([\d.]+)<\/vProd>/i);
+  const vProdXml = vProdMatch ? Number(vProdMatch[1]) : null;
+  const vDescMatch = xmlStr.match(/<ICMSTot>[\s\S]*?<vDesc>([\d.]+)<\/vDesc>/i);
+  const vDescXml = vDescMatch ? Number(vDescMatch[1]) : 0;
+
+  // Regressão: XML não pode espelhar o total geral quando há parte não fiscal
+  if (
+    totalXml != null
+    && valorNaoFiscal > tolerancia
+    && totalGeral > totalFiscalRef + tolerancia
+    && Math.abs(totalXml - totalGeral) <= tolerancia
+  ) {
+    divergencias.push(`XML usa total geral (${totalGeral}) em vez do fiscal (${totalFiscalRef})`);
+  }
+
+  const nItemsXml = (xmlStr.match(/<det\s/gi) || []).length;
+  if (nItemsXml === 0) {
+    divergencias.push('XML sem itens <det>');
+  }
+  if (itensRef.length > 0 && nItemsXml !== itensRef.length) {
+    divergencias.push(`XML <det>=${nItemsXml} ≠ itens fiscais=${itensRef.length}`);
+  }
+
+  const somaItens = itensRef.length
+    ? Number(itensRef.reduce((s, i) => s + Number(i.valor_fiscal || 0), 0).toFixed(2))
+    : null;
+
+  if (somaItens != null) {
+    // RC4.31: com desconto, soma itens = vProd (bruto); valor_fiscal/vNF = líquido
+    if (descontoVenda > tolerancia || (vDescXml != null && vDescXml > tolerancia)) {
+      if (vProdXml != null && Math.abs(somaItens - vProdXml) > tolerancia) {
+        divergencias.push(`Soma itens fiscais ${somaItens} ≠ vProd XML ${vProdXml}`);
+      }
+    } else if (Math.abs(somaItens - totalFiscalRef) > tolerancia) {
+      divergencias.push(`Soma itens fiscais ${somaItens} ≠ valor fiscal ${totalFiscalRef}`);
+    }
+  }
+
+  return {
+    ok: divergencias.length === 0,
+    divergencias,
+    totalVenda: totalFiscalRef, // compat: campo histórico = total fiscal de referência
+    totalFiscal: totalFiscalRef,
+    totalGeral,
+    valorNaoFiscal,
+    totalXml,
+    nItemsXml,
+    somaItensFiscais: somaItens
+  };
+}
+
 async function emitirPorVendaId(vendaId) {
-  console.log('ENTROU NO EMISSOR FISCAL');
-  const { venda, itens } = await carregarVenda(vendaId);
+  const idNum = Number(vendaId);
+  console.log('[RCF-06] ENTROU NO EMISSOR FISCAL', { venda_id: idNum });
+  const {
+    venda,
+    itens: itensBrutos,
+    totalItensPersistidos
+  } = await carregarVenda(vendaId);
+
+  const produtosResumo = (itensBrutos || []).map((it) => ({
+    id: it.id,
+    produto_id: it.produto_id,
+    nome: it.produto_nome || null,
+    qtd: it.quantidade,
+    qtd_fiscal: it.quantidade_fiscal,
+    valor_fiscal: it.valor_fiscal
+  }));
+
+  console.log('[RCF-06] Venda carregada', {
+    venda_id: idNum,
+    venda_id_registro: Number(venda?.id),
+    total: venda?.total ?? venda?.valor_total ?? null,
+    data_venda: venda?.data_venda || venda?.created_at || null,
+    status_pagamento: venda?.status_pagamento || null,
+    qtd_itens: (itensBrutos || []).length,
+    qtd_itens_persistidos: totalItensPersistidos,
+    qtd_pagamentos: (venda?.pagamentos || []).length,
+    pagamentos: (venda?.pagamentos || []).map((p) => ({
+      forma: p.forma_pagamento,
+      valor: p.valor
+    })),
+    produtos: produtosResumo
+  });
+
+  console.log('[RCF-07.1] Pipeline fiscal', {
+    venda_id: idNum,
+    itens_carregados: (itensBrutos || []).length,
+    itens_persistidos: totalItensPersistidos,
+    pagamento: (venda?.pagamentos || []).length,
+    total: venda?.total ?? null,
+    valor_fiscal: venda?.valor_fiscal ?? null,
+    valor_nao_fiscal: venda?.valor_nao_fiscal ?? null,
+    canal: venda?.canal_venda || null
+  });
+
+  // RCF-06: zero itens → abortar (nunca consultar/reutilizar outra NFC-e)
+  assertVendaComItens(idNum, itensBrutos, totalItensPersistidos);
+
+  if (Number(venda.id) !== idNum) {
+    throw new Error(`[RCF-06] Venda carregada id=${venda.id} diverge do solicitado id=${idNum}.`);
+  }
+
+  let itens = itensBrutos;
+  try {
+    const KitVendaService = require('../../modules/comercial/kits/KitVendaService');
+    itens = await KitVendaService.expandirItensParaFiscal(itensBrutos);
+  } catch (err) {
+    console.warn('[RCM-05.9] expandirItensParaFiscal:', err?.message || err);
+    itens = itensBrutos;
+  }
 
   if (
     venda.status_pagamento &&
@@ -206,15 +444,39 @@ async function emitirPorVendaId(vendaId) {
   }
 
   const itensFiscal = itens.filter(itemEntraNaNfce);
-  const itensDanfe = itens;
+  const itensNaoFiscal = itens.filter((it) => !itemEntraNaNfce(it));
+  // RCF-08: DANFE usa somente itens fiscais (comprovante comercial cobre o total)
 
   if (itensFiscal.length === 0) {
+    console.log('[RCF-08] Sem itens fiscais — NFC-e não necessária', {
+      venda_id: idNum,
+      total_geral: Number(venda?.total || 0),
+      valor_fiscal: Number(venda?.valor_fiscal || 0),
+      valor_nao_fiscal: Number(venda?.valor_nao_fiscal || 0),
+      itens_fiscais: 0,
+      itens_nao_fiscais: itensNaoFiscal.length
+    });
     return {
       success: true,
       status: 'sem_itens_fiscais',
-      message: 'Venda sem itens fiscais. NFC-e não necessária.'
+      message: 'Venda sem itens fiscais. NFC-e não necessária.',
+      vendaId: idNum
     };
   }
+
+  console.log('[RCF-08] Distribuição Fiscal × Não Fiscal', {
+    venda_id: idNum,
+    total_geral: Number(venda?.total || 0),
+    valor_fiscal: Number(venda?.valor_fiscal || 0),
+    valor_nao_fiscal: Number(venda?.valor_nao_fiscal || 0),
+    itens_fiscais: itensFiscal.length,
+    itens_nao_fiscais: itensNaoFiscal.length,
+    produtos_fiscais: itensFiscal.map((i) => ({
+      produto_id: i.produto_id,
+      qtd_fiscal: i.quantidade_fiscal,
+      valor_fiscal: i.valor_fiscal
+    }))
+  });
 
   const notaAutorizada = await new Promise((resolve, reject) => {
     db.get(`
@@ -231,11 +493,22 @@ async function emitirPorVendaId(vendaId) {
   });
 
   if (notaAutorizada) {
+    if (Number(notaAutorizada.venda_id) !== idNum) {
+      throw new Error(
+        `RCF-06: DANFE pertence a outra venda. esperado=${idNum} obtido=${notaAutorizada.venda_id} nota=${notaAutorizada.id}`
+      );
+    }
+    console.log('[RCF-06] Reutilizando NFC-e autorizada da MESMA venda', {
+      venda_id: idNum,
+      nota_id: notaAutorizada.id,
+      numero: notaAutorizada.numero
+    });
     return {
       success: true,
       reused: true,
       status: notaAutorizada.status,
       notaId: notaAutorizada.id,
+      vendaId: idNum,
       numero: notaAutorizada.numero,
       chaveAcesso: notaAutorizada.chave_acesso,
       danfeHtml: notaAutorizada.danfe_html
@@ -337,6 +610,51 @@ async function emitirPorVendaId(vendaId) {
   }
 
   const xmlBase = buildNfceXml({ config, venda, itens: itensFiscal, numero });
+
+  const checkXml = validarConsistenciaVendaXml(venda, xmlBase.xmlSemAssinatura, {
+    itensFiscais: itensFiscal
+  });
+  console.log('[RCF-08] Validação XML', {
+    venda_id: Number(vendaId),
+    total_geral: checkXml.totalGeral,
+    valor_fiscal: checkXml.totalFiscal,
+    valor_nao_fiscal: checkXml.valorNaoFiscal,
+    itens_fiscais: itensFiscal.length,
+    itens_nao_fiscais: itensNaoFiscal.length,
+    total_xml: checkXml.totalXml,
+    n_det: checkXml.nItemsXml,
+    ok: checkXml.ok,
+    divergencias: checkXml.divergencias
+  });
+  console.log('[RCF-02] Consistência Venda×XML', {
+    venda_id: Number(vendaId),
+    ok: checkXml.ok,
+    totalVenda: checkXml.totalVenda,
+    totalXml: checkXml.totalXml,
+    nItemsXml: checkXml.nItemsXml,
+    divergencias: checkXml.divergencias
+  });
+  if (!checkXml.ok) {
+    const msg = `[RCF-08] XML divergente da venda #${vendaId}: ${checkXml.divergencias.join('; ')}`;
+    console.error(msg);
+    const notaId = await salvarNota({
+      venda_id: vendaId,
+      numero,
+      serie: config.serie,
+      chave_acesso: '',
+      ambiente: config.ambiente,
+      status: 'erro_consistencia',
+      xml_enviado: xmlBase.xmlSemAssinatura,
+      xml_retorno: msg
+    });
+    return {
+      success: false,
+      notaId,
+      status: 'erro_consistencia',
+      message: msg,
+      divergencias: checkXml.divergencias
+    };
+  }
 
   let xmlAssinadoFinal = null;
   let qrCodeUrl = '';
@@ -457,7 +775,7 @@ async function emitirPorVendaId(vendaId) {
       ...venda,
       tpAmb: config.ambiente
     },
-    itens: itensDanfe,
+    itens: itensFiscal,
     itensFiscal,
     empresa: {
       nome: config.nomeEmpresa,
@@ -472,6 +790,18 @@ async function emitirPorVendaId(vendaId) {
     nota: {
       tpAmb: config.ambiente
     }
+  });
+
+  console.log('[RCF-08] DANFE gerado', {
+    venda_id: Number(vendaId),
+    total_geral: Number(venda?.total || 0),
+    valor_fiscal: Number(venda?.valor_fiscal || 0),
+    valor_nao_fiscal: Number(venda?.valor_nao_fiscal || 0),
+    itens_fiscais: itensFiscal.length,
+    itens_nao_fiscais: itensNaoFiscal.length,
+    total_xml: checkXml.totalXml,
+    total_danfe: Number(venda?.valor_fiscal != null ? venda.valor_fiscal : checkXml.totalFiscal),
+    validacao_ok: checkXml.ok
   });
 
   let status = assinaturaErro ? 'configuracao_pendente' : 'pendente';
@@ -556,9 +886,20 @@ async function emitirPorVendaId(vendaId) {
     message = soapResponse?.message || `NFC-e não autorizada (status: ${status}).`;
   }
 
+  console.log('[RCF-06] NFC-e persistida', {
+    venda_id: Number(vendaId),
+    nota_id: notaId,
+    numero,
+    status,
+    chave: chaveAutorizada,
+    total_venda: venda?.total ?? venda?.valor_total ?? null,
+    qtd_itens_fiscais: itensFiscal.length
+  });
+
   return {
     success: autorizada,
     notaId,
+    vendaId: Number(vendaId),
     status,
     numero,
     chaveAcesso: chaveAutorizada,
@@ -569,4 +910,12 @@ async function emitirPorVendaId(vendaId) {
   };
 }
 
-module.exports = { emitirPorVendaId };
+module.exports = {
+  emitirPorVendaId,
+  salvarNota,
+  validarConsistenciaVendaXml,
+  resolverTotalFiscalReferencia,
+  carregarVenda,
+  assertVendaComItens,
+  itemEntraNaNfce
+};

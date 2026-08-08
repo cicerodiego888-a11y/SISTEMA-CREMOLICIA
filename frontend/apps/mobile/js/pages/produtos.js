@@ -9,6 +9,7 @@ import {
   formatMoney,
   formatNumber,
   formatDateTime,
+  formatDate,
   loadingHtml,
   emptyHtml,
   errorHtml,
@@ -28,7 +29,8 @@ import {
   fabHtml,
   actionBarHtml,
   confirmDanger,
-  formSubmitActionsHtml
+  formSubmitActionsHtml,
+  promptSheet
 } from '../forms.js';
 import { showToast } from '../toast.js';
 import { scanBarcode, sharePayload } from '../native.js';
@@ -81,12 +83,9 @@ function produtoEhFracionado(p = {}) {
 export function buildProdutoPayload(raw = {}, { includeSaldosIniciais = false } = {}) {
   const preco_compra = Number(raw.preco_compra) || 0;
   const preco_venda = Number(raw.preco_venda) || 0;
-  const lucroInformado = raw.lucro_percentual !== undefined && raw.lucro_percentual !== null && raw.lucro_percentual !== '';
-  const lucro_percentual = lucroInformado
-    ? Number(raw.lucro_percentual)
-    : (preco_compra > 0 && preco_venda > 0
-      ? Number((((preco_venda - preco_compra) / preco_compra) * 100).toFixed(2))
-      : null);
+  const lucro_percentual = (preco_compra > 0 && preco_venda > 0)
+    ? Number((((preco_venda - preco_compra) / preco_compra) * 100).toFixed(2))
+    : null;
 
   const fracionadoAtivo = !!(raw.produto_fracionado === true
     || raw.produto_fracionado === 1
@@ -134,10 +133,8 @@ export function buildProdutoPayload(raw = {}, { includeSaldosIniciais = false } 
     permite_venda_unidade: permiteVendaUnidade ? 1 : 0,
     peso_medio_unidade: permiteVendaUnidade ? pesoMedioUnidade : 0,
     preco_unidade: permiteVendaUnidade ? precoUnidadeVenda : 0,
-    venda_atacado: (raw.venda_atacado === true
-      || raw.venda_atacado === 1
-      || raw.venda_atacado === '1'
-      || raw.venda_atacado === 'on') ? 1 : 0,
+    // RCM-8.6.2 — faixas produto_atacado fora do cadastro
+    venda_atacado: 0,
     data_validade_inicial: String(raw.data_validade_inicial || '').trim() || null
   };
 
@@ -174,15 +171,6 @@ function fieldsProduto(p = {}, { isNew = false, categorias = [], subcategorias =
   const permiteUnidade = Number(p.permite_venda_unidade || 0) === 1;
   const controlarValidade = Number(p.controlar_validade || 0) === 1;
   const permiteEditarSaldos = isNew || !p.tem_movimentacoes;
-  const lucro = (() => {
-    if (p.lucro_percentual !== undefined && p.lucro_percentual !== null && p.lucro_percentual !== '') {
-      return p.lucro_percentual;
-    }
-    const pc = Number(p.preco_compra || 0);
-    const pv = Number(p.preco_venda || 0);
-    if (pc > 0 && pv > 0) return Number((((pv - pc) / pc) * 100).toFixed(2));
-    return '';
-  })();
 
   const catOpts = [
     { value: '', label: 'Selecione', selected: !catId },
@@ -235,25 +223,12 @@ function fieldsProduto(p = {}, { isNew = false, categorias = [], subcategorias =
       inputmode: 'decimal'
     })}
     ${fieldHtml({
-      name: 'lucro_percentual',
-      label: '% Lucro real',
-      value: lucro,
-      type: 'number',
-      inputmode: 'decimal'
-    })}
-    ${fieldHtml({
       name: 'preco_venda',
-      label: 'Preço de venda',
+      label: 'Preço de Segurança',
       value: p.preco_venda ?? p.preco ?? 0,
       type: 'number',
       inputmode: 'decimal',
       required: true
-    })}
-    ${fieldHtml({
-      name: 'venda_atacado',
-      label: 'Venda em atacado',
-      type: 'checkbox',
-      value: Number(p.venda_atacado || 0) === 1
     })}
 
     ${sectionTitleHtml('Estoque')}
@@ -673,13 +648,19 @@ export async function renderDetail(root, id, parsed) {
       histPrecos = [];
     }
 
-    let atacado = [];
+    let ucList = [];
+    let mucList = [];
+    let promos = [];
     try {
-      atacado = await window.CDSApi.get(`produtos/${id}/atacado`);
-      if (!Array.isArray(atacado)) atacado = atacado?.faixas || atacado?.data || [];
-    } catch (e) {
-      atacado = [];
-    }
+      ucList = unwrapList(await window.CDSApi.get(`produtos/${id}/unidades-comercializacao`));
+    } catch (e) { ucList = []; }
+    try {
+      mucList = unwrapList(await window.CDSApi.get(`produtos/${id}/unidades`));
+    } catch (e) { mucList = []; }
+    try {
+      const allPromo = unwrapList(await window.CDSApi.get('produtos/promocoes', { produto_id: id }));
+      promos = allPromo.filter((x) => Number(x.produto_id || x.produtoId) === Number(id) || !x.produto_id);
+    } catch (e) { promos = []; }
 
     const paint = () => {
       root.innerHTML = `
@@ -691,7 +672,7 @@ export async function renderDetail(root, id, parsed) {
           <div class="cds-row"><span>Unidade</span><strong>${escapeHtml(asText(normalizeUnidade(p.unidade)).toUpperCase())}</strong></div>
           <div class="cds-row"><span>Categoria</span><strong>${escapeHtml(asText(p.categoria_nome || p.categoria || p.categoria_id))}</strong></div>
           <div class="cds-row"><span>Subcategoria</span><strong>${escapeHtml(asText(p.subcategoria_nome || p.subcategoria || p.subcategoria_id))}</strong></div>
-          <div class="cds-row"><span>Preço venda</span><strong>${escapeHtml(formatMoney(p.preco_venda ?? 0))}</strong></div>
+          <div class="cds-row"><span>Preço de Segurança</span><strong>${escapeHtml(formatMoney(p.preco_venda ?? 0))}</strong></div>
           <div class="cds-row"><span>Preço compra</span><strong>${escapeHtml(formatMoney(p.preco_compra ?? 0))}</strong></div>
           <div class="cds-row"><span>Estoque</span><strong>${escapeHtml(formatNumber(estoque, 2))}</strong></div>
           <div class="cds-row"><span>Saldo fiscal</span><strong>${escapeHtml(formatNumber(p.saldo_fiscal ?? 0, 2))}</strong></div>
@@ -701,7 +682,6 @@ export async function renderDetail(root, id, parsed) {
           <div class="cds-row"><span>CFOP</span><strong>${escapeHtml(asText(p.cfop))}</strong></div>
           <div class="cds-row"><span>CSOSN</span><strong>${escapeHtml(asText(p.csosn))}</strong></div>
           <div class="cds-row"><span>Vendido por peso</span><strong>${produtoEhFracionado(p) ? 'Sim' : 'Não'}</strong></div>
-          <div class="cds-row"><span>Atacado</span><strong>${Number(p.venda_atacado || 0) === 1 ? 'Sim' : 'Não'}</strong></div>
           <div class="cds-row"><span>Validade</span><strong>${Number(p.controlar_validade || 0) === 1 ? 'Controlada' : 'Não'}</strong></div>
         </article>
 
@@ -727,15 +707,42 @@ export async function renderDetail(root, id, parsed) {
             : emptyHtml('Sem histórico de preços')}
         </div>
 
-        ${atacado.length ? `
-          ${sectionTitleHtml('Atacado')}
-          <div>
-            ${atacado.map((f) => listCardHtml({
-              title: `A partir de ${formatNumber(f.quantidade_minima ?? f.qtd_minima ?? 0, 0)}`,
-              value: formatMoney(f.preco_atacado ?? f.preco ?? 0)
-            })).join('')}
-          </div>
-        ` : ''}
+        ${sectionTitleHtml('Unidades comerciais (UC)')}
+        <div>
+          ${ucList.length
+            ? ucList.map((u) => listCardHtml({
+                title: asText(u.descricao || u.nome || u.codigo || u.unidade),
+                subtitle: asText(u.codigo || u.sigla || '', ''),
+                meta: [u.principal || u.is_principal ? 'Principal' : '', u.fator ? `Fator ${u.fator}` : ''].filter(Boolean)
+              })).join('')
+            : emptyHtml('Sem UC cadastrada', 'Use o sheet abaixo para criar.')}
+          <button type="button" class="cds-mobile-btn cds-mobile-btn--secondary" id="prod-uc-add" style="width:100%;margin-top:8px">Nova UC</button>
+        </div>
+
+        ${sectionTitleHtml('MUC')}
+        <div>
+          ${mucList.length
+            ? mucList.map((u) => listCardHtml({
+                title: asText(u.descricao || u.nome || u.codigo_barras || u.codigo),
+                subtitle: asText(u.codigo_barras || u.barra || '', ''),
+                meta: [u.principal ? 'Principal' : '', u.quantidade ? `Qtd ${u.quantidade}` : ''].filter(Boolean)
+              })).join('')
+            : emptyHtml('Sem unidades MUC')}
+          <button type="button" class="cds-mobile-btn cds-mobile-btn--secondary" id="prod-muc-add" style="width:100%;margin-top:8px">Nova MUC</button>
+        </div>
+
+        ${sectionTitleHtml('Promoções')}
+        <div>
+          ${promos.length
+            ? promos.slice(0, 15).map((pr) => listCardHtml({
+                title: asText(pr.titulo || pr.nome || `Promo #${pr.id}`),
+                value: formatMoney(pr.preco_promocional ?? pr.preco ?? 0),
+                status: pr.status || (pr.ativa ? 'Ativa' : '—'),
+                meta: [formatDate(pr.inicio || pr.data_inicio), formatDate(pr.fim || pr.data_fim)].filter((x) => x !== '—')
+              })).join('')
+            : emptyHtml('Sem promoções deste produto')}
+          <button type="button" class="cds-mobile-btn cds-mobile-btn--secondary" id="prod-promo-add" style="width:100%;margin-top:8px">Criar promoção</button>
+        </div>
 
         ${!fromEstoque ? actionBarHtml([
           { action: 'scan', label: 'EAN', icon: 'barcode', variant: 'ghost' },
@@ -748,6 +755,69 @@ export async function renderDetail(root, id, parsed) {
         ])}
       `;
       bindBack(root);
+
+      root.querySelector('#prod-uc-add')?.addEventListener('click', async () => {
+        const data = await promptSheet({
+          title: 'Nova unidade comercial',
+          fieldsHtml: `
+            ${fieldHtml({ name: 'codigo', label: 'Código / sigla', required: true })}
+            ${fieldHtml({ name: 'descricao', label: 'Descrição', required: true })}
+            ${fieldHtml({ name: 'fator', label: 'Fator conversão', type: 'number', value: 1, inputmode: 'decimal' })}
+          `
+        });
+        if (!data?.codigo) return;
+        try {
+          await window.CDSApi.post(`produtos/${id}/unidades-comercializacao`, data);
+          showToast('UC criada.', 'success');
+          window.CDSMobile?.navigate?.(`produtos/${id}`, { replace: true });
+        } catch (err) {
+          showToast(err.message || 'Falha UC', 'error');
+        }
+      });
+
+      root.querySelector('#prod-muc-add')?.addEventListener('click', async () => {
+        const data = await promptSheet({
+          title: 'Nova MUC',
+          fieldsHtml: `
+            ${fieldHtml({ name: 'descricao', label: 'Descrição', required: true })}
+            ${fieldHtml({ name: 'codigo_barras', label: 'Código de barras', inputmode: 'numeric' })}
+            ${fieldHtml({ name: 'quantidade', label: 'Quantidade', type: 'number', value: 1, inputmode: 'decimal' })}
+          `
+        });
+        if (!data?.descricao) return;
+        try {
+          await window.CDSApi.post(`produtos/${id}/unidades`, data);
+          showToast('MUC criada.', 'success');
+          window.CDSMobile?.navigate?.(`produtos/${id}`, { replace: true });
+        } catch (err) {
+          showToast(err.message || 'Falha MUC', 'error');
+        }
+      });
+
+      root.querySelector('#prod-promo-add')?.addEventListener('click', async () => {
+        const hoje = new Date().toISOString().slice(0, 10);
+        const data = await promptSheet({
+          title: 'Nova promoção',
+          fieldsHtml: `
+            ${fieldHtml({ name: 'titulo', label: 'Título', required: true })}
+            ${fieldHtml({ name: 'preco_promocional', label: 'Preço promocional', type: 'number', required: true, inputmode: 'decimal' })}
+            ${fieldHtml({ name: 'inicio', label: 'Início', type: 'date', value: hoje })}
+            ${fieldHtml({ name: 'fim', label: 'Fim', type: 'date' })}
+          `
+        });
+        if (!data?.titulo) return;
+        try {
+          await window.CDSApi.post('produtos/promocoes', {
+            ...data,
+            produto_id: Number(id),
+            preco_promocional: Number(data.preco_promocional)
+          });
+          showToast('Promoção criada.', 'success');
+          window.CDSMobile?.navigate?.(`produtos/${id}`, { replace: true });
+        } catch (err) {
+          showToast(err.message || 'Falha promoção', 'error');
+        }
+      });
 
       root.querySelector('[data-action="scan"]')?.addEventListener('click', async () => {
         const code = await scanBarcode({

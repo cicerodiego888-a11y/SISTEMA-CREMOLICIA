@@ -50,6 +50,13 @@ function criarComercialOutboxHandlers(bridges = {}) {
       return estoque.registrarEntradaConsignacao(payload);
     },
 
+    [OUTBOX_EVENT_TYPES.ESTOQUE_REGISTRAR_PERDA]: async (payload) => {
+      if (typeof estoque?.registrarPerdaConsignacao !== 'function') {
+        throw new Error('EstoqueBridge.registrarPerdaConsignacao não disponível');
+      }
+      return estoque.registrarPerdaConsignacao(payload);
+    },
+
     [OUTBOX_EVENT_TYPES.ESTOQUE_TRANSFERENCIA]: async (payload) => {
       if (!estoque?.registrarTransferencia) {
         throw new Error('EstoqueBridge.registrarTransferencia não disponível');

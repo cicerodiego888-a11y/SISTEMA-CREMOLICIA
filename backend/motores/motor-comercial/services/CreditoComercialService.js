@@ -56,7 +56,7 @@ function somarTipo(movimentacoes, tipo) {
  *   totalEntregue: number
  * }}
  */
-function calcular({ limiteComercial = 0, movimentacoes = [] } = {}) {
+function calcular({ limiteComercial = 0, movimentacoes = [], perdaAssumidaCliente = 0 } = {}) {
   const ordenadas = ordenarCronologicamente(movimentacoes || []);
   const totalEntregue = somarTipo(ordenadas, TIPOS.ENTREGA);
   const totalDevolvido = somarTipo(ordenadas, TIPOS.DEVOLUCAO);
@@ -64,8 +64,10 @@ function calcular({ limiteComercial = 0, movimentacoes = [] } = {}) {
   const totalPerdido = somarTipo(ordenadas, TIPOS.PERDA);
   const totalCortesia = somarTipo(ordenadas, TIPOS.CORTESIA);
   const totalPago = somarTipo(ordenadas, TIPOS.PAGAMENTO);
+  const perdaCliente = Number(perdaAssumidaCliente || 0);
 
-  const saldoEmAbertoContaCorrente = totalVendido - totalPago;
+  // RC4.2 — parcela da perda assumida pelo cliente entra na AR comercial
+  const saldoEmAbertoContaCorrente = totalVendido + perdaCliente - totalPago;
   const saldoDevedorAr = Math.max(0, saldoEmAbertoContaCorrente);
   const saldoCredor = Math.max(0, -saldoEmAbertoContaCorrente);
   const estoqueConsignado = Math.max(

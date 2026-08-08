@@ -13,6 +13,14 @@ const {
 const { gerarQRCodeNFCe } = require('./qrcode');
 const { extrairNomeEmpresaDoCertificado } = require('./certificateService');
 const { normalizarUnidadeComercialFiscal } = require('./unidadeFiscal');
+const FiscalOperacionalService = require('../../motores/motor-conversao-comercial/integracao/fiscal/FiscalOperacionalService');
+const {
+  TOLERANCIA_MONETARIA,
+  obterTotalFiscalFinal,
+  validarTotalFiscalFinalXml
+} = require('../vendas/TotalFiscalFinal');
+
+const fiscalOperacional = new FiscalOperacionalService();
 
 function normalizarCsosn(valor, padrao = '102') {
   const digits = String(valor ?? '').replace(/\D/g, '');
@@ -465,39 +473,26 @@ function obterEANFiscal(produto) {
   return codigo;
 }
 
+/** @deprecated FIS-01 — alias; use itemUsaUnidadeComercial */
 function itemUsaUnidadeComercialMuc(item = {}) {
-  return Boolean(item.unidade_comercial_id || item.unidade_comercial);
+  return fiscalOperacional.itemTemUnidadeComercial(item);
 }
 
+function itemUsaUnidadeComercial(item = {}) {
+  return fiscalOperacional.itemTemUnidadeComercial(item);
+}
+
+/** qCom — recupera da operação (MCC/PDV); nunca multiplica por fator. */
 function obterQuantidadeFiscalItem(item = {}) {
-  if (itemUsaUnidadeComercialMuc(item)) {
-    const qCom = Number(item.quantidade || 0);
-    const qFisc = Number(item.quantidade_fiscal || 0);
-    const qNao = Number(item.quantidade_nao_fiscal || 0);
-    const qBase = qFisc + qNao;
-    if (qBase > 0 && qNao > 0) {
-      return qCom * (qFisc / qBase);
-    }
-    return qCom;
-  }
-  return Number(item.quantidade_fiscal ?? 0);
+  return fiscalOperacional.obterQuantidadeComercial(item);
 }
 
 function obterValorFiscalItem(item = {}) {
-  return Number(item.valor_fiscal ?? 0);
+  return fiscalOperacional.obterValorFiscal(item);
 }
 
 function obterPrecoUnitarioFiscalItem(item = {}) {
-  if (itemUsaUnidadeComercialMuc(item)) {
-    const preco = Number(item.preco_unitario || 0);
-    if (preco > 0) return preco;
-  }
-  const quantidade = obterQuantidadeFiscalItem(item);
-  const valor = obterValorFiscalItem(item);
-  if (quantidade > 0 && valor > 0) {
-    return valor / quantidade;
-  }
-  return Number(item.preco_unitario || 0);
+  return fiscalOperacional.obterPrecoUnitarioComercial(item);
 }
 
 function ratearDescontoNosItens(itens, descontoTotal) {
@@ -661,9 +656,14 @@ function buildNfceXml({ config, venda, itens, numero }) {
   const descricaoHomologacao = 'NOTA FISCAL EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL';
 
   const dets = itensVenda.map((item, idx) => {
-    const quantidade = obterQuantidadeFiscalItem(item);
-    const subtotal = round2(obterValorFiscalItem(item));
-    const valorUnitario = obterPrecoUnitarioFiscalItem(item);
+    const snapshot = fiscalOperacional.mapearItemDocumento(item, {
+      contexto: 'NFCE',
+      vendaId: venda.id || venda.venda_id || null,
+      origemOperacao: 'VENDA'
+    });
+    const quantidade = snapshot.quantidadeComercial;
+    const subtotal = round2(snapshot.valorFiscal);
+    const valorUnitario = snapshot.precoUnitario;
     const descontoItem = round2(item.desconto_rateado || 0);
     vProd += subtotal;
     vDesc += descontoItem;
@@ -680,9 +680,7 @@ function buildNfceXml({ config, venda, itens, numero }) {
     const tagCEST = cestLimpo.length === 7
       ? `<CEST>${cestLimpo}</CEST>`
       : '';
-    const unidade = normalizarUnidadeComercialFiscal(
-      item.unidade_comercial || item.unidade || item.produto_unidade || 'UN'
-    );
+    const unidade = normalizarUnidadeComercialFiscal(snapshot.unidadeComercial);
     const xProd = Number(config.ambiente) === 2 && idx === 0
       ? descricaoHomologacao
       : item.produto_nome || 'PRODUTO';
@@ -727,13 +725,91 @@ function buildNfceXml({ config, venda, itens, numero }) {
   }).join('');
 
   vDesc = round2(vDesc);
-  vNF = round2(vProd - vDesc);
+  vProd = round2(vProd);
 
-  const pagamentosVenda = resolverPagamentosNfce(venda, totalFiscal);
+  // RC4.31 — única fonte de vNF (igual à validação de pagamento)
+  const vFrete = 0;
+  const vSeg = 0;
+  const vOutro = 0;
+  const vII = 0;
+  const vIPI = 0;
+  const vIPIDevol = 0;
+  vNF = obterTotalFiscalFinal({
+    valorProdutosFiscal: vProd,
+    descontoFiscal: vDesc,
+    frete: vFrete,
+    seguro: vSeg,
+    outrasDespesas: vOutro,
+    ii: vII,
+    ipi: vIPI,
+    ipiDevol: vIPIDevol
+  });
+
+  const consistencia = validarTotalFiscalFinalXml({
+    vProd,
+    vDesc,
+    vFrete,
+    vSeg,
+    vOutro,
+    vII,
+    vIPI,
+    vIPIDevol,
+    vNF
+  });
+
+  if (!consistencia.ok) {
+    const detalhe = {
+      vendaId: venda.id || venda.venda_id || null,
+      codigo: venda.codigo || null,
+      produtos: round2(vProd),
+      desconto: round2(vDesc),
+      descontoVenda: round2(descontoVenda),
+      vProd,
+      vDesc,
+      vNF,
+      vNFEsperado: consistencia.esperado,
+      delta: consistencia.delta,
+      origem: {
+        vProd: 'soma(det.prod.vProd / valor_fiscal itens)',
+        vDesc: 'ratearDescontoNosItens(venda.desconto)',
+        vNF: 'obterTotalFiscalFinal(vProd - vDesc + encargos)'
+      }
+    };
+    console.error('[RC4.31] XML NFC-e inconsistente — emissão cancelada', detalhe);
+    const erro = new Error(
+      `RC4.31: vNF inconsistente (informado=${consistencia.informado.toFixed(2)}, ` +
+      `esperado=${consistencia.esperado.toFixed(2)}, delta=${consistencia.delta.toFixed(2)}). Emissão cancelada.`
+    );
+    erro.codigo = 'RC431_VNF_INCONSISTENTE';
+    erro.detalhe = detalhe;
+    throw erro;
+  }
+
+  // Pagamentos fiscais limitados exatamente a vNF (não ao bruto dos produtos)
+  const pagamentosVenda = resolverPagamentosNfce(venda, vNF);
+  const somaPag = round2(
+    pagamentosVenda.reduce((acc, p) => acc + Number(p.valor || 0), 0)
+  );
+  if (Math.abs(somaPag - vNF) > TOLERANCIA_MONETARIA) {
+    const detalhe = {
+      vendaId: venda.id || venda.venda_id || null,
+      vNF,
+      vPag: somaPag,
+      pagamentos: pagamentosVenda
+    };
+    console.error('[RC4.31] Soma vPag diverge de vNF — emissão cancelada', detalhe);
+    const erro = new Error(
+      `RC4.31: soma(vPag)=${somaPag.toFixed(2)} diverge de vNF=${vNF.toFixed(2)}. Emissão cancelada.`
+    );
+    erro.codigo = 'RC431_VPAG_INCONSISTENTE';
+    erro.detalhe = detalhe;
+    throw erro;
+  }
 
   const pag = montarPagamentos(pagamentosVenda, venda);
 
   console.log('PAGAMENTO NFCe:', pag);
+  console.log('[RC4.31] Totais NFC-e', { vProd, vDesc, vNF, vPag: somaPag });
 
   const xmlSemAssinatura = `<?xml version="1.0" encoding="UTF-8"?>
 <NFe xmlns="http://www.portalfiscal.inf.br/nfe">
@@ -794,17 +870,17 @@ function buildNfceXml({ config, venda, itens, numero }) {
         <vST>0.00</vST>
         <vFCPST>0.00</vFCPST>
         <vFCPSTRet>0.00</vFCPSTRet>
-        <vProd>${formatNumber(totalFiscal, 2)}</vProd>
-        <vFrete>0.00</vFrete>
-        <vSeg>0.00</vSeg>
+        <vProd>${formatNumber(vProd, 2)}</vProd>
+        <vFrete>${formatNumber(vFrete, 2)}</vFrete>
+        <vSeg>${formatNumber(vSeg, 2)}</vSeg>
         <vDesc>${formatNumber(vDesc, 2)}</vDesc>
-        <vII>0.00</vII>
-        <vIPI>0.00</vIPI>
-        <vIPIDevol>0.00</vIPIDevol>
+        <vII>${formatNumber(vII, 2)}</vII>
+        <vIPI>${formatNumber(vIPI, 2)}</vIPI>
+        <vIPIDevol>${formatNumber(vIPIDevol, 2)}</vIPIDevol>
         <vPIS>0.00</vPIS>
         <vCOFINS>0.00</vCOFINS>
-        <vOutro>0.00</vOutro>
-        <vNF>${formatNumber(totalFiscal, 2)}</vNF>
+        <vOutro>${formatNumber(vOutro, 2)}</vOutro>
+        <vNF>${formatNumber(vNF, 2)}</vNF>
       </ICMSTot>
     </total>
     <transp>
@@ -821,7 +897,7 @@ function buildNfceXml({ config, venda, itens, numero }) {
     cNF,
     dhEmi,
     xmlSemAssinatura,
-    valores: { vProd, vDesc, vNF }
+    valores: { vProd, vDesc, vNF, vPag: somaPag }
   };
 }
 
@@ -833,5 +909,11 @@ module.exports = {
   anexarInfNFeSupl,
   mapearFormaPagamento,
   montarPagamentos,
-  resolverPagamentosNfce
+  resolverPagamentosNfce,
+  itemUsaUnidadeComercial,
+  itemUsaUnidadeComercialMuc,
+  obterQuantidadeFiscalItem,
+  obterValorFiscalItem,
+  obterPrecoUnitarioFiscalItem,
+  fiscalOperacional
 };

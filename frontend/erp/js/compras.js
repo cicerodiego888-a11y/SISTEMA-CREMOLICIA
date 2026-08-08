@@ -225,6 +225,126 @@ function itemCompraUsaConversaoUnidades(item = {}) {
 
 const itemCompraEhFracionado = itemCompraUsaConversaoUnidades;
 
+/** MCC-03 — produto com Conversão Física ou Unidades de Comercialização */
+function produtoUsaMccEntrada(produto) {
+    if (!produto) return false;
+    if (Number(produto.utiliza_conversao_fisica || 0) === 1) return true;
+    if (Array.isArray(produto.unidades_comercializacao) && produto.unidades_comercializacao.length > 0) {
+        return true;
+    }
+    return false;
+}
+
+function isModoMccEntradaCompraAtivo() {
+    return produtoUsaMccEntrada(obterProdutoSelecionadoCompra());
+}
+
+function obterModoEntradaMccSelecionado() {
+    return String($('#modo_entrada_mcc_item').val() || 'PESO_POR_EMBALAGEM');
+}
+
+function carregarUnidadesComerciaisProdutoCompra(produtoId) {
+    if (!produtoId) return Promise.resolve({ items: [], meta: null });
+    return $.ajax({
+        url: `${API_URL}/produtos/${produtoId}/unidades-comercializacao`,
+        method: 'GET'
+    }).then((rows) => {
+        if (Array.isArray(rows)) return { items: rows, meta: null };
+        return {
+            items: Array.isArray(rows?.items) ? rows.items : (Array.isArray(rows?.data) ? rows.data : []),
+            meta: rows
+        };
+    }).catch(() => ({ items: [], meta: null }));
+}
+
+function atualizarPainelMccEntradaCompra() {
+    const produto = obterProdutoSelecionadoCompra();
+    const ativo = produtoUsaMccEntrada(produto);
+    const fracionadoLegado = !ativo && produtoUsaConversaoUnidadesCompra(produto);
+
+    $('#painelMccEntrada').toggleClass('d-none', !ativo);
+    $('#painelConversaoEmbalagem').toggleClass('d-none', !fracionadoLegado || ativo);
+
+    if (!ativo || !produto) return;
+
+    const unidades = produto.unidades_comercializacao || [];
+    const $sel = $('#unidade_comercial_mcc_item');
+    const atual = $sel.val();
+    $sel.empty();
+    $sel.append(`<option value="${String(produto.unidade || 'UN').toUpperCase()}">${String(produto.unidade || 'UN').toUpperCase()} (base)</option>`);
+    unidades.forEach((u) => {
+        const cod = String(u.unidade_comercial || u.codigo || '').toUpperCase();
+        if (!cod) return;
+        const desc = u.descricao ? ` — ${u.descricao}` : '';
+        $sel.append(`<option value="${cod}">${cod}${desc}</option>`);
+    });
+    if (atual) $sel.val(atual);
+
+    const exigePeso = Number(produto.utiliza_conversao_fisica || 0) === 1;
+    $('#blocoPesoMccEntrada').toggleClass('d-none', !exigePeso);
+    atualizarCamposModoMccEntrada();
+    calcularPreviewMccEntrada();
+}
+
+function atualizarCamposModoMccEntrada() {
+    const modo = obterModoEntradaMccSelecionado();
+    const modoEmbalagem = modo === 'PESO_POR_EMBALAGEM';
+    $('#campoPesoEmbalagemMcc').toggleClass('d-none', !modoEmbalagem);
+    $('#campoPesoTotalMcc').toggleClass('d-none', modoEmbalagem);
+    $('#campoVolumeTotalMcc').toggleClass('d-none', modoEmbalagem);
+    $('#labelQtdMcc').text(modoEmbalagem ? 'Quantidade (UC)' : 'Volume / Quantidade');
+}
+
+function calcularPreviewMccEntrada() {
+    const produto = obterProdutoSelecionadoCompra();
+    if (!produtoUsaMccEntrada(produto)) return null;
+
+    const modo = obterModoEntradaMccSelecionado();
+    const unidadeComercial = String($('#unidade_comercial_mcc_item').val() || produto.unidade || 'UN').toUpperCase();
+    const qtd = Number($('#quantidade_mcc_item').val() || 0);
+    const valorTotal = Number($('#valor_total_mcc_item').val() || 0);
+    const unidadeBase = String(produto.unidade || 'UN').toUpperCase();
+    const unidades = produto.unidades_comercializacao || [];
+    const uc = unidades.find((u) => String(u.unidade_comercial || '').toUpperCase() === unidadeComercial);
+    const fatorUc = uc ? Number(uc.quantidade || 1) : 1;
+    const qtdBase = unidadeComercial === unidadeBase ? qtd : qtd * fatorUc;
+
+    let fatorFisico = null;
+    let textoFator = '';
+    if (Number(produto.utiliza_conversao_fisica || 0) === 1) {
+        if (modo === 'PESO_POR_EMBALAGEM') {
+            const pesoEmb = Number($('#peso_embalagem_mcc_item').val() || 0);
+            const volumeEmb = uc ? Number(uc.quantidade || 0) : 1;
+            if (pesoEmb > 0 && volumeEmb > 0) {
+                fatorFisico = pesoEmb / volumeEmb;
+                textoFator = `Fator calculado: 1 ${unidadeBase} = ${fatorFisico.toFixed(6)} ${String(produto.unidade_conversao_fisica || 'KG').toUpperCase()} (não digite o fator)`;
+            }
+        } else {
+            const pesoTotal = Number($('#peso_total_mcc_item').val() || 0);
+            const volumeTotal = Number($('#volume_total_mcc_item').val() || qtdBase || 0);
+            if (pesoTotal > 0 && volumeTotal > 0) {
+                fatorFisico = pesoTotal / volumeTotal;
+                textoFator = `Fator calculado: 1 ${unidadeBase} = ${fatorFisico.toFixed(6)} ${String(produto.unidade_conversao_fisica || 'KG').toUpperCase()} (não digite o fator)`;
+            }
+        }
+    }
+
+    const custoUnitario = qtdBase > 0 ? valorTotal / qtdBase : 0;
+    $('#resultado_qtd_base_mcc').text(`${formatNumberInput(qtdBase, 3)} ${unidadeBase}`);
+    $('#resultado_fator_mcc').text(textoFator || (Number(produto.utiliza_conversao_fisica || 0) === 1
+        ? 'Informe o peso para o sistema calcular o fator.'
+        : 'Conversão comercial → unidade base (sem física).'));
+    $('#resultado_custo_mcc').text(`R$ ${formatarCustoUnitarioVenda(custoUnitario)}`);
+
+    if (custoUnitario > 0) {
+        $('#preco_item').val(formatarCustoUnitarioVenda(custoUnitario));
+        calcularValorVendaItem();
+    }
+
+    atualizarIndicadorDistribuicaoFiscal(qtdBase, unidadeBase);
+    return { qtdBase, custoUnitario, valorTotal, unidadeComercial, modo, fatorFisico };
+}
+
 const TIPOS_COMPRA_EMBALAGEM = ['Rolo', 'Bobina', 'Caixa', 'Fardo', 'Galão', 'Tambor', 'Pacote'];
 
 function pluralizarTipoEmbalagem(tipo, quantidade) {
@@ -294,11 +414,12 @@ function calcularConversaoEmbalagemCompra() {
 }
 
 function atualizarPainelConversaoUnidadesCompra() {
-    const ativo = isModoConversaoUnidadesCompraAtivo();
     const produto = obterProdutoSelecionadoCompra();
+    const mccAtivo = produtoUsaMccEntrada(produto);
+    const ativo = !mccAtivo && produtoUsaConversaoUnidadesCompra(produto);
 
     $('#painelConversaoEmbalagem').toggleClass('d-none', !ativo);
-    $('#linhaPrecoCompraNormal .campo-preco-compra-item').toggleClass('d-none', ativo);
+    $('#linhaPrecoCompraNormal .campo-preco-compra-item').toggleClass('d-none', ativo || mccAtivo);
     $('#campoCustoUnitarioFracionado').toggleClass('d-none', !ativo);
 
     if (ativo && produto) {
@@ -307,10 +428,11 @@ function atualizarPainelConversaoUnidadesCompra() {
             $('#quantidade_embalagens_item').val('1');
         }
         calcularConversaoEmbalagemCompra();
-    } else {
+    } else if (!mccAtivo) {
         $('#custo_unitario_fracionado_item').val('');
     }
 
+    atualizarPainelMccEntradaCompra();
     atualizarCamposQuantidadeCompra();
 }
 
@@ -1092,7 +1214,8 @@ function adicionarItemCompra() {
     const produtoId = $('#produto_id_item').val();
     const descricaoLivre = ($('#codigo_barras_item').val() || '').trim();
     const produto = produtosCompraList.find(p => String(p.id) === String(produtoId));
-    const fracionado = produtoUsaConversaoUnidadesCompra(produto);
+    const mccAtivo = produtoUsaMccEntrada(produto);
+    const fracionado = !mccAtivo && produtoUsaConversaoUnidadesCompra(produto);
 
     let qtds = resolverQuantidadesItemCompra(
         $('#quantidade_item').val(),
@@ -1105,8 +1228,73 @@ function adicionarItemCompra() {
     const margem = Number.isFinite(margemInput) ? margemInput : 30;
     let valorTotalEmbalagem = 0;
     let dadosEmbalagem = {};
+    let dadosMcc = {};
 
-    if (fracionado) {
+    if (mccAtivo) {
+        const preview = calcularPreviewMccEntrada();
+        if (!preview || preview.qtdBase <= 0) {
+            showNotification('Informe a quantidade na unidade comercial.', 'warning');
+            $('#quantidade_mcc_item').focus();
+            return;
+        }
+        if (preview.valorTotal <= 0) {
+            showNotification('Informe o valor total da compra.', 'warning');
+            $('#valor_total_mcc_item').focus();
+            return;
+        }
+        if (Number(produto.utiliza_conversao_fisica || 0) === 1) {
+            const modo = preview.modo;
+            if (modo === 'PESO_POR_EMBALAGEM' && !(Number($('#peso_embalagem_mcc_item').val()) > 0)) {
+                showNotification('Produto exige Conversão Física: informe o peso da embalagem.', 'warning');
+                $('#peso_embalagem_mcc_item').focus();
+                return;
+            }
+            if (modo === 'PESO_TOTAL' && !(Number($('#peso_total_mcc_item').val()) > 0)) {
+                showNotification('Produto exige Conversão Física: informe o peso total.', 'warning');
+                $('#peso_total_mcc_item').focus();
+                return;
+            }
+        }
+
+        const validacaoDistribuicao = validarDistribuicaoFiscalCompra(
+            qtds.quantidade_fiscal,
+            qtds.quantidade_nao_fiscal,
+            preview.qtdBase,
+            String(produto.unidade || 'UN').toUpperCase()
+        );
+        if (!validacaoDistribuicao.ok) {
+            showNotification(validacaoDistribuicao.mensagem, 'warning');
+            return;
+        }
+
+        preco = preview.custoUnitario;
+        valorTotalEmbalagem = preview.valorTotal;
+        qtds = {
+            quantidade: preview.qtdBase,
+            quantidade_fiscal: Number(qtds.quantidade_fiscal || 0) > 0 || Number(qtds.quantidade_nao_fiscal || 0) > 0
+                ? qtds.quantidade_fiscal
+                : preview.qtdBase,
+            quantidade_nao_fiscal: Number(qtds.quantidade_nao_fiscal || 0)
+        };
+        if ((Number(qtds.quantidade_fiscal || 0) + Number(qtds.quantidade_nao_fiscal || 0)) <= 0) {
+            qtds.quantidade_fiscal = preview.qtdBase;
+            qtds.quantidade_nao_fiscal = 0;
+        }
+
+        dadosMcc = {
+            mcc_entrada: 1,
+            utiliza_conversao_fisica: Number(produto.utiliza_conversao_fisica || 0),
+            unidade_comercial: preview.unidadeComercial,
+            quantidade_comercial: Number($('#quantidade_mcc_item').val() || 0),
+            modo_entrada_conversao: preview.modo,
+            peso_embalagem: Number($('#peso_embalagem_mcc_item').val() || 0) || null,
+            peso_total: Number($('#peso_total_mcc_item').val() || 0) || null,
+            volume_total: Number($('#volume_total_mcc_item').val() || 0) || null,
+            valor_total_embalagem: preview.valorTotal,
+            peso_total_compra: preview.qtdBase,
+            custo_por_kg: preview.custoUnitario
+        };
+    } else if (fracionado) {
         const conv = calcularConversaoEmbalagemCompra();
         if (!conv || conv.qtdTotal <= 0) {
             showNotification('Informe quantidade comprada e quantidade por embalagem.', 'warning');
@@ -1137,6 +1325,7 @@ function adicionarItemCompra() {
         preco = conv.custoUnitario;
         valorTotalEmbalagem = conv.valorTotal;
         dadosEmbalagem = {
+            mcc_entrada: 1,
             compra_em: $('#compra_em_item').val() || '',
             quantidade_embalagens: Number($('#quantidade_embalagens_item').val() || 0),
             quantidade_por_embalagem: Number($('#quantidade_por_embalagem_item').val() || 0),
@@ -1188,8 +1377,9 @@ function adicionarItemCompra() {
         data_validade: $('#data_validade_item').val() || null,
         produto_fracionado: fracionado ? 1 : (produto && produtoUsaConversaoUnidadesCompra(produto) ? 1 : 0),
         vendido_por_peso: fracionado ? 1 : (produto && produtoUsaConversaoUnidadesCompra(produto) ? 1 : 0),
-        subtotal: fracionado ? valorTotalEmbalagem : undefined,
-        ...dadosEmbalagem
+        subtotal: (mccAtivo || fracionado) ? valorTotalEmbalagem : undefined,
+        ...dadosEmbalagem,
+        ...dadosMcc
     });
 
     itensCompraAtual.push(item);
@@ -1215,6 +1405,15 @@ function limparFormularioItemCompra() {
     $('#resultado_qtd_total_fracionado').text('0,000 UN');
     $('#resultado_custo_unitario_fracionado').text('R$ 0,0000');
     $('#data_validade_item').val('');
+    $('#quantidade_mcc_item').val('1');
+    $('#valor_total_mcc_item').val('');
+    $('#peso_embalagem_mcc_item').val('');
+    $('#peso_total_mcc_item').val('');
+    $('#volume_total_mcc_item').val('');
+    $('#modo_entrada_mcc_item').val('PESO_POR_EMBALAGEM');
+    $('#resultado_qtd_base_mcc').text('0,000');
+    $('#resultado_fator_mcc').text('');
+    $('#resultado_custo_mcc').text('R$ 0,0000');
     atualizarCamposValidadeCompra();
     atualizarPainelConversaoUnidadesCompra();
     $('#codigo_barras_item').focus();
@@ -1306,13 +1505,40 @@ function atualizarCamposValidadeCompra() {
 
 function onProdutoSelecionado() {
     atualizarCamposValidadeCompra();
-    atualizarPainelConversaoUnidadesCompra();
     const produto = obterProdutoSelecionadoCompra();
-    if (produto && produtoUsaConversaoUnidadesCompra(produto)) {
-        $('#margem_padrao_item').val(produto.lucro_percentual || 30);
-        $('#quantidade_fiscal_item').val('');
-        $('#quantidade_nao_fiscal_item').val('');
+    if (!produto) {
+        atualizarPainelConversaoUnidadesCompra();
+        return;
     }
+
+    const aplicarPainel = () => {
+        atualizarPainelConversaoUnidadesCompra();
+        if (produtoUsaMccEntrada(produto) || produtoUsaConversaoUnidadesCompra(produto)) {
+            $('#margem_padrao_item').val(produto.lucro_percentual || 30);
+            $('#quantidade_fiscal_item').val('');
+            $('#quantidade_nao_fiscal_item').val('');
+        }
+    };
+
+    carregarUnidadesComerciaisProdutoCompra(produto.id).then((resultado) => {
+        const unidades = resultado.items || [];
+        produto.unidades_comercializacao = unidades;
+        if (resultado.meta) {
+            if (resultado.meta.utiliza_conversao_fisica != null) {
+                produto.utiliza_conversao_fisica = resultado.meta.utiliza_conversao_fisica;
+            }
+            if (resultado.meta.unidade_conversao_fisica != null) {
+                produto.unidade_conversao_fisica = resultado.meta.unidade_conversao_fisica;
+            }
+        }
+        const idx = produtosCompraList.findIndex((p) => String(p.id) === String(produto.id));
+        if (idx >= 0) {
+            produtosCompraList[idx].unidades_comercializacao = unidades;
+            produtosCompraList[idx].utiliza_conversao_fisica = produto.utiliza_conversao_fisica;
+            produtosCompraList[idx].unidade_conversao_fisica = produto.unidade_conversao_fisica;
+        }
+        aplicarPainel();
+    }).catch(() => aplicarPainel());
 }
 
 function onFornecedorKeyDown(event) {
@@ -1566,6 +1792,67 @@ function showCompraModal() {
                                 </div>
                             </div>
 
+                            <div id="painelMccEntrada" class="d-none mb-2">
+                                <div class="card border-success">
+                                    <div class="card-header bg-light py-2">
+                                        <strong>Motor de Conversão Comercial (MCC)</strong>
+                                        <small class="text-muted ms-2">Estoque sempre na unidade base — fator físico calculado automaticamente</small>
+                                    </div>
+                                    <div class="card-body py-2">
+                                        <div class="row g-2 align-items-end">
+                                            <div class="col-md-2">
+                                                <label class="form-label">Unidade comercial</label>
+                                                <select class="form-control" id="unidade_comercial_mcc_item"></select>
+                                            </div>
+                                            <div class="col-md-2">
+                                                <label class="form-label" id="labelQtdMcc">Quantidade (UC)</label>
+                                                <input type="number" step="0.001" min="0" class="form-control" id="quantidade_mcc_item" value="1">
+                                            </div>
+                                            <div class="col-md-2">
+                                                <label class="form-label">Modo de peso</label>
+                                                <select class="form-control" id="modo_entrada_mcc_item">
+                                                    <option value="PESO_POR_EMBALAGEM">Peso por embalagem</option>
+                                                    <option value="PESO_TOTAL">Peso total</option>
+                                                </select>
+                                            </div>
+                                            <div class="col-md-2" id="campoPesoEmbalagemMcc">
+                                                <label class="form-label">Peso da embalagem (Kg)</label>
+                                                <input type="number" step="0.001" min="0" class="form-control" id="peso_embalagem_mcc_item" placeholder="Ex.: 3,375">
+                                            </div>
+                                            <div class="col-md-2 d-none" id="campoPesoTotalMcc">
+                                                <label class="form-label">Peso total (Kg)</label>
+                                                <input type="number" step="0.001" min="0" class="form-control" id="peso_total_mcc_item" placeholder="Ex.: 67,500">
+                                            </div>
+                                            <div class="col-md-2 d-none" id="campoVolumeTotalMcc">
+                                                <label class="form-label">Volume total</label>
+                                                <input type="number" step="0.001" min="0" class="form-control" id="volume_total_mcc_item" placeholder="Ex.: 100">
+                                            </div>
+                                            <div class="col-md-2">
+                                                <label class="form-label">Valor total</label>
+                                                <input type="number" step="0.01" min="0" class="form-control" id="valor_total_mcc_item" placeholder="R$ total">
+                                            </div>
+                                        </div>
+                                        <div id="blocoPesoMccEntrada" class="mt-1">
+                                            <small class="text-muted">Nunca informe “1 Litro = X Kg” — o sistema calcula o fator a partir do peso.</small>
+                                        </div>
+                                        <hr class="my-2">
+                                        <div class="row g-2">
+                                            <div class="col-md-12 mb-1">
+                                                <span id="resultado_fator_mcc" class="text-success small"></span>
+                                            </div>
+                                            <div class="col-md-6">
+                                                <strong>Quantidade base (estoque):</strong>
+                                                <span id="resultado_qtd_base_mcc" class="ms-1">0,000</span>
+                                            </div>
+                                            <div class="col-md-6">
+                                                <strong>Custo unitário base:</strong>
+                                                <span id="resultado_custo_mcc" class="ms-1">R$ 0,0000</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
                             <div id="painelConversaoEmbalagem" class="d-none mb-2">
                                 <div class="card border-info">
                                     <div class="card-header bg-light py-2">
@@ -1791,6 +2078,15 @@ function showCompraModal() {
     $('#compra_em_item')
         .off('change.fracionado')
         .on('change.fracionado', calcularConversaoEmbalagemCompra);
+    $('#quantidade_mcc_item, #valor_total_mcc_item, #peso_embalagem_mcc_item, #peso_total_mcc_item, #volume_total_mcc_item')
+        .off('input.mcc')
+        .on('input.mcc', calcularPreviewMccEntrada);
+    $('#unidade_comercial_mcc_item, #modo_entrada_mcc_item')
+        .off('change.mcc')
+        .on('change.mcc', () => {
+            atualizarCamposModoMccEntrada();
+            calcularPreviewMccEntrada();
+        });
     $('#quantidade_fiscal_item, #quantidade_nao_fiscal_item')
         .off('input.distribuicao')
         .on('input.distribuicao', () => atualizarIndicadorDistribuicaoFiscal());
@@ -1967,7 +2263,15 @@ function saveCompra() {
             quantidade_embalagens: Number(sincronizado.quantidade_embalagens || 0),
             quantidade_por_embalagem: Number(sincronizado.quantidade_por_embalagem || 0),
             valor_total_embalagem: Number(sincronizado.valor_total_embalagem || sincronizado.subtotal || 0),
-            atualizar_preco_venda: Number(sincronizado.atualizar_preco_venda ?? 1)
+            atualizar_preco_venda: Number(sincronizado.atualizar_preco_venda ?? 1),
+            mcc_entrada: Number(sincronizado.mcc_entrada || sincronizado.unidade_comercial || sincronizado.utiliza_conversao_fisica || 0) ? 1 : 0,
+            utiliza_conversao_fisica: Number(sincronizado.utiliza_conversao_fisica || 0),
+            unidade_comercial: sincronizado.unidade_comercial || null,
+            quantidade_comercial: Number(sincronizado.quantidade_comercial || 0) || null,
+            modo_entrada_conversao: sincronizado.modo_entrada_conversao || null,
+            peso_embalagem: sincronizado.peso_embalagem != null ? Number(sincronizado.peso_embalagem) : null,
+            peso_total: sincronizado.peso_total != null ? Number(sincronizado.peso_total) : null,
+            volume_total: sincronizado.volume_total != null ? Number(sincronizado.volume_total) : null
         };
         }),
         condicao_pagamento: condicaoPagamento,

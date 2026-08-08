@@ -11,6 +11,7 @@ const {
   obterSessaoClienteRemoto,
   estaEmSessaoClienteRemoto
 } = require('./electron-sessao-rede');
+const { auditarRuntimeImpressao } = require('./backend/services/fiscal/ComprovanteRuntimeAuditoria');
 
 // Configuração do banco de dados
 process.env.DB_DIR = process.env.DB_DIR || path.join(
@@ -356,6 +357,39 @@ function injetarHostnameEstacao(webContents) {
   webContents.executeJavaScript(script, true).catch(() => {});
 }
 
+async function capturarHtmlRuntime(window, fallbackHtml = '') {
+  if (!window || window.isDestroyed()) {
+    return fallbackHtml;
+  }
+
+  try {
+    return await window.webContents.executeJavaScript('document.documentElement.outerHTML');
+  } catch (error) {
+    console.warn('[RCF-10.2] Não foi possível capturar o HTML runtime:', error && error.message ? error.message : error);
+    return fallbackHtml;
+  }
+}
+
+async function registrarAuditoriaRuntime({ htmlOriginal, htmlRuntime, htmlPrint, options = {} }) {
+  try {
+    const audit = await auditarRuntimeImpressao({
+      vendaId: options && options.audit ? options.audit.vendaId : null,
+      notaId: options && options.audit ? options.audit.notaId : null,
+      title: options && options.audit ? options.audit.title : 'Comprovante Comercial',
+      loadedUrl: options && options.audit ? options.audit.loadedUrl : 'electron:data-url',
+      html: htmlOriginal,
+      htmlRuntime,
+      htmlPrint
+    });
+
+    console.log('[RCF-10.2] Auditoria runtime registrada:', JSON.stringify(audit));
+    return audit;
+  } catch (error) {
+    console.error('[RCF-10.2] Falha ao registrar auditoria runtime:', error && error.message ? error.message : error);
+    return null;
+  }
+}
+
 function criarMainWindow(opcoes = {}) {
   const argumentosExtras = [];
   if (opcoes.modoClienteRemoto) {
@@ -522,12 +556,20 @@ function criarMainWindow(opcoes = {}) {
         printOptions.deviceName = deviceName;
       }
 
-      cupomWindow.webContents.print(printOptions, (success, errorType) => {
+      cupomWindow.webContents.print(printOptions, async (success, errorType) => {
         if (success) {
           console.log('[IMPRESSAO] DANFE NFC-e impresso.');
         } else {
           console.error('[IMPRESSAO] Falha:', errorType);
         }
+
+        const htmlPrint = await capturarHtmlRuntime(cupomWindow, htmlFinal);
+        await registrarAuditoriaRuntime({
+          htmlOriginal: html,
+          htmlRuntime: htmlFinal,
+          htmlPrint,
+          options
+        });
 
         impressaoConcluida = true;
         if (typeof callback === 'function') {
@@ -606,6 +648,14 @@ function criarMainWindow(opcoes = {}) {
       });
     `);
 
+      const htmlRuntime = await capturarHtmlRuntime(cupomWindow, htmlFinal);
+      await registrarAuditoriaRuntime({
+        htmlOriginal: html,
+        htmlRuntime,
+        htmlPrint: htmlRuntime,
+        options
+      });
+
       conteudoPronto = true;
 
       if (silent) {
@@ -644,6 +694,7 @@ function criarMainWindow(opcoes = {}) {
 
     // Aguardar renderização
     await new Promise(resolve => setTimeout(resolve, 500));
+    const htmlRuntime = await capturarHtmlRuntime(printWindow, html);
 
     const printOptions = {
       silent: true,
@@ -655,7 +706,15 @@ function criarMainWindow(opcoes = {}) {
     }
 
     return new Promise((resolve, reject) => {
-      printWindow.webContents.print(printOptions, (success, errorType) => {
+      printWindow.webContents.print(printOptions, async (success, errorType) => {
+        const htmlPrint = await capturarHtmlRuntime(printWindow, htmlRuntime);
+        await registrarAuditoriaRuntime({
+          htmlOriginal: html,
+          htmlRuntime,
+          htmlPrint,
+          options: { audit: {} }
+        });
+
         // Fechar janela após impressão
         if (!printWindow.isDestroyed()) {
           printWindow.close();

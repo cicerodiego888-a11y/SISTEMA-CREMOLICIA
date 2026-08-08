@@ -19,6 +19,12 @@ const PERMISSOES_PAGINAS = {
     reimpressao: 'vendas',
     financeiro: 'financeiro',
     categorias: 'categorias',
+    'canais-venda': 'produtos',
+    'tipos-comerciais': 'clientes',
+    'tabelas-preco': 'produtos',
+    'venda-no-atacado': 'configuracoes',
+    'configuracao-comercial': 'configuracoes',
+    'diagnostico-comercial': 'produtos',
     fiscal: 'fiscal',
     configuracoes: 'configuracoes',
     equipamentos: 'configuracoes',
@@ -37,6 +43,7 @@ const PERMISSOES_PAGINAS = {
     usuarios: 'usuarios',
     relatorios: 'relatorios',
     auditoria: 'auditoria',
+    'diagnostico-instancia': 'auditoria',
     'configuracoes-avancadas': 'configuracoes',
     estoque: 'produtos'
 };

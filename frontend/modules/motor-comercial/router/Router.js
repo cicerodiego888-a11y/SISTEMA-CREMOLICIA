@@ -71,8 +71,10 @@ class Router {
       return element;
     } catch (error) {
       this._mountError(
-        'Erro ao carregar a tela',
-        error && error.message ? error.message : 'Falha inesperada ao montar a página.',
+        'Não foi possível abrir esta tela',
+        error && error.message
+          ? error.message
+          : 'Volte e tente novamente. Se o problema continuar, contate o suporte.',
         () => this.navigate(target, { ...options, replace: true })
       );
       if (previous) {
@@ -301,8 +303,10 @@ class Router {
       return element;
     } catch (error) {
       this._mountError(
-        'Erro ao carregar a tela',
-        error && error.message ? error.message : 'Falha inesperada ao montar a página.',
+        'Não foi possível abrir esta tela',
+        error && error.message
+          ? error.message
+          : 'Volte e tente novamente. Se o problema continuar, contate o suporte.',
         () => this.refresh()
       );
       return null;

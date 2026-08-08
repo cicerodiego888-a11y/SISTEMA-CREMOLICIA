@@ -6134,6 +6134,15 @@ ${collectAllStyles()}`;
             requiresAuth: true
           }
         },
+        {
+          path: "/consignacoes/:id/comprovante",
+          name: "comprovante-entrega",
+          component: "ComprovanteEntrega",
+          meta: {
+            title: "Resumo Inteligente da Entrega",
+            requiresAuth: true
+          }
+        },
         // ============================================================================
         // PRESTAÇÃO
         // ============================================================================
@@ -6442,8 +6451,8 @@ ${collectAllStyles()}`;
             return element;
           } catch (error) {
             this._mountError(
-              "Erro ao carregar a tela",
-              error && error.message ? error.message : "Falha inesperada ao montar a p\xE1gina.",
+              "N\xE3o foi poss\xEDvel abrir esta tela",
+              error && error.message ? error.message : "Volte e tente novamente. Se o problema continuar, contate o suporte.",
               () => this.navigate(target, { ...options, replace: true })
             );
             if (previous) {
@@ -6648,8 +6657,8 @@ ${collectAllStyles()}`;
             return element;
           } catch (error) {
             this._mountError(
-              "Erro ao carregar a tela",
-              error && error.message ? error.message : "Falha inesperada ao montar a p\xE1gina.",
+              "N\xE3o foi poss\xEDvel abrir esta tela",
+              error && error.message ? error.message : "Volte e tente novamente. Se o problema continuar, contate o suporte.",
               () => this.refresh()
             );
             return null;
@@ -6772,7 +6781,7 @@ ${lines.join("\n")}
         "module": "motor-comercial",
         "version": "1.0.3",
         "sprint": "UX-10",
-        "buildTime": "2026-07-17 07:49:13",
+        "buildTime": "2026-08-06 12:14:41",
         "hash": null,
         "ambiente": "development"
       };
@@ -7278,15 +7287,24 @@ ${lines.join("\n")}
       function mapConsignacaoView(consignacao, extras = {}) {
         if (!consignacao) return null;
         const itens = extras.itens || consignacao.itens || [];
+        const status = String(consignacao.status || "").toUpperCase();
+        const isRascunho = status === "RASCUNHO";
+        const valorResolvido = extras.valor !== void 0 ? extras.valor : isRascunho ? null : consignacao.valorTotalEntregue ?? consignacao.valor ?? 0;
+        const saldoResolvido = extras.saldo !== void 0 ? extras.saldo : isRascunho ? null : consignacao.saldoAberto ?? consignacao.saldo ?? 0;
         return {
           ...consignacao,
           documento: formatDocumento(consignacao.documento, consignacao.id),
+          clienteId: consignacao.clienteId ?? null,
           clienteNome: resolveClienteLabel(consignacao, extras),
+          clienteDocumento: consignacao.clienteDocumento ?? consignacao.cliente_documento ?? null,
+          clienteFantasia: consignacao.clienteFantasia ?? consignacao.cliente_fantasia ?? null,
+          clienteTelefone: consignacao.clienteTelefone ?? consignacao.cliente_telefone ?? null,
           cliente: resolveClienteLabel(consignacao, extras),
           consignado: extras.perfilNome || consignacao.consignado || consignacao.perfilComercialId,
           data: consignacao.dataAbertura || consignacao.data,
-          valor: extras.valor ?? consignacao.valorTotalEntregue ?? consignacao.valor ?? 0,
-          saldo: extras.saldo ?? consignacao.saldoAberto ?? consignacao.saldo ?? 0,
+          valor: valorResolvido,
+          saldo: saldoResolvido,
+          aguardandoEntrega: isRascunho,
           quantidadeItens: itens.length,
           prestacaoContasAtiva: consignacao.prestacaoContasAtiva ?? extras.prestacaoContasAtiva ?? null,
           ultimaMovimentacao: consignacao.updatedAt,
@@ -7602,6 +7620,14 @@ ${lines.join("\n")}
           const response = await this.client.post(`/consignacoes/${id}/entrega`, this._withUsuario(data));
           return unwrapData(response);
         }
+        async obterComprovanteEntrega(id, params = {}) {
+          const response = await this.client.get(`/consignacoes/${id}/comprovante`, { params: { ...params, _t: Date.now() } });
+          return unwrapData(response);
+        }
+        async registrarAcaoComprovante(id, data = {}) {
+          const response = await this.client.post(`/consignacoes/${id}/comprovante/acoes`, this._withUsuario(data));
+          return unwrapData(response);
+        }
         async registrarAutorizacaoGerencial(data = {}) {
           const response = await this.client.post("/autorizacoes/gerenciais", this._withUsuario(data));
           return unwrapData(response);
@@ -7678,6 +7704,22 @@ ${lines.join("\n")}
           const response = await this.client.post(`/consignacoes/${id}/prestacao/perda`, this._withUsuario(payload));
           return unwrapData(response);
         }
+        /** RC4.2 — Rateio inteligente de perdas */
+        async obterRateioPerda(id) {
+          const response = await this.client.get(`/consignacoes/${id}/prestacao/rateio-perda`);
+          return unwrapData(response);
+        }
+        async definirRateioPerda(id, data = {}) {
+          const response = await this.client.put(
+            `/consignacoes/${id}/prestacao/rateio-perda`,
+            this._withUsuario(data)
+          );
+          return unwrapData(response);
+        }
+        async obterIndicadoresRateioPerdas(params = {}) {
+          const response = await this.client.get("/projections/rateio-perdas/indicadores", { params });
+          return unwrapData(response);
+        }
         async registrarCortesia(id, data) {
           const payload = this._normalizePrestacaoWritePayload(data);
           const response = await this.client.post(`/consignacoes/${id}/prestacao/cortesia`, this._withUsuario(payload));
@@ -7692,6 +7734,75 @@ ${lines.join("\n")}
           };
           const response = await this.client.post(`/consignacoes/${id}/prestacao/pagamento`, this._withUsuario(payload));
           return unwrapData(response);
+        }
+        /**
+         * Canal + preços da venda (RCM-04.5 / RA-6) — compartilhado com PDV/Pedidos.
+         * @param {Array} itens
+         * @param {Object} [opts] — { canal, tabela_preco_id }
+         */
+        async resolverPrecosVenda(itens = [], opts = {}) {
+          const payload = {
+            itens: (itens || []).map((item) => ({
+              produto_id: item.produto_id ?? item.produtoId ?? item.id,
+              quantidade: Number(item.quantidade ?? 0),
+              categoria_id: item.categoria_id ?? item.categoriaId ?? null,
+              linha_comercial_id: item.linha_comercial_id ?? item.linhaComercialId ?? null
+            }))
+          };
+          if (opts.canal) payload.canal = String(opts.canal).toUpperCase();
+          if (opts.tabela_preco_id) payload.tabela_preco_id = Number(opts.tabela_preco_id);
+          if (opts.cliente_id || opts.clienteId) {
+            payload.cliente_id = Number(opts.cliente_id ?? opts.clienteId);
+          }
+          const base = String(this.client.baseURL || "http://localhost:3000/api/comercial").replace(/\/comercial\/?$/, "");
+          const headers = { "Content-Type": "application/json" };
+          if (typeof localStorage !== "undefined") {
+            const token = localStorage.getItem("token");
+            if (token) headers.Authorization = `Bearer ${token}`;
+          }
+          const response = await fetch(`${base}/configuracao-comercial/resolver-precos`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify(payload)
+          });
+          if (!response.ok) {
+            let body = null;
+            try {
+              body = await response.json();
+            } catch (_e2) {
+            }
+            throw new Error(extractErrorMessage(body) || `HTTP ${response.status}`);
+          }
+          return response.json();
+        }
+        /**
+         * RCM-7.2 — valida se o Tipo Comercial do cliente permite um canal.
+         * @param {Object} opts — { cliente_id, canal }
+         */
+        async validarCanalTipoComercial(opts = {}) {
+          const base = String(this.client.baseURL || "http://localhost:3000/api/comercial").replace(/\/comercial\/?$/, "");
+          const headers = { "Content-Type": "application/json" };
+          if (typeof localStorage !== "undefined") {
+            const token = localStorage.getItem("token");
+            if (token) headers.Authorization = `Bearer ${token}`;
+          }
+          const response = await fetch(`${base}/tipos-comerciais/validar-canal`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              cliente_id: opts.cliente_id ?? opts.clienteId ?? null,
+              canal: opts.canal || "CONSIGNADO"
+            })
+          });
+          if (!response.ok) {
+            let body = null;
+            try {
+              body = await response.json();
+            } catch (_e2) {
+            }
+            throw new Error(extractErrorMessage(body) || `HTTP ${response.status}`);
+          }
+          return response.json();
         }
         /**
          * Alias de compatibilidade — lista prestações via consignações filtradas.
@@ -9904,6 +10015,2522 @@ ${lines.join("\n")}
     }
   });
 
+  // frontend/modules/motor-comercial/messages/SuccessMessages.js
+  var require_SuccessMessages = __commonJS({
+    "frontend/modules/motor-comercial/messages/SuccessMessages.js"(exports, module) {
+      var SuccessMessages = Object.freeze({
+        CONSIGNACAO_CRIADA: "Consigna\xE7\xE3o criada com sucesso.",
+        CONSIGNACAO_RASCUNHO_SALVO: "Rascunho salvo com sucesso.",
+        CONSIGNACAO_CANCELADA: "Consigna\xE7\xE3o cancelada com sucesso.",
+        CONSIGNACAO_DUPLICADA: "Consigna\xE7\xE3o duplicada com sucesso.",
+        ENTREGA_REGISTRADA: "Entrega registrada com sucesso.",
+        TERMO_IMPRESSO: "Termo de entrega enviado para impress\xE3o.",
+        TERMO_PDF_GERADO: "PDF do termo gerado com sucesso.",
+        COMPROVANTE_COPIADO: "Resumo copiado com sucesso.",
+        COMPROVANTE_PDF: "PDF gerado a partir do snapshot oficial.",
+        PRESTACAO_ABERTA: "Presta\xE7\xE3o de contas aberta.",
+        PRESTACAO_CONCLUIDA: "Presta\xE7\xE3o conclu\xEDda.",
+        PRESTACAO_REABERTA: "Presta\xE7\xE3o reaberta com sucesso.",
+        RATEIO_PERDA_SALVO: "Rateio da perda salvo.",
+        NFCE_EMITIDA: "NFC-e emitida com sucesso.",
+        PAGAMENTO_REGISTRADO: "Pagamento registrado.",
+        RECEBIMENTO_REGISTRADO: "Recebimento registrado na Conta Corrente.",
+        RECEBIMENTO_QUITADO: "Recebimento registrado. D\xEDvida quitada \u2014 cliente removido da fila.",
+        RECEBIMENTO_PARCIAL: "Recebimento parcial registrado na Conta Corrente Comercial.",
+        MOVIMENTO_REGISTRADO: "Movimento registrado.",
+        EXTRATO_EXPORTADO: "Extrato exportado com sucesso.",
+        PDF_EXPORTADO: "PDF exportado.",
+        EXCEL_EXPORTADO: "Excel exportado.",
+        PLANILHA_EXPORTADA: "Planilha exportada.",
+        PERFIL_ATUALIZADO: "Perfil atualizado.",
+        CLIENTE_SALVO: "Cliente salvo com sucesso.",
+        CLIENTE_DESATIVADO: "Cliente desativado.",
+        CLIENTE_EXCLUIDO: "Cliente exclu\xEDdo.",
+        LIMITE_ALTERADO: "Limite comercial atualizado.",
+        PERFIL_BLOQUEADO: "Perfil bloqueado.",
+        PERFIL_DESBLOQUEADO: "Perfil desbloqueado.",
+        PENDENCIA_RESOLVIDA: "Alerta resolvido.",
+        PENDENCIA_IGNORADA: "Alerta ignorado.",
+        PENDENCIA_DELEGADA: "Alerta delegado.",
+        OBSERVACAO_REGISTRADA: "Observa\xE7\xE3o registrada.",
+        PLAYBOOK_INICIADO: "Guia operacional iniciado.",
+        PLAYBOOK_PASSO_CONCLUIDO: "Passo conclu\xEDdo.",
+        WORKFLOW_CONCLUIDO: "Processo conclu\xEDdo.",
+        WORKFLOW_STATUS: "Status atualizado.",
+        WORKFLOW_RESPONSAVEL: "Respons\xE1vel atualizado.",
+        FAVORITO_SALVO: "Favorito salvo.",
+        FAVORITO_APLICADO: "Favorito aplicado.",
+        EXPORTACAO_CONCLUIDA: "Exporta\xE7\xE3o conclu\xEDda.",
+        LINK_COPIADO: "Link copiado para a \xE1rea de transfer\xEAncia.",
+        LIBERACAO_AUTORIZADA: "Libera\xE7\xE3o gerencial autorizada para esta opera\xE7\xE3o.",
+        OPERACAO_RETOMADA: "Opera\xE7\xE3o retomada automaticamente."
+      });
+      module.exports = SuccessMessages;
+    }
+  });
+
+  // frontend/modules/motor-comercial/messages/ErrorMessages.js
+  var require_ErrorMessages = __commonJS({
+    "frontend/modules/motor-comercial/messages/ErrorMessages.js"(exports, module) {
+      var ErrorMessages = Object.freeze({
+        CONSIGNACAO_CRIAR: "N\xE3o foi poss\xEDvel criar a consigna\xE7\xE3o.\nVerifique os dados e tente novamente.",
+        CONSIGNACAO_SALVAR_RASCUNHO: "N\xE3o foi poss\xEDvel salvar o rascunho.\nVerifique os dados e tente novamente.",
+        CONSIGNACAO_CARREGAR: "N\xE3o foi poss\xEDvel carregar a consigna\xE7\xE3o.\nAtualize a lista e tente novamente.",
+        CONSIGNACAO_CANCELAR: "N\xE3o foi poss\xEDvel cancelar a consigna\xE7\xE3o.\nTente novamente em instantes.",
+        CONSIGNACAO_DUPLICAR: "N\xE3o foi poss\xEDvel duplicar a consigna\xE7\xE3o.\nTente novamente.",
+        CONSIGNACAO_NAO_ENCONTRADA: "Consigna\xE7\xE3o n\xE3o encontrada.\nEla pode ter sido removida ou o identificador est\xE1 incorreto.",
+        CONSIGNACAO_ID_AUSENTE: "A consigna\xE7\xE3o foi processada, mas o identificador n\xE3o retornou.\nAbra pela Central de Consigna\xE7\xF5es.",
+        CONSIGNACAO_ITEM_REMOVER: "N\xE3o foi poss\xEDvel remover o item.\nTente novamente.",
+        CONSIGNACAO_SOMENTE_RASCUNHO: "Somente consigna\xE7\xF5es em rascunho podem ser editadas.",
+        ENTREGA_REGISTRAR: "N\xE3o foi poss\xEDvel registrar a entrega.\nVerifique o checklist e tente novamente.",
+        ENTREGA_CHECKLIST: "N\xE3o \xE9 poss\xEDvel realizar a entrega.\nVerifique o checklist e corrija as pend\xEAncias.",
+        ENTREGA_CARREGAR: "N\xE3o foi poss\xEDvel carregar os dados da entrega.\nVolte \xE0 Central e abra novamente.",
+        TERMO_IMPRIMIR: "N\xE3o foi poss\xEDvel iniciar a impress\xE3o do termo.\nTente novamente.",
+        TERMO_PDF: "N\xE3o foi poss\xEDvel gerar o PDF do termo.\nTente novamente.",
+        COMPROVANTE_CARREGAR: "N\xE3o foi poss\xEDvel carregar o comprovante.\nAbra pela consigna\xE7\xE3o entregue.",
+        PRESTACAO_ABRIR: "N\xE3o foi poss\xEDvel abrir a presta\xE7\xE3o de contas.\nVerifique o status da consigna\xE7\xE3o.",
+        PRESTACAO_CARREGAR: "N\xE3o foi poss\xEDvel carregar a presta\xE7\xE3o.\nAtualize e tente novamente.",
+        PRESTACAO_ENCERRAR: "N\xE3o foi poss\xEDvel encerrar a presta\xE7\xE3o.\nVerifique as pend\xEAncias da grade.",
+        PRESTACAO_SALVAR_LINHA: "N\xE3o foi poss\xEDvel salvar a linha da grade.\nCorrija e tente novamente.",
+        PRESTACAO_RATEIO: "N\xE3o foi poss\xEDvel salvar o rateio da perda.\nTente novamente.",
+        PRESTACAO_NAO_ABERTA: "A presta\xE7\xE3o n\xE3o est\xE1 aberta para esta opera\xE7\xE3o.",
+        NFCE_EMITIR: "N\xE3o foi poss\xEDvel emitir a NFC-e.\nVerifique os dados fiscais e tente novamente.",
+        PAGAMENTO_REGISTRAR: "N\xE3o foi poss\xEDvel registrar o pagamento.\nConfira o valor e o saldo a pagar.",
+        RECEBIMENTO_REGISTRAR: "N\xE3o foi poss\xEDvel registrar o recebimento.\nConfira o valor e tente novamente.",
+        CONTA_CORRENTE_CARREGAR: "N\xE3o foi poss\xEDvel carregar a Conta Corrente.\nTente novamente.",
+        EXTRATO_EXPORTAR: "N\xE3o foi poss\xEDvel exportar o extrato.\nTente novamente.",
+        PDF_EXPORTAR: "N\xE3o foi poss\xEDvel exportar o PDF.\nTente novamente.",
+        PERFIL_CARREGAR: "N\xE3o foi poss\xEDvel carregar o perfil comercial.\nTente novamente.",
+        PERFIL_ATUALIZAR: "N\xE3o foi poss\xEDvel atualizar o perfil.\nVerifique os dados e tente novamente.",
+        CLIENTE_SALVAR: "N\xE3o foi poss\xEDvel salvar o cliente.\nVerifique os dados e tente novamente.",
+        CLIENTE_NAO_ENCONTRADO: "Cliente n\xE3o encontrado.\nSelecione outro cliente ou cadastre novamente.",
+        CLIENTE_BUSCA_VAZIA: "Nenhum cliente encontrado para esta pesquisa.",
+        CEP_BUSCAR: "N\xE3o foi poss\xEDvel buscar o CEP.\nVerifique o n\xFAmero e tente novamente.",
+        LIBERACAO_AUTORIZAR: "N\xE3o foi poss\xEDvel autorizar a libera\xE7\xE3o gerencial.\nSolicite novamente ao supervisor.",
+        DASHBOARD_CARREGAR: "N\xE3o foi poss\xEDvel atualizar o Dashboard.\nOs dados ser\xE3o sincronizados automaticamente.",
+        TELA_CARREGAR: "N\xE3o foi poss\xEDvel abrir esta tela.\nVolte e tente novamente.",
+        PERMISSAO: "Voc\xEA n\xE3o tem permiss\xE3o para esta opera\xE7\xE3o.",
+        CONEXAO: "N\xE3o foi poss\xEDvel conectar.\nVerifique a internet e tente novamente.",
+        GENERICO_OPERACAO: "N\xE3o foi poss\xEDvel concluir a opera\xE7\xE3o.\nTente novamente ou contate o suporte."
+      });
+      module.exports = ErrorMessages;
+    }
+  });
+
+  // frontend/modules/motor-comercial/messages/WarningMessages.js
+  var require_WarningMessages = __commonJS({
+    "frontend/modules/motor-comercial/messages/WarningMessages.js"(exports, module) {
+      var WarningMessages = Object.freeze({
+        SELECIONE_CLIENTE: "Selecione um cliente antes de continuar.",
+        SELECIONE_CLIENTE_SALVAR: "Selecione um cliente antes de salvar.",
+        ADICIONE_PRODUTO: "Adicione pelo menos um produto.",
+        LIMITE_EXCEDIDO: "Valor acima do limite comercial. Solicite libera\xE7\xE3o gerencial para continuar.",
+        LIMITE_PROXIMO: "Valor pr\xF3ximo ao limite comercial dispon\xEDvel.",
+        CLIENTE_BLOQUEADO: "Cliente com situa\xE7\xE3o bloqueada \u2014 verifique antes de concluir.",
+        SOMENTE_RASCUNHO: "Somente rascunhos podem ser editados.",
+        TROCAR_CLIENTE: "Trocar o cliente limpa os produtos j\xE1 adicionados.",
+        PRESTACAO_ALTERACOES_PENDENTES: "Existem altera\xE7\xF5es pendentes na grade. Corrija antes de continuar.",
+        PRESTACAO_AGUARDE_GRAVACAO: "Ainda existem altera\xE7\xF5es pendentes na grade. Aguarde a grava\xE7\xE3o.",
+        PRESTACAO_SEM_PERMISSAO_EMITIR: "Voc\xEA n\xE3o tem permiss\xE3o para emitir nesta presta\xE7\xE3o.",
+        PRESTACAO_SEM_PERMISSAO_ENCERRAR: "Voc\xEA n\xE3o tem permiss\xE3o para encerrar este atendimento.",
+        NFCE_SEM_PERMISSAO_ENCERRAR: "NFC-e ok, mas sem permiss\xE3o para encerrar automaticamente.",
+        ENTREGA_CHECKLIST: "N\xE3o \xE9 poss\xEDvel realizar a entrega. Verifique o checklist.",
+        SEM_DIVIDA_ELEGIVEL: "N\xE3o h\xE1 d\xEDvida eleg\xEDvel na Conta Corrente deste cliente.",
+        CEP_NAO_ENCONTRADO: "CEP n\xE3o encontrado.",
+        INFORME_NOME_CLIENTE: "Informe o nome do cliente.",
+        HABILITE_CAPACIDADE: "Habilite ao menos uma capacidade comercial.",
+        NADA_PARA_EXPORTAR: "Nada para exportar neste momento.",
+        PDF_INDISPONIVEL: "PDF indispon\xEDvel no snapshot.",
+        CLIENTE_INVALIDO: "Cliente inv\xE1lido: ID n\xE3o encontrado."
+      });
+      module.exports = WarningMessages;
+    }
+  });
+
+  // frontend/modules/motor-comercial/messages/InfoMessages.js
+  var require_InfoMessages = __commonJS({
+    "frontend/modules/motor-comercial/messages/InfoMessages.js"(exports, module) {
+      var InfoMessages = Object.freeze({
+        OPERACAO_RETOMADA: "Opera\xE7\xE3o retomada automaticamente.",
+        CLIENTE_QUITADO_FILA: "Cliente j\xE1 quitado. Removendo da fila...",
+        FINANCEIRO_RECEBER: "Abra o m\xF3dulo Financeiro \u203A Receber para registrar o recebimento.",
+        CLIENTE_PRE_SELECIONADO: (nome) => `Cliente ${nome || ""} pr\xE9-selecionado no Financeiro.`.trim(),
+        SEM_CONSIGNACAO_PRESTACAO: "Nenhuma consigna\xE7\xE3o dispon\xEDvel para presta\xE7\xE3o de contas.",
+        CLIENTE_NAO_IDENTIFICADO_EXTRATO: "Cliente n\xE3o identificado para abrir o extrato.",
+        CLIENTE_NAO_IDENTIFICADO_CC: "Cliente n\xE3o identificado para abrir a Conta Corrente.",
+        CLIENTE_NAO_IDENTIFICADO_RECEBIMENTO: "Cliente n\xE3o identificado para registrar recebimento.",
+        PENDENCIA_ADIADA: (data) => `Alerta adiado at\xE9 ${data}.`,
+        PLAYBOOK_OBS_SALVA: "Observa\xE7\xE3o salva.",
+        EXPORT_PDF_EM_BREVE: "Exporta\xE7\xE3o em PDF dispon\xEDvel em breve \u2014 use planilha.",
+        DISPONIVEL_EM_BREVE: "Dispon\xEDvel em breve.",
+        SEM_FAVORITO: "Nenhum favorito salvo.",
+        AGENDAMENTO: "Agendamento dispon\xEDvel na pr\xF3xima vers\xE3o."
+      });
+      module.exports = InfoMessages;
+    }
+  });
+
+  // frontend/modules/motor-comercial/messages/RecoveryMessages.js
+  var require_RecoveryMessages = __commonJS({
+    "frontend/modules/motor-comercial/messages/RecoveryMessages.js"(exports, module) {
+      var RecoveryMessages = Object.freeze({
+        CONSIGNACAO_CRIADA_ENTREGA_FALHOU: "A consigna\xE7\xE3o foi criada,\nmas n\xE3o foi poss\xEDvel abrir a tela de Entrega.\n\nVoc\xEA pode continuar pela Central de Consigna\xE7\xF5es.",
+        PRESTACAO_OK_DASHBOARD_FALHOU: "Presta\xE7\xE3o registrada.\nN\xE3o foi poss\xEDvel atualizar o Dashboard.\n\nOs dados ser\xE3o sincronizados automaticamente.",
+        PAGAMENTO_OK_INDICADORES_FALHOU: "Pagamento registrado.\nN\xE3o foi poss\xEDvel atualizar os indicadores.\n\nNenhuma informa\xE7\xE3o financeira foi perdida.",
+        ENTREGA_OK_COMPROVANTE_FALHOU: "Entrega registrada com sucesso.\nN\xE3o foi poss\xEDvel abrir o comprovante agora.\n\nAbra a consigna\xE7\xE3o pela Central para visualizar o comprovante.",
+        ENTREGA_OK_EVENTOS_FALHOU: "A entrega foi registrada.\nHouve falha ao sincronizar eventos auxiliares.\n\nNenhuma informa\xE7\xE3o da entrega foi perdida.",
+        RASCUNHO_OK_ITENS_PARCIAIS: "A consigna\xE7\xE3o foi salva,\nmas um ou mais itens n\xE3o puderam ser gravados.\n\nAbra o rascunho e confira a grade de produtos.",
+        RETOMADA_INDISPONIVEL: "N\xE3o foi poss\xEDvel retomar esta opera\xE7\xE3o automaticamente.\n\nAbra pela Central de Consigna\xE7\xF5es e continue de onde parou.",
+        OPERACAO_REMOVIDA: "Esta opera\xE7\xE3o foi removida ou n\xE3o est\xE1 mais dispon\xEDvel.\n\nAtualize a lista na Central de Consigna\xE7\xF5es.",
+        OPERACAO_CORROMPIDA: "O rascunho local desta opera\xE7\xE3o n\xE3o pode ser usado.\n\nAbra a consigna\xE7\xE3o pela Central \u2014 os dados oficiais est\xE3o no servidor.",
+        OPERACAO_EXPIRADA: "O prazo para retomar esta opera\xE7\xE3o expirou.\n\nInicie novamente ou abra pela Central de Consigna\xE7\xF5es.",
+        AUTH_EXPIRADA: "A autoriza\xE7\xE3o gerencial desta opera\xE7\xE3o expirou.\n\nSolicite nova libera\xE7\xE3o se ainda precisar continuar.",
+        CONEXAO: "Verifique sua conex\xE3o e tente novamente.\n\nSe a opera\xE7\xE3o j\xE1 tiver sido salva, continue pela Central.",
+        CHECKPOINT_VAZIO_API_OK: "Opera\xE7\xE3o carregada pelos dados oficiais do servidor.\nO rascunho local n\xE3o estava dispon\xEDvel."
+      });
+      module.exports = RecoveryMessages;
+    }
+  });
+
+  // frontend/modules/motor-comercial/messages/EmptyMessages.js
+  var require_EmptyMessages = __commonJS({
+    "frontend/modules/motor-comercial/messages/EmptyMessages.js"(exports, module) {
+      var EmptyMessages = Object.freeze({
+        CONSIGNACOES: {
+          title: "Sem consigna\xE7\xF5es",
+          description: 'Clique em "Nova Consigna\xE7\xE3o" para iniciar.'
+        },
+        PENDENCIAS: {
+          title: "Sem pend\xEAncias",
+          description: "Tudo est\xE1 em dia."
+        },
+        RECOMENDACOES: {
+          title: "Sem recomenda\xE7\xF5es",
+          description: "Nenhuma a\xE7\xE3o priorit\xE1ria neste momento."
+        },
+        MOVIMENTACOES: {
+          title: "Sem movimenta\xE7\xF5es",
+          description: "Ainda n\xE3o existem registros para este per\xEDodo."
+        },
+        ENTREGA_ITENS: {
+          title: "Sem itens",
+          description: "Esta consigna\xE7\xE3o ainda n\xE3o possui produtos."
+        },
+        ENTREGA_ERRO: {
+          title: "N\xE3o foi poss\xEDvel carregar a entrega",
+          description: "Volte \xE0 Central e abra a consigna\xE7\xE3o novamente."
+        },
+        CENTRAL_TAREFAS: {
+          title: "Nenhuma tarefa urgente",
+          description: "N\xE3o h\xE1 a\xE7\xF5es priorit\xE1rias no momento."
+        },
+        CENTRAL_SALDOS: {
+          title: "Sem saldos pendentes",
+          description: "Nenhuma d\xEDvida eleg\xEDvel na fila."
+        },
+        CENTRAL_ENTREGAS: {
+          title: "Sem entregas previstas",
+          description: "N\xE3o h\xE1 entregas aguardando confirma\xE7\xE3o."
+        },
+        CENTRAL_RECENTES: {
+          title: "Sem opera\xE7\xF5es recentes",
+          description: "As opera\xE7\xF5es aparecer\xE3o aqui conforme forem realizadas."
+        },
+        WORKFLOW_FILA: {
+          title: "Fila vazia",
+          description: "Nenhum processo no escopo atual."
+        },
+        WORKFLOW_HISTORICO: {
+          title: "Hist\xF3rico vazio",
+          description: "A\xE7\xF5es locais aparecer\xE3o aqui."
+        },
+        PLAYBOOKS: {
+          title: "Nenhum guia operacional",
+          description: "Ajuste os filtros ou inicie um novo guia."
+        },
+        PLAYBOOKS_HISTORICO: {
+          title: "Sem hist\xF3rico",
+          description: "Guias operacionais iniciados aparecer\xE3o aqui."
+        },
+        CONTA_CORRENTE_ALERTAS: {
+          title: "Sem alertas",
+          description: "Nenhum alerta financeiro."
+        },
+        CONTA_CORRENTE_PENDENCIAS: {
+          title: "Sem pend\xEAncias",
+          description: "Nenhuma pend\xEAncia financeira."
+        },
+        RELATORIO_DADOS: {
+          title: "Sem dados",
+          description: "Nenhum registro para os filtros aplicados."
+        },
+        RELATORIO_FAVORITOS: {
+          title: "Sem favoritos",
+          description: "Salve filtros ou relat\xF3rios frequentes."
+        },
+        TIMELINE: {
+          title: "Sem eventos",
+          description: "Nenhum evento na timeline."
+        },
+        PRESTACAO_NAO_ENCONTRADA: {
+          title: "Consigna\xE7\xE3o n\xE3o encontrada",
+          description: "Volte e selecione outra consigna\xE7\xE3o."
+        },
+        CLIENTE_360_VAZIO: {
+          title: "Sem registros",
+          description: "Ainda n\xE3o h\xE1 dados para esta se\xE7\xE3o."
+        }
+      });
+      module.exports = EmptyMessages;
+    }
+  });
+
+  // frontend/modules/motor-comercial/messages/LoadingMessages.js
+  var require_LoadingMessages = __commonJS({
+    "frontend/modules/motor-comercial/messages/LoadingMessages.js"(exports, module) {
+      var LoadingMessages = Object.freeze({
+        CRIANDO_CONSIGNACAO: "Criando consigna\xE7\xE3o...",
+        SALVANDO_RASCUNHO: "Salvando rascunho...",
+        PREPARANDO_ENTREGA: "Preparando entrega...",
+        CARREGANDO_CLIENTE: "Carregando cliente...",
+        BUSCANDO_CLIENTES: "Buscando clientes...",
+        CARREGANDO_CONSIGNACAO: "Carregando consigna\xE7\xE3o...",
+        REGISTRANDO_ENTREGA: "Registrando entrega...",
+        REMOVENDO_ITEM: "Removendo item...",
+        ABRINDO_PRESTACAO: "Abrindo presta\xE7\xE3o...",
+        CARREGANDO_PRESTACAO: "Carregando presta\xE7\xE3o...",
+        ENCERRANDO_PRESTACAO: "Encerrando presta\xE7\xE3o...",
+        SALVANDO_RATEIO: "Salvando rateio da perda...",
+        EMITINDO_NFCE: "Emitindo NFC-e...",
+        REGISTRANDO_PAGAMENTO: "Registrando pagamento...",
+        REGISTRANDO_RECEBIMENTO: "Registrando recebimento...",
+        ATUALIZANDO_DASHBOARD: "Atualizando Dashboard...",
+        CARREGANDO_PERFIL: "Carregando perfil...",
+        SALVANDO_CLIENTE: "Salvando cliente...",
+        DESATIVANDO_CLIENTE: "Desativando cliente...",
+        EXCLUINDO_CLIENTE: "Excluindo cliente...",
+        MONTANDO_COMPROVANTE: "Montando comprovante...",
+        EXPORTANDO_PDF: "Exportando PDF...",
+        EXPORTANDO_EXCEL: "Exportando planilha...",
+        CANCELANDO_CONSIGNACAO: "Cancelando consigna\xE7\xE3o...",
+        DUPLICANDO_CONSIGNACAO: "Duplicando consigna\xE7\xE3o..."
+      });
+      module.exports = LoadingMessages;
+    }
+  });
+
+  // frontend/modules/motor-comercial/messages/ConfirmMessages.js
+  var require_ConfirmMessages = __commonJS({
+    "frontend/modules/motor-comercial/messages/ConfirmMessages.js"(exports, module) {
+      var ConfirmMessages = Object.freeze({
+        CANCELAR_CONSIGNACAO: {
+          title: "Cancelar consigna\xE7\xE3o",
+          message: "Deseja cancelar esta consigna\xE7\xE3o em rascunho?\nEsta a\xE7\xE3o n\xE3o pode ser desfeita."
+        },
+        DUPLICAR_CONSIGNACAO: {
+          title: "Duplicar consigna\xE7\xE3o",
+          message: "Deseja duplicar esta consigna\xE7\xE3o?"
+        },
+        CONFIRMAR_ENTREGA: {
+          title: "Confirmar entrega",
+          message: "Deseja confirmar a entrega desta consigna\xE7\xE3o?"
+        },
+        CANCELAR_ENTREGA: {
+          title: "Cancelar entrega",
+          message: "Deseja cancelar a entrega e voltar?"
+        },
+        SAIR_WIZARD: {
+          title: "Cancelar",
+          message: "Existem altera\xE7\xF5es n\xE3o salvas. Deseja sair?"
+        },
+        TROCAR_CLIENTE: {
+          title: "Trocar cliente",
+          message: "Trocar o cliente remove os produtos j\xE1 adicionados. Deseja continuar?"
+        },
+        ENCERRAR_PRESTACAO: {
+          title: "Encerrar Presta\xE7\xE3o",
+          message: "Deseja encerrar esta presta\xE7\xE3o de contas?"
+        },
+        SAIR_ATENDIMENTO: {
+          title: "Sair do atendimento",
+          message: "Deseja sair do atendimento? Altera\xE7\xF5es n\xE3o salvas podem ser perdidas."
+        },
+        REABRIR_PRESTACAO: {
+          title: "Reabrir presta\xE7\xE3o",
+          message: "Deseja reabrir esta presta\xE7\xE3o de contas?"
+        },
+        EXCLUIR_CLIENTE: {
+          title: "Excluir cliente",
+          message: "Deseja excluir este cliente?\nEsta a\xE7\xE3o n\xE3o pode ser desfeita."
+        },
+        DESATIVAR_CLIENTE: {
+          title: "Desativar cliente",
+          message: "Deseja desativar este cliente?"
+        },
+        DESBLOQUEAR_PERFIL: {
+          title: "Desbloquear perfil",
+          message: "Deseja desbloquear o perfil comercial deste cliente?"
+        },
+        BLOQUEAR_PERFIL: {
+          title: "Bloquear perfil",
+          message: "Deseja bloquear o perfil comercial deste cliente?"
+        },
+        RESOLVER_ALERTA: {
+          title: "Resolver alerta",
+          message: "Marcar este alerta como resolvido?"
+        },
+        IGNORAR_ALERTA: {
+          title: "Ignorar alerta",
+          message: "Ignorar este alerta?"
+        },
+        INICIAR_PLAYBOOK: {
+          title: "Iniciar guia operacional",
+          message: "Iniciar este guia? Nenhuma a\xE7\xE3o ser\xE1 executada automaticamente."
+        },
+        IGNORAR_PASSO: {
+          title: "Ignorar passo",
+          message: "Ignorar este passo?"
+        },
+        CONCLUIR_WORKFLOW: {
+          title: "Concluir",
+          message: "Concluir este processo?"
+        }
+      });
+      module.exports = ConfirmMessages;
+    }
+  });
+
+  // frontend/modules/motor-comercial/messages/resolveOperationalError.js
+  var require_resolveOperationalError = __commonJS({
+    "frontend/modules/motor-comercial/messages/resolveOperationalError.js"(exports, module) {
+      var ErrorMessages = require_ErrorMessages();
+      var RecoveryMessages = require_RecoveryMessages();
+      function resolveOperationalError(error, options = {}) {
+        if (error && error.operationalMessage) {
+          return String(error.operationalMessage);
+        }
+        const raw = String(error && error.message || error || "").trim();
+        const ctx = String(options.context || "").toLowerCase();
+        if (/network|failed to fetch|offline|econnrefused|timeout|net::|socket/i.test(raw)) {
+          return RecoveryMessages.CONEXAO;
+        }
+        if (/checksum|corrupt|integridade|invalid checkpoint/i.test(raw)) {
+          return RecoveryMessages.OPERACAO_CORROMPIDA;
+        }
+        if (/autoriza.*expir|auth.*expir/i.test(raw)) {
+          return RecoveryMessages.AUTH_EXPIRADA;
+        }
+        if (/expir/i.test(raw)) {
+          return RecoveryMessages.OPERACAO_EXPIRADA;
+        }
+        if (/não encontrada|nao encontrada|not found|404|removid/i.test(raw)) {
+          if (ctx.includes("cliente")) return ErrorMessages.CLIENTE_NAO_ENCONTRADO;
+          return RecoveryMessages.OPERACAO_REMOVIDA;
+        }
+        if (/não pode mais ser retomada|nao pode mais ser retomada|not resumable/i.test(raw)) {
+          return RecoveryMessages.RETOMADA_INDISPONIVEL;
+        }
+        if (/permiss|autorizad|forbidden|401|403/i.test(raw)) {
+          return ErrorMessages.PERMISSAO;
+        }
+        if (/identificador|id.*não|id.*nao|sem id/i.test(raw)) {
+          return ErrorMessages.CONSIGNACAO_ID_AUSENTE;
+        }
+        if (ctx.includes("criar") || ctx.includes("create")) return ErrorMessages.CONSIGNACAO_CRIAR;
+        if (ctx.includes("rascunho") || ctx.includes("draft")) return ErrorMessages.CONSIGNACAO_SALVAR_RASCUNHO;
+        if (ctx.includes("entrega") || ctx.includes("deliver")) return ErrorMessages.ENTREGA_REGISTRAR;
+        if (ctx.includes("pagamento") || ctx.includes("payment")) return ErrorMessages.PAGAMENTO_REGISTRAR;
+        if (ctx.includes("prestacao") || ctx.includes("presta\xE7\xE3o")) return ErrorMessages.PRESTACAO_CARREGAR;
+        if (ctx.includes("perfil")) return ErrorMessages.PERFIL_CARREGAR;
+        if (ctx.includes("dashboard")) return ErrorMessages.DASHBOARD_CARREGAR;
+        if (raw && raw.length < 180 && !/typeerror|cannot read|undefined is not|null is not/i.test(raw)) {
+          return raw;
+        }
+        return RecoveryMessages.RETOMADA_INDISPONIVEL;
+      }
+      module.exports = {
+        resolveOperationalError
+      };
+    }
+  });
+
+  // frontend/modules/motor-comercial/components/navigation/Modal.js
+  var require_Modal2 = __commonJS({
+    "frontend/modules/motor-comercial/components/navigation/Modal.js"(exports, module) {
+      module.exports = require_Modal();
+    }
+  });
+
+  // frontend/modules/motor-comercial/components/base/Button.js
+  var require_Button2 = __commonJS({
+    "frontend/modules/motor-comercial/components/base/Button.js"(exports, module) {
+      module.exports = require_Button();
+    }
+  });
+
+  // frontend/modules/motor-comercial/components/form/Input.js
+  var require_Input2 = __commonJS({
+    "frontend/modules/motor-comercial/components/form/Input.js"(exports, module) {
+      module.exports = require_Input();
+    }
+  });
+
+  // frontend/modules/motor-comercial/utils/autorizacao.js
+  var require_autorizacao = __commonJS({
+    "frontend/modules/motor-comercial/utils/autorizacao.js"(exports, module) {
+      var PERMISSOES_OPERACAO_COMERCIAL = Object.freeze([
+        "COMERCIAL_CONSIGNACAO",
+        "COMERCIAL_ACERTO"
+      ]);
+      var PERMISSAO_LIMITE_COMERCIAL = "COMERCIAL_LIMITE";
+      var PERFIS_ADMIN = Object.freeze(["ADMIN", "SUPER_ADMIN"]);
+      var PERFIS_SUPERVISOR = Object.freeze(["SUPERVISOR", ...PERFIS_ADMIN]);
+      function getUsuarioLogado() {
+        if (typeof localStorage === "undefined") return null;
+        try {
+          const raw = localStorage.getItem("user");
+          return raw ? JSON.parse(raw) : null;
+        } catch {
+          return null;
+        }
+      }
+      function normalizarPerfil(perfil) {
+        return String(perfil || "").trim().toUpperCase();
+      }
+      function isAdminOuSupervisor(user) {
+        if (!user) return false;
+        if (user.role === "admin") return true;
+        const perfil = normalizarPerfil(user.perfil);
+        return PERFIS_SUPERVISOR.includes(perfil) || user.role === "supervisor";
+      }
+      function possuiPermissao(permissao) {
+        const user = getUsuarioLogado();
+        if (!(user == null ? void 0 : user.id)) return false;
+        if (isAdminOuSupervisor(user)) return true;
+        const permissoes = Array.isArray(user.permissoes) ? user.permissoes : [];
+        return permissoes.includes(permissao);
+      }
+      function isOperadorAutorizado() {
+        const user = getUsuarioLogado();
+        if (!(user == null ? void 0 : user.id)) return false;
+        if (isAdminOuSupervisor(user)) return true;
+        return PERMISSOES_OPERACAO_COMERCIAL.some((p3) => possuiPermissao(p3));
+      }
+      function isAutorizacaoGerencial() {
+        const user = getUsuarioLogado();
+        if (!(user == null ? void 0 : user.id)) return false;
+        return isAdminOuSupervisor(user);
+      }
+      function podeAlterarLimiteComercial() {
+        const user = getUsuarioLogado();
+        if (!(user == null ? void 0 : user.id)) return false;
+        if (user.role === "admin") return true;
+        const perfil = normalizarPerfil(user.perfil);
+        if (PERFIS_ADMIN.includes(perfil)) return true;
+        const permissoes = Array.isArray(user.permissoes) ? user.permissoes : [];
+        return permissoes.includes(PERMISSAO_LIMITE_COMERCIAL);
+      }
+      module.exports = {
+        PERMISSOES_OPERACAO_COMERCIAL,
+        PERMISSAO_LIMITE_COMERCIAL,
+        getUsuarioLogado,
+        possuiPermissao,
+        isOperadorAutorizado,
+        isAutorizacaoGerencial,
+        podeAlterarLimiteComercial
+      };
+    }
+  });
+
+  // frontend/modules/motor-comercial/utils/formField.js
+  var require_formField = __commonJS({
+    "frontend/modules/motor-comercial/utils/formField.js"(exports, module) {
+      function extrairValorInput(field) {
+        if (!field) return "";
+        if (field.tagName === "INPUT" || field.tagName === "TEXTAREA" || field.tagName === "SELECT") {
+          return String(field.value || "").trim();
+        }
+        const input = field.querySelector("input, textarea, select");
+        return input ? String(input.value || "").trim() : "";
+      }
+      module.exports = {
+        extrairValorInput
+      };
+    }
+  });
+
+  // frontend/shared/recovery/RecoveryStatus.js
+  var require_RecoveryStatus = __commonJS({
+    "frontend/shared/recovery/RecoveryStatus.js"(exports, module) {
+      var RecoveryStatus = Object.freeze({
+        NOVO: "NOVO",
+        RASCUNHO: "RASCUNHO",
+        EM_ANDAMENTO: "EM_ANDAMENTO",
+        AGUARDANDO_CONFIRMACAO: "AGUARDANDO_CONFIRMACAO",
+        AGUARDANDO_IMPRESSAO: "AGUARDANDO_IMPRESSAO",
+        AGUARDANDO_ASSINATURA: "AGUARDANDO_ASSINATURA",
+        CONCLUIDO: "CONCLUIDO",
+        CANCELADO: "CANCELADO"
+      });
+      var ACTIVE_STATUSES = Object.freeze([
+        RecoveryStatus.NOVO,
+        RecoveryStatus.RASCUNHO,
+        RecoveryStatus.EM_ANDAMENTO,
+        RecoveryStatus.AGUARDANDO_CONFIRMACAO,
+        RecoveryStatus.AGUARDANDO_IMPRESSAO,
+        RecoveryStatus.AGUARDANDO_ASSINATURA
+      ]);
+      var TERMINAL_STATUSES = Object.freeze([
+        RecoveryStatus.CONCLUIDO,
+        RecoveryStatus.CANCELADO
+      ]);
+      function isActiveStatus(status) {
+        return ACTIVE_STATUSES.includes(status);
+      }
+      function isTerminalStatus(status) {
+        return TERMINAL_STATUSES.includes(status);
+      }
+      function isValidStatus(status) {
+        return Object.values(RecoveryStatus).includes(status);
+      }
+      module.exports = {
+        RecoveryStatus,
+        ACTIVE_STATUSES,
+        TERMINAL_STATUSES,
+        isActiveStatus,
+        isTerminalStatus,
+        isValidStatus
+      };
+    }
+  });
+
+  // frontend/shared/recovery/RecoveryEvents.js
+  var require_RecoveryEvents = __commonJS({
+    "frontend/shared/recovery/RecoveryEvents.js"(exports, module) {
+      var EVENT_TYPES = Object.freeze({
+        RECOVERY_OPEN: "RECOVERY_OPEN",
+        RECOVERY_SAVE: "RECOVERY_SAVE",
+        RECOVERY_AUTOSAVE: "RECOVERY_AUTOSAVE",
+        RECOVERY_RESUME: "RECOVERY_RESUME",
+        RECOVERY_COMPLETE: "RECOVERY_COMPLETE",
+        RECOVERY_CANCEL: "RECOVERY_CANCEL",
+        RECOVERY_LOAD: "RECOVERY_LOAD",
+        RECOVERY_CLEAR: "RECOVERY_CLEAR",
+        RECOVERY_VALIDATE: "RECOVERY_VALIDATE",
+        RECOVERY_RECOVERED: "RECOVERY_RECOVERED",
+        RECOVERY_DISCARDED: "RECOVERY_DISCARDED",
+        RECOVERY_EXPIRED: "RECOVERY_EXPIRED",
+        RECOVERY_AUTH_RESTORED: "RECOVERY_AUTH_RESTORED"
+      });
+      var DOM_EVENT = "cds:recovery";
+      var MAX_LOG = 200;
+      var auditLog = [];
+      function emit(type, detail = {}) {
+        const entry = {
+          type,
+          at: (/* @__PURE__ */ new Date()).toISOString(),
+          ...detail
+        };
+        auditLog.push(entry);
+        if (auditLog.length > MAX_LOG) auditLog.shift();
+        if (typeof document !== "undefined" && typeof CustomEvent === "function") {
+          try {
+            document.dispatchEvent(new CustomEvent(DOM_EVENT, { detail: entry }));
+          } catch (_e2) {
+          }
+        }
+        if (typeof console !== "undefined" && typeof console.info === "function") {
+          console.info(`[CDS Recovery] ${type}`, entry);
+        }
+        return entry;
+      }
+      function getAuditLog() {
+        return auditLog.slice();
+      }
+      function clearAuditLog() {
+        auditLog.length = 0;
+      }
+      module.exports = {
+        EVENT_TYPES,
+        DOM_EVENT,
+        emit,
+        getAuditLog,
+        clearAuditLog
+      };
+    }
+  });
+
+  // frontend/shared/recovery/RecoveryValidation.js
+  var require_RecoveryValidation = __commonJS({
+    "frontend/shared/recovery/RecoveryValidation.js"(exports, module) {
+      var RecoveryEvents = require_RecoveryEvents();
+      var SCHEMA_VERSION = 2;
+      function stableStringify(value) {
+        if (value === void 0) {
+          return "null";
+        }
+        if (value === null || typeof value !== "object") {
+          return JSON.stringify(value);
+        }
+        if (Array.isArray(value)) {
+          return `[${value.map(stableStringify).join(",")}]`;
+        }
+        const keys = Object.keys(value).filter((k2) => value[k2] !== void 0).sort();
+        return `{${keys.map((k2) => `${JSON.stringify(k2)}:${stableStringify(value[k2])}`).join(",")}}`;
+      }
+      function computeChecksum(parts) {
+        const payload = {
+          module: parts.module,
+          operation: parts.operation,
+          entityId: parts.entityId == null ? null : parts.entityId,
+          version: parts.version || SCHEMA_VERSION,
+          checkpoint: parts.checkpoint || {},
+          authorization: parts.authorization || null
+        };
+        const str = stableStringify(payload);
+        let hash = 5381;
+        for (let i3 = 0; i3 < str.length; i3 += 1) {
+          hash = (hash << 5) + hash + str.charCodeAt(i3);
+          hash |= 0;
+        }
+        return `v${SCHEMA_VERSION}:${(hash >>> 0).toString(16)}`;
+      }
+      function seal2(record) {
+        const normalized = JSON.parse(JSON.stringify({
+          module: record.module,
+          operation: record.operation,
+          entityId: record.entityId == null ? null : record.entityId,
+          version: record.version || SCHEMA_VERSION,
+          checkpoint: record.checkpoint || {},
+          authorization: record.authorization || null,
+          status: record.status,
+          meta: record.meta || {},
+          createdAt: record.createdAt,
+          updatedAt: record.updatedAt || (/* @__PURE__ */ new Date()).toISOString()
+        }));
+        const timestamp = normalized.updatedAt;
+        const checksum = computeChecksum({
+          module: normalized.module,
+          operation: normalized.operation,
+          entityId: normalized.entityId,
+          version: SCHEMA_VERSION,
+          checkpoint: normalized.checkpoint || {},
+          authorization: normalized.authorization || null
+        });
+        return {
+          ...normalized,
+          version: SCHEMA_VERSION,
+          timestamp,
+          checksum,
+          integrity: true
+        };
+      }
+      function validate(record, options = {}) {
+        const emitAudit = options.emitAudit !== false;
+        const emit = (ok, reason) => {
+          if (!emitAudit) return;
+          RecoveryEvents.emit(RecoveryEvents.EVENT_TYPES.RECOVERY_VALIDATE, {
+            module: record == null ? void 0 : record.module,
+            operation: record == null ? void 0 : record.operation,
+            entityId: record == null ? void 0 : record.entityId,
+            ok,
+            reason: reason || null
+          });
+        };
+        if (!record || typeof record !== "object") {
+          emit(false, "EMPTY");
+          return { valid: false, reason: "EMPTY" };
+        }
+        if (!record.module || !record.operation) {
+          emit(false, "MISSING_KEYS");
+          return { valid: false, reason: "MISSING_KEYS" };
+        }
+        if (record.entityId === void 0) {
+          emit(false, "MISSING_ENTITY");
+          return { valid: false, reason: "MISSING_ENTITY" };
+        }
+        if (!record.checksum) {
+          emit(true, "LEGACY_NO_CHECKSUM");
+          return { valid: true, reason: "LEGACY_NO_CHECKSUM", upgraded: true };
+        }
+        const expected = computeChecksum({
+          module: record.module,
+          operation: record.operation,
+          entityId: record.entityId,
+          version: record.version || SCHEMA_VERSION,
+          checkpoint: record.checkpoint || {},
+          authorization: record.authorization || null
+        });
+        if (record.checksum !== expected) {
+          emit(false, "CHECKSUM_MISMATCH");
+          return { valid: false, reason: "CHECKSUM_MISMATCH" };
+        }
+        emit(true, "OK");
+        return { valid: true, reason: "OK" };
+      }
+      function isDraftEntityId(entityId) {
+        return typeof entityId === "string" && entityId.startsWith("draft-");
+      }
+      function createDraftEntityId() {
+        const rand = Math.random().toString(36).slice(2, 10);
+        return `draft-${Date.now()}-${rand}`;
+      }
+      module.exports = {
+        SCHEMA_VERSION,
+        computeChecksum,
+        seal: seal2,
+        validate,
+        isDraftEntityId,
+        createDraftEntityId,
+        stableStringify
+      };
+    }
+  });
+
+  // frontend/shared/recovery/RecoveryContext.js
+  var require_RecoveryContext = __commonJS({
+    "frontend/shared/recovery/RecoveryContext.js"(exports, module) {
+      var { RecoveryStatus, isValidStatus } = require_RecoveryStatus();
+      var { SCHEMA_VERSION } = require_RecoveryValidation();
+      function normalizeAuthorization(auth) {
+        if (!auth || typeof auth !== "object") return null;
+        if (auth.authorized !== true && auth.autorizado !== true) return null;
+        return {
+          authorized: true,
+          authorizedBy: auth.authorizedBy || auth.supervisorUsername || auth.username || null,
+          authorizedAt: auth.authorizedAt || auth.at || (/* @__PURE__ */ new Date()).toISOString(),
+          reason: auth.reason || auth.motivo || null,
+          expiresOnComplete: auth.expiresOnComplete !== false,
+          expiresAt: auth.expiresAt || null,
+          fingerprint: auth.fingerprint || null,
+          supervisorToken: auth.supervisorToken || null,
+          consignacaoId: auth.consignacaoId != null ? auth.consignacaoId : null
+        };
+      }
+      var RecoveryContext = class _RecoveryContext {
+        /**
+         * @param {Object} data
+         */
+        constructor(data = {}) {
+          this.module = data.module;
+          this.operation = data.operation;
+          this.entityId = data.entityId == null ? null : data.entityId;
+          this.status = isValidStatus(data.status) ? data.status : RecoveryStatus.NOVO;
+          this.checkpoint = data.checkpoint && typeof data.checkpoint === "object" && !Array.isArray(data.checkpoint) ? data.checkpoint : {};
+          this.meta = data.meta && typeof data.meta === "object" ? data.meta : {};
+          this.authorization = normalizeAuthorization(data.authorization);
+          this.createdAt = data.createdAt || (/* @__PURE__ */ new Date()).toISOString();
+          this.updatedAt = data.updatedAt || this.createdAt;
+          this.timestamp = data.timestamp || this.updatedAt;
+          this.version = data.version || SCHEMA_VERSION;
+          this.checksum = data.checksum || null;
+          this.integrity = data.integrity !== false;
+        }
+        get keyParts() {
+          return {
+            module: this.module,
+            operation: this.operation,
+            entityId: this.entityId
+          };
+        }
+        withCheckpoint(checkpoint = {}, status = null) {
+          return new _RecoveryContext({
+            ...this.toJSON(),
+            checkpoint: { ...this.checkpoint, ...checkpoint },
+            status: status && isValidStatus(status) ? status : this.status,
+            updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+            checksum: null
+          });
+        }
+        withStatus(status) {
+          return new _RecoveryContext({
+            ...this.toJSON(),
+            status: isValidStatus(status) ? status : this.status,
+            updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+            checksum: null
+          });
+        }
+        withEntityId(entityId) {
+          return new _RecoveryContext({
+            ...this.toJSON(),
+            entityId,
+            updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+            checksum: null
+          });
+        }
+        withAuthorization(authorization) {
+          return new _RecoveryContext({
+            ...this.toJSON(),
+            authorization: authorization == null ? null : normalizeAuthorization(authorization),
+            updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+            checksum: null
+          });
+        }
+        clearAuthorization() {
+          return this.withAuthorization(null);
+        }
+        isAuthorizationValid(fingerprint = null) {
+          const auth = this.authorization;
+          if (!auth || !auth.authorized) return false;
+          if (auth.expiresAt && new Date(auth.expiresAt).getTime() < Date.now()) return false;
+          if (fingerprint && auth.fingerprint && auth.fingerprint !== fingerprint) return false;
+          return true;
+        }
+        /** Formato compatível com liberação gerencial do Motor Comercial */
+        toLiberacaoCompat() {
+          if (!this.isAuthorizationValid()) return null;
+          const a3 = this.authorization;
+          return {
+            autorizado: true,
+            authorized: true,
+            authorizedBy: a3.authorizedBy,
+            authorizedAt: a3.authorizedAt,
+            motivo: a3.reason,
+            reason: a3.reason,
+            expiresOnComplete: a3.expiresOnComplete,
+            expiresAt: a3.expiresAt,
+            fingerprint: a3.fingerprint,
+            supervisorToken: a3.supervisorToken,
+            consignacaoId: a3.consignacaoId != null ? a3.consignacaoId : this.entityId
+          };
+        }
+        toJSON() {
+          return {
+            module: this.module,
+            operation: this.operation,
+            entityId: this.entityId,
+            status: this.status,
+            checkpoint: this.checkpoint,
+            meta: this.meta,
+            authorization: this.authorization,
+            createdAt: this.createdAt,
+            updatedAt: this.updatedAt,
+            timestamp: this.timestamp || this.updatedAt,
+            version: this.version,
+            checksum: this.checksum,
+            integrity: this.integrity
+          };
+        }
+        static fromJSON(data) {
+          if (!data || !data.module || !data.operation) return null;
+          return new _RecoveryContext(data);
+        }
+      };
+      module.exports = RecoveryContext;
+    }
+  });
+
+  // frontend/shared/recovery/RecoveryStorage.js
+  var require_RecoveryStorage = __commonJS({
+    "frontend/shared/recovery/RecoveryStorage.js"(exports, module) {
+      var STORAGE_KEY = "cds-recovery:v1";
+      function getStore() {
+        if (typeof localStorage === "undefined") return { records: {} };
+        try {
+          const raw = localStorage.getItem(STORAGE_KEY);
+          if (!raw) return { records: {} };
+          const parsed = JSON.parse(raw);
+          if (!parsed || typeof parsed !== "object") return { records: {} };
+          if (!parsed.records || typeof parsed.records !== "object") return { records: {} };
+          return parsed;
+        } catch (_e2) {
+          return { records: {} };
+        }
+      }
+      function writeStore(store) {
+        if (typeof localStorage === "undefined") return false;
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+          return true;
+        } catch (_e2) {
+          return false;
+        }
+      }
+      function buildKey(moduleId, operation, entityId) {
+        return `${moduleId}::${operation}::${entityId == null ? "_" : String(entityId)}`;
+      }
+      function read(key) {
+        const store = getStore();
+        return store.records[key] || null;
+      }
+      function write(key, record) {
+        const store = getStore();
+        store.records[key] = { ...record };
+        if (!store.records[key].updatedAt) {
+          store.records[key].updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+        }
+        return writeStore(store);
+      }
+      function remove(key) {
+        const store = getStore();
+        if (!store.records[key]) return false;
+        delete store.records[key];
+        return writeStore(store);
+      }
+      function listAll() {
+        const store = getStore();
+        return Object.keys(store.records).map((key) => ({
+          key,
+          ...store.records[key]
+        }));
+      }
+      function clearAll() {
+        return writeStore({ records: {} });
+      }
+      function clearModule(moduleId) {
+        const store = getStore();
+        Object.keys(store.records).forEach((key) => {
+          var _a2;
+          if (((_a2 = store.records[key]) == null ? void 0 : _a2.module) === moduleId) {
+            delete store.records[key];
+          }
+        });
+        return writeStore(store);
+      }
+      module.exports = {
+        STORAGE_KEY,
+        buildKey,
+        read,
+        write,
+        remove,
+        listAll,
+        clearAll,
+        clearModule
+      };
+    }
+  });
+
+  // frontend/shared/recovery/RecoveryRegistry.js
+  var require_RecoveryRegistry = __commonJS({
+    "frontend/shared/recovery/RecoveryRegistry.js"(exports, module) {
+      var operationsByModule = /* @__PURE__ */ new Map();
+      var loaders = /* @__PURE__ */ new Map();
+      function loaderKey(moduleId, operation) {
+        return `${moduleId}::${operation}`;
+      }
+      function registerModule(moduleId, operations = []) {
+        if (!moduleId) throw new Error("moduleId \xE9 obrigat\xF3rio");
+        const list = Array.isArray(operations) ? operations.map(String) : [];
+        operationsByModule.set(moduleId, Object.freeze(list.slice()));
+        return operationsByModule.get(moduleId);
+      }
+      function registerLoader(moduleId, operation, loaderFn) {
+        if (!moduleId || !operation) throw new Error("module e operation s\xE3o obrigat\xF3rios");
+        if (typeof loaderFn !== "function") throw new Error("loaderFn deve ser fun\xE7\xE3o");
+        loaders.set(loaderKey(moduleId, operation), loaderFn);
+      }
+      function getOperations(moduleId) {
+        return operationsByModule.get(moduleId) || [];
+      }
+      function listModules() {
+        return Array.from(operationsByModule.keys());
+      }
+      function getLoader(moduleId, operation) {
+        return loaders.get(loaderKey(moduleId, operation)) || null;
+      }
+      function hasOperation(moduleId, operation) {
+        return getOperations(moduleId).includes(operation);
+      }
+      function reset() {
+        operationsByModule.clear();
+        loaders.clear();
+      }
+      module.exports = {
+        registerModule,
+        registerLoader,
+        getOperations,
+        listModules,
+        getLoader,
+        hasOperation,
+        reset
+      };
+    }
+  });
+
+  // frontend/shared/recovery/RecoveryMessages.js
+  var require_RecoveryMessages2 = __commonJS({
+    "frontend/shared/recovery/RecoveryMessages.js"(exports, module) {
+      var MESSAGES = Object.freeze({
+        NOT_RESUMABLE: "N\xE3o foi poss\xEDvel retomar esta opera\xE7\xE3o automaticamente.\n\nAbra pela Central de Consigna\xE7\xF5es e continue de onde parou.",
+        REMOVED: "Esta opera\xE7\xE3o foi removida ou n\xE3o est\xE1 mais dispon\xEDvel.\n\nAtualize a lista na Central de Consigna\xE7\xF5es.",
+        RECOVER_FAILED: "N\xE3o foi poss\xEDvel retomar esta opera\xE7\xE3o automaticamente.\n\nAbra pela Central de Consigna\xE7\xF5es e continue de onde parou.",
+        CONNECTION: "Verifique sua conex\xE3o e tente novamente.\n\nSe a opera\xE7\xE3o j\xE1 tiver sido salva, continue pela Central.",
+        CORRUPT: "O rascunho local desta opera\xE7\xE3o n\xE3o pode ser usado.\n\nAbra a consigna\xE7\xE3o pela Central \u2014 os dados oficiais est\xE3o no servidor.",
+        EXPIRED: "O prazo para retomar esta opera\xE7\xE3o expirou.\n\nInicie novamente ou abra pela Central de Consigna\xE7\xF5es.",
+        AUTH_EXPIRED: "A autoriza\xE7\xE3o gerencial desta opera\xE7\xE3o expirou.\n\nSolicite nova libera\xE7\xE3o se ainda precisar continuar."
+      });
+      function toOperationalMessage(error) {
+        const raw = String(
+          error && error.operationalMessage || error && error.message || error || ""
+        );
+        if (/não encontrada|nao encontrada|not found|404|removid/i.test(raw)) {
+          return MESSAGES.REMOVED;
+        }
+        if (/checksum|corrupt|integridade|invalid checkpoint/i.test(raw)) {
+          return MESSAGES.CORRUPT;
+        }
+        if (/network|failed to fetch|offline|econnrefused|timeout|net::|socket/i.test(raw)) {
+          return MESSAGES.CONNECTION;
+        }
+        if (/autoriza.*expir|auth.*expir/i.test(raw)) {
+          return MESSAGES.AUTH_EXPIRED;
+        }
+        if (/expir/i.test(raw)) {
+          return MESSAGES.EXPIRED;
+        }
+        if (/não pode mais ser retomada|nao pode mais ser retomada/i.test(raw)) {
+          return MESSAGES.NOT_RESUMABLE;
+        }
+        if (/não foi possível recuperar|nao foi possivel recuperar|não foi possível retomar|nao foi possivel retomar/i.test(raw)) {
+          return MESSAGES.RECOVER_FAILED;
+        }
+        if (raw && raw.length < 180 && !/typeerror|cannot read|undefined is not|null is not/i.test(raw)) {
+          return raw;
+        }
+        return MESSAGES.RECOVER_FAILED;
+      }
+      function createOperationalError(codeOrMessage, cause) {
+        const message = MESSAGES[codeOrMessage] || codeOrMessage || MESSAGES.RECOVER_FAILED;
+        const err2 = new Error(message);
+        err2.operational = true;
+        err2.operationalMessage = message;
+        if (cause) err2.cause = cause;
+        return err2;
+      }
+      module.exports = {
+        MESSAGES,
+        toOperationalMessage,
+        createOperationalError
+      };
+    }
+  });
+
+  // frontend/shared/recovery/RecoveryLoader.js
+  var require_RecoveryLoader = __commonJS({
+    "frontend/shared/recovery/RecoveryLoader.js"(exports, module) {
+      var RecoveryRegistry = require_RecoveryRegistry();
+      var RecoveryEvents = require_RecoveryEvents();
+      var RecoveryMessages = require_RecoveryMessages2();
+      var RecoveryValidation = require_RecoveryValidation();
+      async function reconstruct(context, helpers = {}) {
+        if (!context) {
+          throw RecoveryMessages.createOperationalError("NOT_RESUMABLE");
+        }
+        const loader = RecoveryRegistry.getLoader(context.module, context.operation);
+        if (!loader) {
+          RecoveryEvents.emit(RecoveryEvents.EVENT_TYPES.RECOVERY_LOAD, {
+            module: context.module,
+            operation: context.operation,
+            entityId: context.entityId,
+            ok: false,
+            reason: "LOADER_NAO_REGISTRADO"
+          });
+          return {
+            context,
+            state: {
+              entity: null,
+              checkpoint: context.checkpoint || {},
+              fromApi: false,
+              fromCheckpoint: Boolean(context.checkpoint && Object.keys(context.checkpoint).length),
+              authorization: context.authorization
+            },
+            source: "checkpoint-only"
+          };
+        }
+        try {
+          const result = await loader(context, helpers);
+          const normalized = normalizeResult(context, result);
+          RecoveryEvents.emit(RecoveryEvents.EVENT_TYPES.RECOVERY_LOAD, {
+            module: context.module,
+            operation: context.operation,
+            entityId: context.entityId,
+            ok: true,
+            source: normalized.source
+          });
+          return normalized;
+        } catch (error) {
+          if (RecoveryValidation.isDraftEntityId(context.entityId)) {
+            return {
+              context,
+              state: {
+                entity: buildDraftEntity(context),
+                checkpoint: context.checkpoint || {},
+                fromApi: false,
+                fromCheckpoint: true,
+                authorization: context.authorization
+              },
+              source: "checkpoint"
+            };
+          }
+          throw error;
+        }
+      }
+      function buildDraftEntity(context) {
+        const cp = context.checkpoint || {};
+        return {
+          id: context.entityId,
+          status: "RASCUNHO",
+          clienteId: cp.clienteId || null,
+          perfilComercialId: cp.perfilComercialId || null,
+          documento: cp.documentoNumero || null,
+          documentoExterno: cp.documentoExterno || "",
+          observacao: cp.observacoes || "",
+          dataAbertura: cp.data || null,
+          dataEntregaPrevista: cp.dataPrevista || null,
+          itens: Array.isArray(cp.itens) ? cp.itens : [],
+          _draft: true
+        };
+      }
+      function normalizeResult(context, result) {
+        if (!result || typeof result !== "object") {
+          return {
+            context,
+            state: {
+              entity: null,
+              checkpoint: context.checkpoint || {},
+              fromApi: false,
+              fromCheckpoint: true,
+              authorization: context.authorization
+            },
+            source: "empty"
+          };
+        }
+        return {
+          context: result.context || context,
+          state: {
+            entity: result.entity != null ? result.entity : null,
+            checkpoint: result.checkpoint != null ? result.checkpoint : context.checkpoint || {},
+            fromApi: Boolean(result.fromApi),
+            fromCheckpoint: Boolean(result.fromCheckpoint),
+            authorization: context.authorization,
+            extras: result.extras || {}
+          },
+          source: result.source || (result.fromApi ? "api+checkpoint" : "checkpoint")
+        };
+      }
+      module.exports = {
+        reconstruct,
+        normalizeResult,
+        buildDraftEntity
+      };
+    }
+  });
+
+  // frontend/shared/recovery/RecoveryManager.js
+  var require_RecoveryManager = __commonJS({
+    "frontend/shared/recovery/RecoveryManager.js"(exports, module) {
+      var RecoveryContext = require_RecoveryContext();
+      var RecoveryStorage = require_RecoveryStorage();
+      var RecoveryLoader = require_RecoveryLoader();
+      var RecoveryEvents = require_RecoveryEvents();
+      var RecoveryRegistry = require_RecoveryRegistry();
+      var RecoveryValidation = require_RecoveryValidation();
+      var RecoveryMessages = require_RecoveryMessages2();
+      var {
+        RecoveryStatus,
+        isActiveStatus,
+        isValidStatus
+      } = require_RecoveryStatus();
+      function requireParams({ module: moduleId, operation, entityId }) {
+        if (!moduleId) throw new Error("RecoveryManager: module \xE9 obrigat\xF3rio");
+        if (!operation) throw new Error("RecoveryManager: operation \xE9 obrigat\xF3rio");
+        return {
+          module: String(moduleId),
+          operation: String(operation),
+          entityId: entityId == null ? null : entityId
+        };
+      }
+      function storageKey(params) {
+        const p3 = requireParams(params);
+        return RecoveryStorage.buildKey(p3.module, p3.operation, p3.entityId);
+      }
+      function persistContext(ctx) {
+        const sealed = RecoveryValidation.seal(ctx.toJSON());
+        const key = RecoveryStorage.buildKey(sealed.module, sealed.operation, sealed.entityId);
+        RecoveryStorage.write(key, sealed);
+        return RecoveryContext.fromJSON(sealed);
+      }
+      function readContext(params, options = {}) {
+        const key = storageKey(params);
+        const raw = RecoveryStorage.read(key);
+        if (!raw) return null;
+        const validation = RecoveryValidation.validate(raw, { emitAudit: options.emitAudit !== false });
+        if (!validation.valid) {
+          if (options.emitAudit === false) {
+            RecoveryEvents.emit(RecoveryEvents.EVENT_TYPES.RECOVERY_VALIDATE, {
+              module: raw.module,
+              operation: raw.operation,
+              entityId: raw.entityId,
+              ok: false,
+              reason: validation.reason
+            });
+          }
+          RecoveryEvents.emit(RecoveryEvents.EVENT_TYPES.RECOVERY_DISCARDED, {
+            module: raw.module,
+            operation: raw.operation,
+            entityId: raw.entityId,
+            reason: validation.reason
+          });
+          if (options.removeInvalid !== false) {
+            RecoveryStorage.remove(key);
+          }
+          return null;
+        }
+        let ctx = RecoveryContext.fromJSON(raw);
+        if (validation.upgraded) {
+          ctx = persistContext(ctx);
+        }
+        return ctx;
+      }
+      var RecoveryHandle = class {
+        constructor(context) {
+          this._context = context;
+        }
+        get context() {
+          return this._context;
+        }
+        save(checkpoint = {}, status = null) {
+          return RecoveryManager.save(this._context.keyParts, checkpoint, status);
+        }
+        autosave(checkpoint = {}, status = null) {
+          return RecoveryManager.autosave(this._context.keyParts, checkpoint, status);
+        }
+        async load(helpers = {}) {
+          return RecoveryManager.load(this._context.keyParts, helpers);
+        }
+        async resume(helpers = {}) {
+          return RecoveryManager.resume(this._context.keyParts, helpers);
+        }
+        complete(meta = {}) {
+          return RecoveryManager.complete(this._context.keyParts, meta);
+        }
+        cancel(meta = {}) {
+          return RecoveryManager.cancel(this._context.keyParts, meta);
+        }
+        setAuthorization(authorization) {
+          return RecoveryManager.setAuthorization(this._context.keyParts, authorization);
+        }
+        exists() {
+          return RecoveryManager.exists(this._context.keyParts);
+        }
+        clear() {
+          return RecoveryManager.clear(this._context.keyParts);
+        }
+      };
+      var RecoveryManager = {
+        open(options = {}) {
+          const params = requireParams(options);
+          let ctx = readContext(params);
+          if (!ctx) {
+            ctx = new RecoveryContext({
+              module: params.module,
+              operation: params.operation,
+              entityId: params.entityId,
+              status: isValidStatus(options.status) ? options.status : RecoveryStatus.NOVO,
+              checkpoint: options.checkpoint || {},
+              meta: options.meta || {},
+              authorization: options.authorization || null
+            });
+          } else {
+            if (options.meta) {
+              ctx = new RecoveryContext({ ...ctx.toJSON(), meta: { ...ctx.meta, ...options.meta }, checksum: null });
+            }
+            if (options.checkpoint) ctx = ctx.withCheckpoint(options.checkpoint);
+            if (isValidStatus(options.status)) ctx = ctx.withStatus(options.status);
+            if (options.authorization) ctx = ctx.withAuthorization(options.authorization);
+          }
+          ctx = persistContext(ctx);
+          RecoveryEvents.emit(RecoveryEvents.EVENT_TYPES.RECOVERY_OPEN, {
+            module: ctx.module,
+            operation: ctx.operation,
+            entityId: ctx.entityId,
+            status: ctx.status
+          });
+          return new RecoveryHandle(ctx);
+        },
+        save(params, checkpoint = {}, status = null) {
+          const p3 = requireParams(params);
+          let ctx = readContext(p3, { emitAudit: false });
+          if (!ctx) {
+            ctx = new RecoveryContext({
+              module: p3.module,
+              operation: p3.operation,
+              entityId: p3.entityId,
+              status: RecoveryStatus.EM_ANDAMENTO,
+              checkpoint: {}
+            });
+          }
+          const nextStatus = isValidStatus(status) ? status : ctx.status === RecoveryStatus.NOVO ? RecoveryStatus.EM_ANDAMENTO : ctx.status;
+          ctx = ctx.withCheckpoint(checkpoint, nextStatus);
+          ctx = persistContext(ctx);
+          RecoveryEvents.emit(RecoveryEvents.EVENT_TYPES.RECOVERY_SAVE, {
+            module: ctx.module,
+            operation: ctx.operation,
+            entityId: ctx.entityId,
+            status: ctx.status
+          });
+          return new RecoveryHandle(ctx);
+        },
+        /**
+         * Autosave transparente — estado operacional apenas.
+         * Não interrompe o operador; não grava regras de negócio no backend.
+         */
+        autosave(params, checkpoint = {}, status = null) {
+          const handle = RecoveryManager.save(params, checkpoint, status || RecoveryStatus.EM_ANDAMENTO);
+          RecoveryEvents.emit(RecoveryEvents.EVENT_TYPES.RECOVERY_AUTOSAVE, {
+            module: handle.context.module,
+            operation: handle.context.operation,
+            entityId: handle.context.entityId,
+            status: handle.context.status
+          });
+          return handle;
+        },
+        setAuthorization(params, authorization) {
+          const p3 = requireParams(params);
+          let ctx = readContext(p3, { emitAudit: false });
+          if (!ctx) {
+            ctx = new RecoveryContext({
+              module: p3.module,
+              operation: p3.operation,
+              entityId: p3.entityId,
+              status: RecoveryStatus.EM_ANDAMENTO
+            });
+          }
+          ctx = ctx.withAuthorization(authorization);
+          ctx = persistContext(ctx);
+          return new RecoveryHandle(ctx);
+        },
+        getAuthorization(params) {
+          const ctx = readContext(requireParams(params), { emitAudit: false });
+          if (!ctx) return null;
+          if (!ctx.isAuthorizationValid()) {
+            if (ctx.authorization) {
+              RecoveryEvents.emit(RecoveryEvents.EVENT_TYPES.RECOVERY_EXPIRED, {
+                module: ctx.module,
+                operation: ctx.operation,
+                entityId: ctx.entityId,
+                scope: "authorization"
+              });
+            }
+            return null;
+          }
+          return ctx.toLiberacaoCompat();
+        },
+        async load(params, helpers = {}) {
+          const p3 = requireParams(params);
+          const ctx = readContext(p3);
+          if (!ctx) {
+            return { exists: false, context: null, state: null, source: null, error: null };
+          }
+          try {
+            const reconstructed = await RecoveryLoader.reconstruct(ctx, helpers);
+            return {
+              exists: true,
+              context: reconstructed.context,
+              state: reconstructed.state,
+              source: reconstructed.source,
+              error: null
+            };
+          } catch (error) {
+            const operationalMessage = RecoveryMessages.toOperationalMessage(error);
+            return {
+              exists: true,
+              context: ctx,
+              state: {
+                entity: null,
+                checkpoint: ctx.checkpoint || {},
+                fromApi: false,
+                fromCheckpoint: true,
+                authorization: ctx.authorization
+              },
+              source: "checkpoint-degraded",
+              error: {
+                technical: String(error && error.message || error),
+                operationalMessage
+              }
+            };
+          }
+        },
+        async resume(params, helpers = {}) {
+          var _a2, _b2, _c;
+          const loaded = await RecoveryManager.load(params, helpers);
+          if (!loaded.exists) {
+            return loaded;
+          }
+          RecoveryEvents.emit(RecoveryEvents.EVENT_TYPES.RECOVERY_RESUME, {
+            module: loaded.context.module,
+            operation: loaded.context.operation,
+            entityId: loaded.context.entityId,
+            status: loaded.context.status,
+            source: loaded.source
+          });
+          if (!loaded.error) {
+            RecoveryEvents.emit(RecoveryEvents.EVENT_TYPES.RECOVERY_RECOVERED, {
+              module: loaded.context.module,
+              operation: loaded.context.operation,
+              entityId: loaded.context.entityId,
+              source: loaded.source
+            });
+          }
+          if ((_b2 = (_a2 = loaded.context) == null ? void 0 : _a2.isAuthorizationValid) == null ? void 0 : _b2.call(_a2)) {
+            RecoveryEvents.emit(RecoveryEvents.EVENT_TYPES.RECOVERY_AUTH_RESTORED, {
+              module: loaded.context.module,
+              operation: loaded.context.operation,
+              entityId: loaded.context.entityId,
+              authorizedBy: (_c = loaded.context.authorization) == null ? void 0 : _c.authorizedBy
+            });
+          }
+          return loaded;
+        },
+        complete(params, meta = {}) {
+          const p3 = requireParams(params);
+          let ctx = readContext(p3, { emitAudit: false });
+          if (!ctx) {
+            ctx = new RecoveryContext({
+              module: p3.module,
+              operation: p3.operation,
+              entityId: p3.entityId,
+              status: RecoveryStatus.CONCLUIDO,
+              meta
+            });
+          } else {
+            if (ctx.authorization && ctx.authorization.expiresOnComplete !== false) {
+              ctx = ctx.clearAuthorization();
+            }
+            ctx = ctx.withStatus(RecoveryStatus.CONCLUIDO);
+            if (meta && Object.keys(meta).length) {
+              ctx = new RecoveryContext({ ...ctx.toJSON(), meta: { ...ctx.meta, ...meta }, checksum: null });
+            }
+          }
+          ctx = persistContext(ctx);
+          RecoveryEvents.emit(RecoveryEvents.EVENT_TYPES.RECOVERY_COMPLETE, {
+            module: ctx.module,
+            operation: ctx.operation,
+            entityId: ctx.entityId
+          });
+          return new RecoveryHandle(ctx);
+        },
+        cancel(params, meta = {}) {
+          const p3 = requireParams(params);
+          let ctx = readContext(p3, { emitAudit: false });
+          if (!ctx) {
+            ctx = new RecoveryContext({
+              module: p3.module,
+              operation: p3.operation,
+              entityId: p3.entityId,
+              status: RecoveryStatus.CANCELADO,
+              meta
+            });
+          } else {
+            ctx = ctx.clearAuthorization().withStatus(RecoveryStatus.CANCELADO);
+            if (meta && Object.keys(meta).length) {
+              ctx = new RecoveryContext({ ...ctx.toJSON(), meta: { ...ctx.meta, ...meta }, checksum: null });
+            }
+          }
+          ctx = persistContext(ctx);
+          RecoveryEvents.emit(RecoveryEvents.EVENT_TYPES.RECOVERY_CANCEL, {
+            module: ctx.module,
+            operation: ctx.operation,
+            entityId: ctx.entityId
+          });
+          return new RecoveryHandle(ctx);
+        },
+        exists(params) {
+          const ctx = readContext(requireParams(params), { emitAudit: false });
+          return Boolean(ctx && isActiveStatus(ctx.status));
+        },
+        listPending(filter = {}) {
+          const all = RecoveryStorage.listAll();
+          return all.map((row) => {
+            const validation = RecoveryValidation.validate(row, { emitAudit: false });
+            if (!validation.valid) {
+              RecoveryEvents.emit(RecoveryEvents.EVENT_TYPES.RECOVERY_DISCARDED, {
+                module: row.module,
+                operation: row.operation,
+                entityId: row.entityId,
+                reason: validation.reason
+              });
+              RecoveryStorage.remove(RecoveryStorage.buildKey(row.module, row.operation, row.entityId));
+              return null;
+            }
+            return RecoveryContext.fromJSON(row);
+          }).filter(Boolean).filter((ctx) => isActiveStatus(ctx.status)).filter((ctx) => !filter.module || ctx.module === filter.module).map((ctx) => ctx.toJSON()).sort((a3, b2) => String(b2.updatedAt).localeCompare(String(a3.updatedAt)));
+        },
+        clear(params) {
+          const p3 = requireParams(params);
+          const key = storageKey(p3);
+          const ok = RecoveryStorage.remove(key);
+          RecoveryEvents.emit(RecoveryEvents.EVENT_TYPES.RECOVERY_CLEAR, {
+            module: p3.module,
+            operation: p3.operation,
+            entityId: p3.entityId,
+            ok
+          });
+          return ok;
+        },
+        rebind(params, newEntityId) {
+          const p3 = requireParams(params);
+          const oldKey = storageKey(p3);
+          const raw = RecoveryStorage.read(oldKey);
+          if (!raw) {
+            return RecoveryManager.open({ ...p3, entityId: newEntityId });
+          }
+          RecoveryStorage.remove(oldKey);
+          let ctx = new RecoveryContext({
+            ...raw,
+            entityId: newEntityId,
+            updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+            checksum: null
+          });
+          if (ctx.authorization) {
+            ctx = ctx.withAuthorization({
+              ...ctx.authorization,
+              consignacaoId: newEntityId
+            });
+          }
+          ctx = persistContext(ctx);
+          return new RecoveryHandle(ctx);
+        },
+        get(params) {
+          return readContext(requireParams(params), { emitAudit: false });
+        },
+        validate(params) {
+          const p3 = requireParams(params);
+          const raw = RecoveryStorage.read(storageKey(p3));
+          return RecoveryValidation.validate(raw || {});
+        },
+        createDraftEntityId: RecoveryValidation.createDraftEntityId,
+        isDraftEntityId: RecoveryValidation.isDraftEntityId,
+        Registry: RecoveryRegistry,
+        Status: RecoveryStatus,
+        Events: RecoveryEvents,
+        Messages: RecoveryMessages,
+        Validation: RecoveryValidation
+      };
+      module.exports = RecoveryManager;
+    }
+  });
+
+  // frontend/shared/recovery/RecoveryProvider.js
+  var require_RecoveryProvider = __commonJS({
+    "frontend/shared/recovery/RecoveryProvider.js"(exports, module) {
+      var RECONSTRUCTION_ORDER = Object.freeze([
+        "api",
+        "provider",
+        "checkpoint",
+        "cache"
+      ]);
+      var providers = /* @__PURE__ */ new Map();
+      function providerKey(moduleId, operation) {
+        return `${moduleId}::${operation}`;
+      }
+      function register(moduleId, operation, fn) {
+        if (typeof fn !== "function") throw new Error("RecoveryProvider: fn inv\xE1lida");
+        providers.set(providerKey(moduleId, operation), fn);
+      }
+      function get(moduleId, operation) {
+        return providers.get(providerKey(moduleId, operation)) || null;
+      }
+      function reset() {
+        providers.clear();
+      }
+      function pickField(sources, field) {
+        var _a2;
+        for (const key of RECONSTRUCTION_ORDER) {
+          const bucket = sources[key];
+          if (!bucket || typeof bucket !== "object") continue;
+          const value = bucket[field];
+          if (Array.isArray(value) && value.length) return { value, source: key };
+          if (value != null && value !== "" && !Array.isArray(value)) {
+            return { value, source: key };
+          }
+        }
+        return { value: Array.isArray((_a2 = sources.api) == null ? void 0 : _a2[field]) ? [] : null, source: null };
+      }
+      function resolveItens(sources) {
+        const picked = pickField(sources, "itens");
+        return {
+          itens: Array.isArray(picked.value) ? picked.value : [],
+          source: picked.source
+        };
+      }
+      module.exports = {
+        RECONSTRUCTION_ORDER,
+        register,
+        get,
+        reset,
+        pickField,
+        resolveItens
+      };
+    }
+  });
+
+  // frontend/shared/recovery/index.js
+  var require_recovery = __commonJS({
+    "frontend/shared/recovery/index.js"(exports, module) {
+      var RecoveryManager = require_RecoveryManager();
+      var RecoveryRegistry = require_RecoveryRegistry();
+      var RecoveryContext = require_RecoveryContext();
+      var RecoveryLoader = require_RecoveryLoader();
+      var RecoveryStorage = require_RecoveryStorage();
+      var RecoveryEvents = require_RecoveryEvents();
+      var RecoveryValidation = require_RecoveryValidation();
+      var RecoveryMessages = require_RecoveryMessages2();
+      var RecoveryProvider = require_RecoveryProvider();
+      var {
+        RecoveryStatus,
+        ACTIVE_STATUSES,
+        TERMINAL_STATUSES,
+        isActiveStatus,
+        isTerminalStatus,
+        isValidStatus
+      } = require_RecoveryStatus();
+      module.exports = {
+        RecoveryManager,
+        RecoveryRegistry,
+        RecoveryContext,
+        RecoveryLoader,
+        RecoveryStorage,
+        RecoveryEvents,
+        RecoveryValidation,
+        RecoveryMessages,
+        RecoveryProvider,
+        RecoveryStatus,
+        ACTIVE_STATUSES,
+        TERMINAL_STATUSES,
+        isActiveStatus,
+        isTerminalStatus,
+        isValidStatus
+      };
+    }
+  });
+
+  // frontend/modules/motor-comercial/recovery/operations.js
+  var require_operations = __commonJS({
+    "frontend/modules/motor-comercial/recovery/operations.js"(exports, module) {
+      var MODULE_ID = "motor-comercial";
+      var Operations = Object.freeze({
+        PREPARAR_ENTREGA: "PREPARAR_ENTREGA",
+        ENTREGA: "ENTREGA",
+        FECHAR_ATENDIMENTO: "FECHAR_ATENDIMENTO"
+      });
+      var ALL_OPERATIONS = Object.freeze([
+        Operations.PREPARAR_ENTREGA,
+        Operations.ENTREGA,
+        Operations.FECHAR_ATENDIMENTO
+      ]);
+      module.exports = {
+        MODULE_ID,
+        Operations,
+        ALL_OPERATIONS
+      };
+    }
+  });
+
+  // frontend/modules/motor-comercial/recovery/loaders.js
+  var require_loaders = __commonJS({
+    "frontend/modules/motor-comercial/recovery/loaders.js"(exports, module) {
+      var { RecoveryProvider, RecoveryValidation } = require_recovery();
+      async function loadConsignacaoOperacao(context, helpers = {}) {
+        const api = helpers.api;
+        const projectionApi = helpers.projectionApi;
+        const checkpoint = context.checkpoint || {};
+        const cacheItens = typeof helpers.getCacheItens === "function" ? helpers.getCacheItens(context.entityId) || [] : [];
+        if (RecoveryValidation.isDraftEntityId(context.entityId) || !context.entityId || !api) {
+          const { itens: itens2, source: source2 } = RecoveryProvider.resolveItens({
+            api: { itens: [] },
+            provider: null,
+            checkpoint,
+            cache: { itens: cacheItens }
+          });
+          return {
+            entity: {
+              id: context.entityId,
+              status: "RASCUNHO",
+              clienteId: checkpoint.clienteId || null,
+              perfilComercialId: checkpoint.perfilComercialId || null,
+              documento: checkpoint.documentoNumero || null,
+              documentoExterno: checkpoint.documentoExterno || "",
+              observacao: checkpoint.observacoes || "",
+              dataAbertura: checkpoint.data || null,
+              dataEntregaPrevista: checkpoint.dataPrevista || null,
+              itens: itens2,
+              _draft: RecoveryValidation.isDraftEntityId(context.entityId)
+            },
+            checkpoint,
+            fromApi: false,
+            fromCheckpoint: source2 === "checkpoint",
+            source: source2 || "checkpoint",
+            extras: {}
+          };
+        }
+        const consignacao = await api.obterConsignacao(context.entityId);
+        let apiItens = Array.isArray(consignacao.itens) && consignacao.itens.length ? consignacao.itens.slice() : [];
+        if (!apiItens.length && typeof api.listarItensConsignacao === "function") {
+          try {
+            const listed = await api.listarItensConsignacao(context.entityId);
+            if (Array.isArray(listed) && listed.length) apiItens = listed;
+          } catch (_e2) {
+          }
+        }
+        let perfil = null;
+        let situacao = null;
+        let resumo = null;
+        let providerBucket = null;
+        const providerFn = RecoveryProvider.get(context.module, context.operation);
+        if (providerFn) {
+          try {
+            providerBucket = await providerFn(context, helpers);
+          } catch (_e2) {
+            providerBucket = null;
+          }
+        }
+        if (!providerBucket && projectionApi) {
+          providerBucket = { itens: [] };
+          try {
+            resumo = await projectionApi.obterResumoPrestacao({ consignacaoId: context.entityId });
+            if (Array.isArray(resumo == null ? void 0 : resumo.itens) && resumo.itens.length) {
+              providerBucket.itens = resumo.itens;
+            }
+          } catch (_e2) {
+            resumo = null;
+          }
+          try {
+            if (consignacao.clienteId) {
+              situacao = await projectionApi.obterSituacaoCliente({ clienteId: consignacao.clienteId });
+            }
+          } catch (_e2) {
+            situacao = null;
+          }
+        } else if (projectionApi) {
+          try {
+            situacao = await projectionApi.obterSituacaoCliente({ clienteId: consignacao.clienteId });
+          } catch (_e2) {
+            situacao = null;
+          }
+        }
+        if (api.obterPerfil && consignacao.perfilComercialId) {
+          try {
+            perfil = await api.obterPerfil(consignacao.perfilComercialId);
+          } catch (_e2) {
+            perfil = null;
+          }
+        }
+        const { itens, source } = RecoveryProvider.resolveItens({
+          api: { itens: apiItens },
+          provider: providerBucket,
+          checkpoint,
+          cache: { itens: cacheItens }
+        });
+        const entity = {
+          ...consignacao,
+          itens,
+          clienteNome: (situacao == null ? void 0 : situacao.clienteNome) || checkpoint.clienteNome || null,
+          perfilNome: (perfil == null ? void 0 : perfil.perfilTipo) || checkpoint.perfilNome || null,
+          perfilStatus: perfil ? perfil.ativo && !perfil.bloqueado ? "ATIVO" : "INATIVO" : checkpoint.perfilStatus || null,
+          limite: (situacao == null ? void 0 : situacao.limiteDisponivel) ?? (perfil == null ? void 0 : perfil.limiteComercial) ?? checkpoint.limite ?? null,
+          saldo: (resumo == null ? void 0 : resumo.saldoAtual) ?? (situacao == null ? void 0 : situacao.saldoEmAberto) ?? checkpoint.saldo ?? null
+        };
+        return {
+          entity,
+          checkpoint,
+          fromApi: source === "api" || Boolean(consignacao),
+          fromCheckpoint: source === "checkpoint",
+          source: source === "api" ? "api" : source ? `api+${source}` : "api",
+          extras: { perfil, situacao, resumo, itensSource: source }
+        };
+      }
+      module.exports = {
+        loadConsignacaoOperacao,
+        loadPrepararEntrega: loadConsignacaoOperacao,
+        loadEntrega: loadConsignacaoOperacao
+      };
+    }
+  });
+
+  // frontend/modules/motor-comercial/recovery/register.js
+  var require_register = __commonJS({
+    "frontend/modules/motor-comercial/recovery/register.js"(exports, module) {
+      var { RecoveryRegistry } = require_recovery();
+      var { MODULE_ID, ALL_OPERATIONS, Operations } = require_operations();
+      var { loadPrepararEntrega, loadEntrega } = require_loaders();
+      var registered = false;
+      function registerMotorComercialRecovery() {
+        if (registered && RecoveryRegistry.getLoader(MODULE_ID, Operations.PREPARAR_ENTREGA)) {
+          return;
+        }
+        RecoveryRegistry.registerModule(MODULE_ID, ALL_OPERATIONS);
+        RecoveryRegistry.registerLoader(MODULE_ID, Operations.PREPARAR_ENTREGA, loadPrepararEntrega);
+        RecoveryRegistry.registerLoader(MODULE_ID, Operations.ENTREGA, loadEntrega);
+        registered = true;
+      }
+      function ensureRegistered() {
+        registerMotorComercialRecovery();
+      }
+      module.exports = {
+        registerMotorComercialRecovery,
+        ensureRegistered
+      };
+    }
+  });
+
+  // frontend/modules/motor-comercial/recovery/index.js
+  var require_recovery2 = __commonJS({
+    "frontend/modules/motor-comercial/recovery/index.js"(exports, module) {
+      var {
+        RecoveryManager,
+        RecoveryStatus
+      } = require_recovery();
+      var {
+        RecoveryMessages,
+        operationalMessage: resolveCatalogMessage
+      } = require_messages();
+      var { MODULE_ID, Operations } = require_operations();
+      var { registerMotorComercialRecovery, ensureRegistered } = require_register();
+      function params(operation, entityId) {
+        return {
+          module: MODULE_ID,
+          operation,
+          entityId
+        };
+      }
+      function resolveEntityId(pageLike) {
+        if (pageLike.consignacaoId != null) return pageLike.consignacaoId;
+        if (!pageLike._recoveryDraftId) {
+          pageLike._recoveryDraftId = RecoveryManager.createDraftEntityId();
+        }
+        return pageLike._recoveryDraftId;
+      }
+      function obterItensRecovery(entityId) {
+        var _a2, _b2, _c, _d;
+        if (entityId == null) return [];
+        ensureRegistered();
+        for (const operation of [Operations.PREPARAR_ENTREGA, Operations.ENTREGA]) {
+          const ctx = RecoveryManager.get(params(operation, entityId));
+          if ((_b2 = (_a2 = ctx == null ? void 0 : ctx.checkpoint) == null ? void 0 : _a2.itens) == null ? void 0 : _b2.length) {
+            return ctx.checkpoint.itens.slice();
+          }
+        }
+        const pending = RecoveryManager.listPending({ module: MODULE_ID });
+        for (const row of pending) {
+          if (row.operation === Operations.PREPARAR_ENTREGA && ((_d = (_c = row.checkpoint) == null ? void 0 : _c.itens) == null ? void 0 : _d.length)) {
+            if (String(row.entityId) === String(entityId)) return row.checkpoint.itens.slice();
+          }
+        }
+        return [];
+      }
+      function buildPrepararCheckpoint(pageLike) {
+        var _a2, _b2;
+        const data = pageLike.data || {};
+        return {
+          step: pageLike.currentStep,
+          concluido: Boolean(pageLike.concluido),
+          clienteId: data.clienteId,
+          perfilComercialId: data.perfilComercialId,
+          documentoExterno: data.documentoExterno || "",
+          observacoes: data.observacoes || "",
+          data: data.data,
+          dataPrevista: data.dataPrevista || "",
+          empresa: data.empresa,
+          filial: data.filial,
+          documentoNumero: data.documentoNumero || null,
+          itens: Array.isArray(data.itens) ? data.itens.map((item) => ({ ...item })) : [],
+          clienteNome: ((_a2 = data.cliente) == null ? void 0 : _a2.nome) || ((_b2 = pageLike.clienteProfile) == null ? void 0 : _b2.nome) || null
+        };
+      }
+      function savePrepararEntrega(pageLike, status = RecoveryStatus.EM_ANDAMENTO) {
+        ensureRegistered();
+        const entityId = resolveEntityId(pageLike);
+        return RecoveryManager.open(params(Operations.PREPARAR_ENTREGA, entityId)).save(buildPrepararCheckpoint(pageLike), status);
+      }
+      function autosavePrepararEntrega(pageLike, status = RecoveryStatus.EM_ANDAMENTO) {
+        ensureRegistered();
+        const entityId = resolveEntityId(pageLike);
+        return RecoveryManager.autosave(
+          params(Operations.PREPARAR_ENTREGA, entityId),
+          buildPrepararCheckpoint(pageLike),
+          status
+        );
+      }
+      function rebindPrepararEntrega(pageLike, consignacaoId) {
+        ensureRegistered();
+        if (!pageLike._recoveryDraftId || consignacaoId == null) return null;
+        const handle = RecoveryManager.rebind(
+          params(Operations.PREPARAR_ENTREGA, pageLike._recoveryDraftId),
+          consignacaoId
+        );
+        pageLike._recoveryDraftId = null;
+        pageLike.consignacaoId = consignacaoId;
+        return handle;
+      }
+      function saveEntrega(entityId, checkpoint = {}, status = RecoveryStatus.AGUARDANDO_CONFIRMACAO) {
+        var _a2;
+        ensureRegistered();
+        if (entityId == null) return null;
+        const existing = RecoveryManager.get(params(Operations.ENTREGA, entityId)) || RecoveryManager.get(params(Operations.PREPARAR_ENTREGA, entityId));
+        const incomingItens = checkpoint.itens;
+        const hasIncoming = Array.isArray(incomingItens) && incomingItens.length > 0;
+        const previousItens = (_a2 = existing == null ? void 0 : existing.checkpoint) == null ? void 0 : _a2.itens;
+        const mergedCheckpoint = {
+          ...(existing == null ? void 0 : existing.checkpoint) || {},
+          ...checkpoint,
+          itens: hasIncoming ? incomingItens : Array.isArray(previousItens) && previousItens.length ? previousItens : incomingItens || []
+        };
+        return RecoveryManager.open(params(Operations.ENTREGA, entityId)).save(mergedCheckpoint, status);
+      }
+      function saveAuthorization(operation, entityId, liberacao) {
+        ensureRegistered();
+        if (entityId == null || !liberacao) return null;
+        return RecoveryManager.setAuthorization(params(operation, entityId), {
+          authorized: true,
+          autorizado: true,
+          authorizedBy: liberacao.authorizedBy || liberacao.supervisorUsername || liberacao.username,
+          authorizedAt: liberacao.authorizedAt || (/* @__PURE__ */ new Date()).toISOString(),
+          reason: liberacao.motivo || liberacao.reason,
+          expiresOnComplete: true,
+          expiresAt: liberacao.expiresAt,
+          fingerprint: liberacao.fingerprint,
+          supervisorToken: liberacao.supervisorToken,
+          consignacaoId: liberacao.consignacaoId != null ? liberacao.consignacaoId : entityId
+        });
+      }
+      function loadAuthorization(operation, entityId) {
+        ensureRegistered();
+        if (entityId == null) return null;
+        return RecoveryManager.getAuthorization(params(operation, entityId));
+      }
+      async function resumePrepararEntrega(entityId, helpers) {
+        ensureRegistered();
+        return RecoveryManager.resume(params(Operations.PREPARAR_ENTREGA, entityId), helpers);
+      }
+      async function resumeEntrega(entityId, helpers) {
+        ensureRegistered();
+        let loaded = await RecoveryManager.resume(params(Operations.ENTREGA, entityId), helpers);
+        if (loaded.exists) return loaded;
+        loaded = await RecoveryManager.resume(params(Operations.PREPARAR_ENTREGA, entityId), helpers);
+        return loaded;
+      }
+      function completeOperacoesEntrega(entityId) {
+        ensureRegistered();
+        RecoveryManager.complete(params(Operations.PREPARAR_ENTREGA, entityId));
+        RecoveryManager.complete(params(Operations.ENTREGA, entityId));
+      }
+      function cancelPrepararEntrega(entityId) {
+        ensureRegistered();
+        if (entityId == null) return null;
+        return RecoveryManager.cancel(params(Operations.PREPARAR_ENTREGA, entityId));
+      }
+      function listPendingMotorComercial() {
+        ensureRegistered();
+        return RecoveryManager.listPending({ module: MODULE_ID });
+      }
+      function operationalMessage(error, options) {
+        return resolveCatalogMessage(error, options);
+      }
+      module.exports = {
+        MODULE_ID,
+        Operations,
+        RecoveryManager,
+        RecoveryStatus,
+        RecoveryMessages,
+        registerMotorComercialRecovery,
+        ensureRegistered,
+        resolveEntityId,
+        obterItensRecovery,
+        buildPrepararCheckpoint,
+        savePrepararEntrega,
+        autosavePrepararEntrega,
+        rebindPrepararEntrega,
+        saveEntrega,
+        saveAuthorization,
+        loadAuthorization,
+        resumePrepararEntrega,
+        resumeEntrega,
+        completeOperacoesEntrega,
+        cancelPrepararEntrega,
+        listPendingMotorComercial,
+        operationalMessage
+      };
+    }
+  });
+
+  // frontend/modules/motor-comercial/utils/operacional.js
+  var require_operacional = __commonJS({
+    "frontend/modules/motor-comercial/utils/operacional.js"(exports, module) {
+      var Modal = require_Modal2();
+      var Button = require_Button2();
+      var Input = require_Input2();
+      var toastContext = require_ToastContext();
+      var loadingContext = require_LoadingContext();
+      var { getUsuarioId, mapConsignacaoView } = require_helpers();
+      var { isOperadorAutorizado, possuiPermissao, isAutorizacaoGerencial } = require_autorizacao();
+      var { extrairValorInput } = require_formField();
+      function getApiUrl() {
+        if (typeof window !== "undefined" && typeof window.API_URL === "string") {
+          return window.API_URL;
+        }
+        return `${window.location.origin}/api`;
+      }
+      function notify(message, variant = "info") {
+        if (typeof window !== "undefined" && typeof window.showNotification === "function") {
+          const tipo = variant === "error" ? "danger" : variant;
+          window.showNotification(message, tipo);
+          return;
+        }
+        if (variant === "success") toastContext.success(message);
+        else if (variant === "error") toastContext.error(message);
+        else if (variant === "warning") toastContext.warning(message);
+        else toastContext.info(message);
+      }
+      function navigate(path, options = {}) {
+        if (typeof window !== "undefined" && window.MotorComercial) {
+          return window.MotorComercial.navigate(path, options);
+        }
+        if (typeof navigateComercial === "function") {
+          return navigateComercial(path, options);
+        }
+        return Promise.resolve(null);
+      }
+      function openModal(backdrop) {
+        requestAnimationFrame(() => {
+          backdrop.classList.add("cds-modal-backdrop--open", "is-open");
+        });
+        document.body.appendChild(backdrop);
+      }
+      function closeModal(backdrop) {
+        backdrop.classList.remove("cds-modal-backdrop--open", "is-open");
+        setTimeout(() => backdrop.remove(), 250);
+      }
+      function confirmDialog(options = {}) {
+        return new Promise((resolve) => {
+          const footer = document.createElement("div");
+          footer.style.display = "flex";
+          footer.style.gap = "8px";
+          footer.style.justifyContent = "flex-end";
+          const cancelBtn = Button.create({
+            text: options.cancelLabel || "Cancelar",
+            variant: "secondary",
+            onClick: () => {
+              closeModal(backdrop);
+              resolve(false);
+            }
+          });
+          const confirmBtn = Button.create({
+            text: options.confirmLabel || "Confirmar",
+            variant: options.danger ? "danger" : "primary",
+            onClick: () => {
+              closeModal(backdrop);
+              resolve(true);
+            }
+          });
+          footer.appendChild(cancelBtn);
+          footer.appendChild(confirmBtn);
+          const content = document.createElement("p");
+          content.textContent = options.message || "Deseja continuar?";
+          const backdrop = Modal.create({
+            title: options.title || "Confirma\xE7\xE3o",
+            content,
+            footer,
+            open: false,
+            onClose: () => {
+              closeModal(backdrop);
+              resolve(false);
+            }
+          });
+          openModal(backdrop);
+        });
+      }
+      function promptDialog(options = {}) {
+        return new Promise((resolve) => {
+          const body = document.createElement("div");
+          const label = document.createElement("p");
+          label.textContent = options.message || "Informe o valor:";
+          body.appendChild(label);
+          const field = Input.create({
+            type: options.inputType || "text",
+            placeholder: options.placeholder || "",
+            value: options.defaultValue || ""
+          });
+          body.appendChild(field);
+          const inputEl = field.querySelector("input, textarea, select") || field;
+          const footer = document.createElement("div");
+          footer.style.display = "flex";
+          footer.style.gap = "8px";
+          footer.style.justifyContent = "flex-end";
+          const finish = (value) => {
+            closeModal(backdrop);
+            resolve(value);
+          };
+          footer.appendChild(Button.create({
+            text: "Cancelar",
+            variant: "secondary",
+            onClick: () => finish(null)
+          }));
+          footer.appendChild(Button.create({
+            text: options.confirmLabel || "Confirmar",
+            variant: "primary",
+            onClick: () => finish(inputEl.value)
+          }));
+          const backdrop = Modal.create({
+            title: options.title || "Informa\xE7\xE3o",
+            content: body,
+            footer,
+            open: false,
+            onClose: () => finish(null)
+          });
+          openModal(backdrop);
+          if (inputEl.focus) inputEl.focus();
+        });
+      }
+      function choiceDialog(options = {}) {
+        return new Promise((resolve) => {
+          const body = document.createElement("p");
+          body.textContent = options.message || "Escolha uma op\xE7\xE3o:";
+          const footer = document.createElement("div");
+          footer.style.display = "flex";
+          footer.style.flexWrap = "wrap";
+          footer.style.gap = "8px";
+          footer.style.justifyContent = "flex-end";
+          (options.choices || []).forEach((choice) => {
+            footer.appendChild(Button.create({
+              text: choice.label,
+              variant: choice.variant || "secondary",
+              onClick: () => {
+                closeModal(backdrop);
+                resolve(choice.value);
+              }
+            }));
+          });
+          const backdrop = Modal.create({
+            title: options.title || "Escolha",
+            content: body,
+            footer,
+            open: false,
+            onClose: () => {
+              closeModal(backdrop);
+              resolve(null);
+            }
+          });
+          openModal(backdrop);
+        });
+      }
+      async function fetchErp(path, options = {}) {
+        const headers = {
+          "Content-Type": "application/json",
+          ...options.headers || {}
+        };
+        const token = typeof localStorage !== "undefined" ? localStorage.getItem("token") : null;
+        if (token) headers.Authorization = `Bearer ${token}`;
+        const response = await fetch(`${getApiUrl()}${path}`, {
+          ...options,
+          headers
+        });
+        if (!response.ok) {
+          let message = `HTTP ${response.status}`;
+          try {
+            const body = await response.json();
+            message = body.message || body.error || message;
+          } catch (_error) {
+          }
+          throw new Error(message);
+        }
+        return response.json();
+      }
+      async function buscarClientePorIdErp(clienteId) {
+        const id = Number(clienteId);
+        if (!Number.isFinite(id) || id <= 0) return null;
+        try {
+          const cliente = await fetchErp(`/clientes/${id}`);
+          return cliente && cliente.id != null ? cliente : null;
+        } catch (_error) {
+          return null;
+        }
+      }
+      function filtrarClientesLocal(lista, termo) {
+        const q2 = String(termo).trim().toLowerCase();
+        const qDigits = q2.replace(/\D/g, "");
+        return lista.filter((c4) => {
+          const nome = String(c4.nome || "").toLowerCase();
+          const doc = String(c4.cpf_cnpj || c4.documento || "");
+          const docLower = doc.toLowerCase();
+          const docDigits = doc.replace(/\D/g, "");
+          const telDigits = String(c4.telefone || "").replace(/\D/g, "");
+          const idStr = String(c4.id);
+          const idMatch = idStr === q2 || idStr.includes(q2);
+          const nomeMatch = nome.includes(q2);
+          const docMatch = docLower.includes(q2) || qDigits && docDigits.includes(qDigits);
+          const telMatch = qDigits.length >= 3 && telDigits.includes(qDigits);
+          return idMatch || nomeMatch || docMatch || telMatch;
+        }).slice(0, 20);
+      }
+      async function buscarClientesErp(termo = "") {
+        const q2 = String(termo).trim();
+        if (!q2) {
+          const clientes2 = await fetchErp("/clientes");
+          const lista2 = Array.isArray(clientes2) ? clientes2 : [];
+          return lista2.slice(0, 20);
+        }
+        if (/^\d+$/.test(q2)) {
+          const porId = await buscarClientePorIdErp(q2);
+          if (porId) return [porId];
+        }
+        try {
+          const resultados = await fetchErp(`/clientes/buscar?termo=${encodeURIComponent(q2)}`);
+          if (Array.isArray(resultados) && resultados.length) {
+            const enriquecidos = await Promise.all(
+              resultados.map(async (parcial) => {
+                if (parcial.telefone != null && parcial.cpf_cnpj != null) return parcial;
+                const completo = await buscarClientePorIdErp(parcial.id);
+                return completo || parcial;
+              })
+            );
+            return enriquecidos.slice(0, 20);
+          }
+        } catch (_error) {
+        }
+        const clientes = await fetchErp("/clientes");
+        const lista = Array.isArray(clientes) ? clientes : [];
+        return filtrarClientesLocal(lista, q2);
+      }
+      function normalizarProdutoBusca(produto = {}) {
+        return {
+          ...produto,
+          nome: produto.nome || produto.descricao || `Produto #${produto.id}`,
+          preco_venda: Number(produto.preco_venda ?? produto.preco ?? 0)
+        };
+      }
+      function filtrarProdutosLocal(lista, termo) {
+        const q2 = String(termo).trim().toLowerCase();
+        const qDigits = q2.replace(/\D/g, "");
+        return lista.filter((p3) => {
+          const nome = String(p3.nome || p3.descricao || "").toLowerCase();
+          const codigo = String(p3.codigo || "").toLowerCase();
+          const barras = String(p3.codigo_barras || "").toLowerCase();
+          const idStr = String(p3.id);
+          const idMatch = idStr === q2 || idStr.includes(q2);
+          const nomeMatch = nome.includes(q2);
+          const codigoMatch = codigo.includes(q2) || barras.includes(q2);
+          const barrasMatch = qDigits.length >= 3 && barras.replace(/\D/g, "").includes(qDigits);
+          return idMatch || nomeMatch || codigoMatch || barrasMatch;
+        }).map(normalizarProdutoBusca).slice(0, 20);
+      }
+      async function buscarProdutoPorIdErp(produtoId) {
+        const id = Number(produtoId);
+        if (!Number.isFinite(id) || id <= 0) return null;
+        try {
+          const produto = await fetchErp(`/produtos/${id}`);
+          return produto && produto.id != null ? produto : null;
+        } catch (_error) {
+          return null;
+        }
+      }
+      async function buscarProdutosErp(termo = "") {
+        const q2 = String(termo).trim();
+        if (!q2) return [];
+        if (/^\d+$/.test(q2)) {
+          const porId = await buscarProdutoPorIdErp(q2);
+          if (porId) return [normalizarProdutoBusca(porId)];
+        }
+        try {
+          const resultados = await fetchErp(
+            `/produtos/consulta-pdv/buscar?q=${encodeURIComponent(q2)}&limite=20`
+          );
+          if (Array.isArray(resultados) && resultados.length) {
+            return resultados.map(normalizarProdutoBusca).slice(0, 20);
+          }
+        } catch (_error) {
+        }
+        const produtos = await fetchErp("/produtos");
+        const lista = Array.isArray(produtos) ? produtos : [];
+        return filtrarProdutosLocal(lista, q2);
+      }
+      function cacheItensConsignacao(consignacaoId, itens) {
+        if (typeof sessionStorage === "undefined") return;
+        sessionStorage.setItem(`motor-comercial:itens:${consignacaoId}`, JSON.stringify(itens));
+      }
+      function obterItensCacheConsignacao(consignacaoId) {
+        if (typeof sessionStorage === "undefined") return [];
+        try {
+          const raw = sessionStorage.getItem(`motor-comercial:itens:${consignacaoId}`);
+          return raw ? JSON.parse(raw) : [];
+        } catch (_error) {
+          return [];
+        }
+      }
+      function obterItensRecoveryConsignacao(consignacaoId) {
+        try {
+          const { obterItensRecovery } = require_recovery2();
+          return obterItensRecovery(consignacaoId);
+        } catch (_error) {
+          return [];
+        }
+      }
+      async function carregarConsignacaoCompleta(api, projectionApi, consignacaoId) {
+        var _a2;
+        const consignacao = await api.obterConsignacao(consignacaoId);
+        let perfil = null;
+        let situacao = null;
+        let resumo = null;
+        let itens = Array.isArray(consignacao.itens) && consignacao.itens.length ? consignacao.itens.slice() : [];
+        if (!itens.length && typeof api.listarItensConsignacao === "function") {
+          try {
+            const apiItens = await api.listarItensConsignacao(consignacaoId);
+            if (Array.isArray(apiItens) && apiItens.length) itens = apiItens;
+          } catch (_error) {
+          }
+        }
+        try {
+          if (consignacao.perfilComercialId) {
+            perfil = await api.obterPerfil(consignacao.perfilComercialId);
+          }
+        } catch (_error) {
+          perfil = null;
+        }
+        try {
+          if (consignacao.clienteId) {
+            situacao = await projectionApi.obterSituacaoCliente({ clienteId: consignacao.clienteId });
+          }
+        } catch (_error) {
+          situacao = null;
+        }
+        try {
+          resumo = await projectionApi.obterResumoPrestacao({ consignacaoId });
+          if (((_a2 = resumo == null ? void 0 : resumo.itens) == null ? void 0 : _a2.length) && !itens.length) itens = resumo.itens;
+        } catch (_error) {
+          resumo = null;
+        }
+        if (!itens.length) {
+          const recoveryItens = obterItensRecoveryConsignacao(consignacaoId);
+          if (recoveryItens.length) itens = recoveryItens;
+        }
+        if (!itens.length) {
+          itens = obterItensCacheConsignacao(consignacaoId);
+        }
+        return mapConsignacaoView(consignacao, {
+          itens,
+          clienteNome: situacao == null ? void 0 : situacao.clienteNome,
+          perfilNome: perfil == null ? void 0 : perfil.perfilTipo,
+          perfilStatus: (perfil == null ? void 0 : perfil.ativo) && !(perfil == null ? void 0 : perfil.bloqueado) ? "ATIVO" : "INATIVO",
+          limite: (situacao == null ? void 0 : situacao.limiteDisponivel) ?? (perfil == null ? void 0 : perfil.limiteComercial),
+          saldo: (resumo == null ? void 0 : resumo.saldoAtual) ?? (situacao == null ? void 0 : situacao.saldoEmAberto)
+        });
+      }
+      function withLoading(message, fn) {
+        loadingContext.start(message);
+        return Promise.resolve().then(fn).finally(() => loadingContext.stop());
+      }
+      module.exports = {
+        notify,
+        navigate,
+        confirmDialog,
+        promptDialog,
+        choiceDialog,
+        fetchErp,
+        extrairValorInput,
+        buscarClientePorIdErp,
+        buscarClientesErp,
+        buscarProdutoPorIdErp,
+        buscarProdutosErp,
+        normalizarProdutoBusca,
+        cacheItensConsignacao,
+        obterItensCacheConsignacao,
+        carregarConsignacaoCompleta,
+        withLoading,
+        isOperadorAutorizado,
+        possuiPermissao,
+        isAutorizacaoGerencial,
+        getUsuarioId
+      };
+    }
+  });
+
+  // frontend/modules/motor-comercial/messages/index.js
+  var require_messages = __commonJS({
+    "frontend/modules/motor-comercial/messages/index.js"(exports, module) {
+      var SuccessMessages = require_SuccessMessages();
+      var ErrorMessages = require_ErrorMessages();
+      var WarningMessages = require_WarningMessages();
+      var InfoMessages = require_InfoMessages();
+      var RecoveryMessages = require_RecoveryMessages();
+      var EmptyMessages = require_EmptyMessages();
+      var LoadingMessages = require_LoadingMessages();
+      var ConfirmMessages = require_ConfirmMessages();
+      var { resolveOperationalError } = require_resolveOperationalError();
+      function _notifyRaw(message, variant) {
+        const { notify } = require_operacional();
+        notify(message, variant);
+      }
+      function notifySuccess(keyOrText) {
+        const msg = SuccessMessages[keyOrText] || keyOrText;
+        _notifyRaw(msg, "success");
+        return msg;
+      }
+      function notifyError(keyOrText, error) {
+        let msg = ErrorMessages[keyOrText] || keyOrText;
+        if (error && !ErrorMessages[keyOrText]) {
+          msg = resolveOperationalError(error, { context: keyOrText });
+        } else if (error && ErrorMessages[keyOrText] && error.message) {
+        }
+        _notifyRaw(msg, "error");
+        return msg;
+      }
+      function notifyWarning(keyOrText) {
+        const msg = WarningMessages[keyOrText] || keyOrText;
+        _notifyRaw(msg, "warning");
+        return msg;
+      }
+      function notifyInfo(keyOrText, ...args) {
+        const entry = InfoMessages[keyOrText];
+        const msg = typeof entry === "function" ? entry(...args) : entry || keyOrText;
+        _notifyRaw(msg, "info");
+        return msg;
+      }
+      function notifyRecovery(keyOrText) {
+        const msg = RecoveryMessages[keyOrText] || keyOrText;
+        _notifyRaw(msg, "warning");
+        return msg;
+      }
+      function loadingText(keyOrText) {
+        return LoadingMessages[keyOrText] || keyOrText;
+      }
+      function emptyState(key) {
+        const entry = EmptyMessages[key];
+        if (!entry) return { title: key, description: "" };
+        return { title: entry.title, description: entry.description || "" };
+      }
+      function confirmCopy(key, overrides = {}) {
+        const entry = ConfirmMessages[key] || {};
+        return {
+          title: overrides.title || entry.title || "Confirmar",
+          message: overrides.message || entry.message || "Deseja continuar?"
+        };
+      }
+      function operationalMessage(error, options) {
+        return resolveOperationalError(error, options);
+      }
+      module.exports = {
+        SuccessMessages,
+        ErrorMessages,
+        WarningMessages,
+        InfoMessages,
+        RecoveryMessages,
+        EmptyMessages,
+        LoadingMessages,
+        ConfirmMessages,
+        resolveOperationalError,
+        operationalMessage,
+        notifySuccess,
+        notifyError,
+        notifyWarning,
+        notifyInfo,
+        notifyRecovery,
+        loadingText,
+        emptyState,
+        confirmCopy
+      };
+    }
+  });
+
   // frontend/modules/motor-comercial/pages/Dashboard/CentralTrabalhoView.js
   var require_CentralTrabalhoView = __commonJS({
     "frontend/modules/motor-comercial/pages/Dashboard/CentralTrabalhoView.js"(exports, module) {
@@ -9913,6 +12540,7 @@ ${lines.join("\n")}
       var Hero = require_Hero2();
       var EmptyState = require_EmptyState2();
       var Loading = require_Loading2();
+      var { emptyState } = require_messages();
       var CentralTrabalhoView = class _CentralTrabalhoView {
         static render(viewModel = {}, ctx = {}) {
           const body = _CentralTrabalhoView._buildBodyContent(viewModel, ctx);
@@ -10151,10 +12779,7 @@ ${lines.join("\n")}
           const section = _CentralTrabalhoView._renderSectionShell("Minha Fila de Trabalho", "sec-minha-fila", "0ms");
           section.classList.add("cds-central-ops__panel");
           if (!itens.length) {
-            section.appendChild(EmptyState.create({
-              title: "Nenhuma tarefa urgente",
-              description: "Voc\xEA est\xE1 em dia. Inicie uma nova entrega quando precisar."
-            }));
+            section.appendChild(EmptyState.create(emptyState("CENTRAL_TAREFAS")));
             return section;
           }
           const lista = document.createElement("div");
@@ -10187,10 +12812,7 @@ ${lines.join("\n")}
           const section = _CentralTrabalhoView._renderSectionShell("Consignados Pendentes", "sec-consignados-pendentes", "0ms");
           section.classList.add("cds-central-ops__panel");
           if (!itens.length) {
-            section.appendChild(EmptyState.create({
-              title: "Sem saldos pendentes",
-              description: "Nenhum cliente aguardando recebimento na Conta Corrente."
-            }));
+            section.appendChild(EmptyState.create(emptyState("CENTRAL_SALDOS")));
             return section;
           }
           const lista = document.createElement("div");
@@ -10221,10 +12843,7 @@ ${lines.join("\n")}
           const section = _CentralTrabalhoView._renderSectionShell("Pr\xF3ximas Entregas", "sec-proximas-entregas", "0ms");
           section.classList.add("cds-central-ops__panel");
           if (!itens.length) {
-            section.appendChild(EmptyState.create({
-              title: "Sem entregas previstas",
-              description: "Nenhuma entrega aguardando no momento."
-            }));
+            section.appendChild(EmptyState.create(emptyState("CENTRAL_ENTREGAS")));
             return section;
           }
           const timeline = document.createElement("div");
@@ -10261,10 +12880,7 @@ ${lines.join("\n")}
           const section = _CentralTrabalhoView._renderSectionShell("Atividades Recentes", "sec-atividades-recentes", "0ms");
           section.classList.add("cds-central-ops__panel");
           if (!itens.length) {
-            section.appendChild(EmptyState.create({
-              title: "Sem opera\xE7\xF5es recentes",
-              description: "As movimenta\xE7\xF5es aparecer\xE3o aqui."
-            }));
+            section.appendChild(EmptyState.create(emptyState("CENTRAL_RECENTES")));
             return section;
           }
           const list = document.createElement("ul");
@@ -10284,27 +12900,6 @@ ${lines.join("\n")}
         }
       };
       module.exports = CentralTrabalhoView;
-    }
-  });
-
-  // frontend/modules/motor-comercial/components/navigation/Modal.js
-  var require_Modal2 = __commonJS({
-    "frontend/modules/motor-comercial/components/navigation/Modal.js"(exports, module) {
-      module.exports = require_Modal();
-    }
-  });
-
-  // frontend/modules/motor-comercial/components/base/Button.js
-  var require_Button2 = __commonJS({
-    "frontend/modules/motor-comercial/components/base/Button.js"(exports, module) {
-      module.exports = require_Button();
-    }
-  });
-
-  // frontend/modules/motor-comercial/components/form/Input.js
-  var require_Input2 = __commonJS({
-    "frontend/modules/motor-comercial/components/form/Input.js"(exports, module) {
-      module.exports = require_Input();
     }
   });
 
@@ -82052,10 +84647,13 @@ ${lines.join("\n")}
         }, { vendidos: 0, devolvidos: 0, perdas: 0, cortesias: 0, pendentes: 0 });
       }
       function calcularValorVendidoItens(itens = []) {
-        return itens.reduce(
-          (sum, item) => sum + Number(item.vendido || 0) * Number(item.preco || 0),
-          0
-        );
+        return itens.reduce((sum, item) => {
+          const qtd = Number(item.vendido || item.quantidadeVendida || 0);
+          const preco = Number(
+            item.preco ?? item.precoUnitario ?? item.valorUnitario ?? item.precoVenda ?? 0
+          );
+          return sum + qtd * preco;
+        }, 0);
       }
       var LINHA_RETORNO_SELECTOR = ".cds-fechar-consignacao__grade-row--retornos";
       function seletorLinhaRetorno(index2, rootSelector = "#fechar-retornos-grade") {
@@ -82100,8 +84698,25 @@ ${lines.join("\n")}
         };
       }
       function buildPainelLateralPreview(resumo = {}, itens = [], financeiro = null) {
-        const painel = buildPainelLateral(resumo, itens, financeiro);
-        return { ...painel, preview: true };
+        const operacional = buildPainelOperacional(itens);
+        const finSsot = financeiro || buildFinanceiroFromResumo(resumo);
+        const estimadoVenda = calcularValorVendidoItens(itens);
+        const valorVenda = Math.max(Number(finSsot.valorVenda || 0), estimadoVenda);
+        const valorRecebido = Number(finSsot.valorRecebido || 0);
+        const fin = buildFinanceiroFromResumo({
+          valorVenda,
+          valorRecebido
+        });
+        return {
+          ...operacional,
+          financeiro: fin,
+          valorVenda: fin.valorVenda,
+          valorRecebido: fin.valorRecebido,
+          saldoEmAberto: fin.saldoEmAberto,
+          situacaoFinanceira: fin.situacaoFinanceira,
+          preview: true,
+          financeiroEstimado: estimadoVenda > Number(finSsot.valorVenda || 0) + 0.01
+        };
       }
       function mergeItensRetornos(servidor = [], rascunho = []) {
         if (!rascunho.length) return servidor;
@@ -82757,1966 +85372,6 @@ ${lines.join("\n")}
     }
   });
 
-  // frontend/modules/motor-comercial/utils/autorizacao.js
-  var require_autorizacao = __commonJS({
-    "frontend/modules/motor-comercial/utils/autorizacao.js"(exports, module) {
-      var PERMISSOES_OPERACAO_COMERCIAL = Object.freeze([
-        "COMERCIAL_CONSIGNACAO",
-        "COMERCIAL_ACERTO"
-      ]);
-      var PERMISSAO_LIMITE_COMERCIAL = "COMERCIAL_LIMITE";
-      var PERFIS_ADMIN = Object.freeze(["ADMIN", "SUPER_ADMIN"]);
-      var PERFIS_SUPERVISOR = Object.freeze(["SUPERVISOR", ...PERFIS_ADMIN]);
-      function getUsuarioLogado() {
-        if (typeof localStorage === "undefined") return null;
-        try {
-          const raw = localStorage.getItem("user");
-          return raw ? JSON.parse(raw) : null;
-        } catch {
-          return null;
-        }
-      }
-      function normalizarPerfil(perfil) {
-        return String(perfil || "").trim().toUpperCase();
-      }
-      function isAdminOuSupervisor(user) {
-        if (!user) return false;
-        if (user.role === "admin") return true;
-        const perfil = normalizarPerfil(user.perfil);
-        return PERFIS_SUPERVISOR.includes(perfil) || user.role === "supervisor";
-      }
-      function possuiPermissao(permissao) {
-        const user = getUsuarioLogado();
-        if (!(user == null ? void 0 : user.id)) return false;
-        if (isAdminOuSupervisor(user)) return true;
-        const permissoes = Array.isArray(user.permissoes) ? user.permissoes : [];
-        return permissoes.includes(permissao);
-      }
-      function isOperadorAutorizado() {
-        const user = getUsuarioLogado();
-        if (!(user == null ? void 0 : user.id)) return false;
-        if (isAdminOuSupervisor(user)) return true;
-        return PERMISSOES_OPERACAO_COMERCIAL.some((p3) => possuiPermissao(p3));
-      }
-      function isAutorizacaoGerencial() {
-        const user = getUsuarioLogado();
-        if (!(user == null ? void 0 : user.id)) return false;
-        return isAdminOuSupervisor(user);
-      }
-      function podeAlterarLimiteComercial() {
-        const user = getUsuarioLogado();
-        if (!(user == null ? void 0 : user.id)) return false;
-        if (user.role === "admin") return true;
-        const perfil = normalizarPerfil(user.perfil);
-        if (PERFIS_ADMIN.includes(perfil)) return true;
-        const permissoes = Array.isArray(user.permissoes) ? user.permissoes : [];
-        return permissoes.includes(PERMISSAO_LIMITE_COMERCIAL);
-      }
-      module.exports = {
-        PERMISSOES_OPERACAO_COMERCIAL,
-        PERMISSAO_LIMITE_COMERCIAL,
-        getUsuarioLogado,
-        possuiPermissao,
-        isOperadorAutorizado,
-        isAutorizacaoGerencial,
-        podeAlterarLimiteComercial
-      };
-    }
-  });
-
-  // frontend/modules/motor-comercial/utils/formField.js
-  var require_formField = __commonJS({
-    "frontend/modules/motor-comercial/utils/formField.js"(exports, module) {
-      function extrairValorInput(field) {
-        if (!field) return "";
-        if (field.tagName === "INPUT" || field.tagName === "TEXTAREA" || field.tagName === "SELECT") {
-          return String(field.value || "").trim();
-        }
-        const input = field.querySelector("input, textarea, select");
-        return input ? String(input.value || "").trim() : "";
-      }
-      module.exports = {
-        extrairValorInput
-      };
-    }
-  });
-
-  // frontend/shared/recovery/RecoveryStatus.js
-  var require_RecoveryStatus = __commonJS({
-    "frontend/shared/recovery/RecoveryStatus.js"(exports, module) {
-      var RecoveryStatus = Object.freeze({
-        NOVO: "NOVO",
-        RASCUNHO: "RASCUNHO",
-        EM_ANDAMENTO: "EM_ANDAMENTO",
-        AGUARDANDO_CONFIRMACAO: "AGUARDANDO_CONFIRMACAO",
-        AGUARDANDO_IMPRESSAO: "AGUARDANDO_IMPRESSAO",
-        AGUARDANDO_ASSINATURA: "AGUARDANDO_ASSINATURA",
-        CONCLUIDO: "CONCLUIDO",
-        CANCELADO: "CANCELADO"
-      });
-      var ACTIVE_STATUSES = Object.freeze([
-        RecoveryStatus.NOVO,
-        RecoveryStatus.RASCUNHO,
-        RecoveryStatus.EM_ANDAMENTO,
-        RecoveryStatus.AGUARDANDO_CONFIRMACAO,
-        RecoveryStatus.AGUARDANDO_IMPRESSAO,
-        RecoveryStatus.AGUARDANDO_ASSINATURA
-      ]);
-      var TERMINAL_STATUSES = Object.freeze([
-        RecoveryStatus.CONCLUIDO,
-        RecoveryStatus.CANCELADO
-      ]);
-      function isActiveStatus(status) {
-        return ACTIVE_STATUSES.includes(status);
-      }
-      function isTerminalStatus(status) {
-        return TERMINAL_STATUSES.includes(status);
-      }
-      function isValidStatus(status) {
-        return Object.values(RecoveryStatus).includes(status);
-      }
-      module.exports = {
-        RecoveryStatus,
-        ACTIVE_STATUSES,
-        TERMINAL_STATUSES,
-        isActiveStatus,
-        isTerminalStatus,
-        isValidStatus
-      };
-    }
-  });
-
-  // frontend/shared/recovery/RecoveryEvents.js
-  var require_RecoveryEvents = __commonJS({
-    "frontend/shared/recovery/RecoveryEvents.js"(exports, module) {
-      var EVENT_TYPES = Object.freeze({
-        RECOVERY_OPEN: "RECOVERY_OPEN",
-        RECOVERY_SAVE: "RECOVERY_SAVE",
-        RECOVERY_AUTOSAVE: "RECOVERY_AUTOSAVE",
-        RECOVERY_RESUME: "RECOVERY_RESUME",
-        RECOVERY_COMPLETE: "RECOVERY_COMPLETE",
-        RECOVERY_CANCEL: "RECOVERY_CANCEL",
-        RECOVERY_LOAD: "RECOVERY_LOAD",
-        RECOVERY_CLEAR: "RECOVERY_CLEAR",
-        RECOVERY_VALIDATE: "RECOVERY_VALIDATE",
-        RECOVERY_RECOVERED: "RECOVERY_RECOVERED",
-        RECOVERY_DISCARDED: "RECOVERY_DISCARDED",
-        RECOVERY_EXPIRED: "RECOVERY_EXPIRED",
-        RECOVERY_AUTH_RESTORED: "RECOVERY_AUTH_RESTORED"
-      });
-      var DOM_EVENT = "cds:recovery";
-      var MAX_LOG = 200;
-      var auditLog = [];
-      function emit(type, detail = {}) {
-        const entry = {
-          type,
-          at: (/* @__PURE__ */ new Date()).toISOString(),
-          ...detail
-        };
-        auditLog.push(entry);
-        if (auditLog.length > MAX_LOG) auditLog.shift();
-        if (typeof document !== "undefined" && typeof CustomEvent === "function") {
-          try {
-            document.dispatchEvent(new CustomEvent(DOM_EVENT, { detail: entry }));
-          } catch (_e2) {
-          }
-        }
-        if (typeof console !== "undefined" && typeof console.info === "function") {
-          console.info(`[CDS Recovery] ${type}`, entry);
-        }
-        return entry;
-      }
-      function getAuditLog() {
-        return auditLog.slice();
-      }
-      function clearAuditLog() {
-        auditLog.length = 0;
-      }
-      module.exports = {
-        EVENT_TYPES,
-        DOM_EVENT,
-        emit,
-        getAuditLog,
-        clearAuditLog
-      };
-    }
-  });
-
-  // frontend/shared/recovery/RecoveryValidation.js
-  var require_RecoveryValidation = __commonJS({
-    "frontend/shared/recovery/RecoveryValidation.js"(exports, module) {
-      var RecoveryEvents = require_RecoveryEvents();
-      var SCHEMA_VERSION = 2;
-      function stableStringify(value) {
-        if (value === void 0) {
-          return "null";
-        }
-        if (value === null || typeof value !== "object") {
-          return JSON.stringify(value);
-        }
-        if (Array.isArray(value)) {
-          return `[${value.map(stableStringify).join(",")}]`;
-        }
-        const keys = Object.keys(value).filter((k2) => value[k2] !== void 0).sort();
-        return `{${keys.map((k2) => `${JSON.stringify(k2)}:${stableStringify(value[k2])}`).join(",")}}`;
-      }
-      function computeChecksum(parts) {
-        const payload = {
-          module: parts.module,
-          operation: parts.operation,
-          entityId: parts.entityId == null ? null : parts.entityId,
-          version: parts.version || SCHEMA_VERSION,
-          checkpoint: parts.checkpoint || {},
-          authorization: parts.authorization || null
-        };
-        const str = stableStringify(payload);
-        let hash = 5381;
-        for (let i3 = 0; i3 < str.length; i3 += 1) {
-          hash = (hash << 5) + hash + str.charCodeAt(i3);
-          hash |= 0;
-        }
-        return `v${SCHEMA_VERSION}:${(hash >>> 0).toString(16)}`;
-      }
-      function seal2(record) {
-        const normalized = JSON.parse(JSON.stringify({
-          module: record.module,
-          operation: record.operation,
-          entityId: record.entityId == null ? null : record.entityId,
-          version: record.version || SCHEMA_VERSION,
-          checkpoint: record.checkpoint || {},
-          authorization: record.authorization || null,
-          status: record.status,
-          meta: record.meta || {},
-          createdAt: record.createdAt,
-          updatedAt: record.updatedAt || (/* @__PURE__ */ new Date()).toISOString()
-        }));
-        const timestamp = normalized.updatedAt;
-        const checksum = computeChecksum({
-          module: normalized.module,
-          operation: normalized.operation,
-          entityId: normalized.entityId,
-          version: SCHEMA_VERSION,
-          checkpoint: normalized.checkpoint || {},
-          authorization: normalized.authorization || null
-        });
-        return {
-          ...normalized,
-          version: SCHEMA_VERSION,
-          timestamp,
-          checksum,
-          integrity: true
-        };
-      }
-      function validate(record, options = {}) {
-        const emitAudit = options.emitAudit !== false;
-        const emit = (ok, reason) => {
-          if (!emitAudit) return;
-          RecoveryEvents.emit(RecoveryEvents.EVENT_TYPES.RECOVERY_VALIDATE, {
-            module: record == null ? void 0 : record.module,
-            operation: record == null ? void 0 : record.operation,
-            entityId: record == null ? void 0 : record.entityId,
-            ok,
-            reason: reason || null
-          });
-        };
-        if (!record || typeof record !== "object") {
-          emit(false, "EMPTY");
-          return { valid: false, reason: "EMPTY" };
-        }
-        if (!record.module || !record.operation) {
-          emit(false, "MISSING_KEYS");
-          return { valid: false, reason: "MISSING_KEYS" };
-        }
-        if (record.entityId === void 0) {
-          emit(false, "MISSING_ENTITY");
-          return { valid: false, reason: "MISSING_ENTITY" };
-        }
-        if (!record.checksum) {
-          emit(true, "LEGACY_NO_CHECKSUM");
-          return { valid: true, reason: "LEGACY_NO_CHECKSUM", upgraded: true };
-        }
-        const expected = computeChecksum({
-          module: record.module,
-          operation: record.operation,
-          entityId: record.entityId,
-          version: record.version || SCHEMA_VERSION,
-          checkpoint: record.checkpoint || {},
-          authorization: record.authorization || null
-        });
-        if (record.checksum !== expected) {
-          emit(false, "CHECKSUM_MISMATCH");
-          return { valid: false, reason: "CHECKSUM_MISMATCH" };
-        }
-        emit(true, "OK");
-        return { valid: true, reason: "OK" };
-      }
-      function isDraftEntityId(entityId) {
-        return typeof entityId === "string" && entityId.startsWith("draft-");
-      }
-      function createDraftEntityId() {
-        const rand = Math.random().toString(36).slice(2, 10);
-        return `draft-${Date.now()}-${rand}`;
-      }
-      module.exports = {
-        SCHEMA_VERSION,
-        computeChecksum,
-        seal: seal2,
-        validate,
-        isDraftEntityId,
-        createDraftEntityId,
-        stableStringify
-      };
-    }
-  });
-
-  // frontend/shared/recovery/RecoveryContext.js
-  var require_RecoveryContext = __commonJS({
-    "frontend/shared/recovery/RecoveryContext.js"(exports, module) {
-      var { RecoveryStatus, isValidStatus } = require_RecoveryStatus();
-      var { SCHEMA_VERSION } = require_RecoveryValidation();
-      function normalizeAuthorization(auth) {
-        if (!auth || typeof auth !== "object") return null;
-        if (auth.authorized !== true && auth.autorizado !== true) return null;
-        return {
-          authorized: true,
-          authorizedBy: auth.authorizedBy || auth.supervisorUsername || auth.username || null,
-          authorizedAt: auth.authorizedAt || auth.at || (/* @__PURE__ */ new Date()).toISOString(),
-          reason: auth.reason || auth.motivo || null,
-          expiresOnComplete: auth.expiresOnComplete !== false,
-          expiresAt: auth.expiresAt || null,
-          fingerprint: auth.fingerprint || null,
-          supervisorToken: auth.supervisorToken || null,
-          consignacaoId: auth.consignacaoId != null ? auth.consignacaoId : null
-        };
-      }
-      var RecoveryContext = class _RecoveryContext {
-        /**
-         * @param {Object} data
-         */
-        constructor(data = {}) {
-          this.module = data.module;
-          this.operation = data.operation;
-          this.entityId = data.entityId == null ? null : data.entityId;
-          this.status = isValidStatus(data.status) ? data.status : RecoveryStatus.NOVO;
-          this.checkpoint = data.checkpoint && typeof data.checkpoint === "object" && !Array.isArray(data.checkpoint) ? data.checkpoint : {};
-          this.meta = data.meta && typeof data.meta === "object" ? data.meta : {};
-          this.authorization = normalizeAuthorization(data.authorization);
-          this.createdAt = data.createdAt || (/* @__PURE__ */ new Date()).toISOString();
-          this.updatedAt = data.updatedAt || this.createdAt;
-          this.timestamp = data.timestamp || this.updatedAt;
-          this.version = data.version || SCHEMA_VERSION;
-          this.checksum = data.checksum || null;
-          this.integrity = data.integrity !== false;
-        }
-        get keyParts() {
-          return {
-            module: this.module,
-            operation: this.operation,
-            entityId: this.entityId
-          };
-        }
-        withCheckpoint(checkpoint = {}, status = null) {
-          return new _RecoveryContext({
-            ...this.toJSON(),
-            checkpoint: { ...this.checkpoint, ...checkpoint },
-            status: status && isValidStatus(status) ? status : this.status,
-            updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
-            checksum: null
-          });
-        }
-        withStatus(status) {
-          return new _RecoveryContext({
-            ...this.toJSON(),
-            status: isValidStatus(status) ? status : this.status,
-            updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
-            checksum: null
-          });
-        }
-        withEntityId(entityId) {
-          return new _RecoveryContext({
-            ...this.toJSON(),
-            entityId,
-            updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
-            checksum: null
-          });
-        }
-        withAuthorization(authorization) {
-          return new _RecoveryContext({
-            ...this.toJSON(),
-            authorization: authorization == null ? null : normalizeAuthorization(authorization),
-            updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
-            checksum: null
-          });
-        }
-        clearAuthorization() {
-          return this.withAuthorization(null);
-        }
-        isAuthorizationValid(fingerprint = null) {
-          const auth = this.authorization;
-          if (!auth || !auth.authorized) return false;
-          if (auth.expiresAt && new Date(auth.expiresAt).getTime() < Date.now()) return false;
-          if (fingerprint && auth.fingerprint && auth.fingerprint !== fingerprint) return false;
-          return true;
-        }
-        /** Formato compatível com liberação gerencial do Motor Comercial */
-        toLiberacaoCompat() {
-          if (!this.isAuthorizationValid()) return null;
-          const a3 = this.authorization;
-          return {
-            autorizado: true,
-            authorized: true,
-            authorizedBy: a3.authorizedBy,
-            authorizedAt: a3.authorizedAt,
-            motivo: a3.reason,
-            reason: a3.reason,
-            expiresOnComplete: a3.expiresOnComplete,
-            expiresAt: a3.expiresAt,
-            fingerprint: a3.fingerprint,
-            supervisorToken: a3.supervisorToken,
-            consignacaoId: a3.consignacaoId != null ? a3.consignacaoId : this.entityId
-          };
-        }
-        toJSON() {
-          return {
-            module: this.module,
-            operation: this.operation,
-            entityId: this.entityId,
-            status: this.status,
-            checkpoint: this.checkpoint,
-            meta: this.meta,
-            authorization: this.authorization,
-            createdAt: this.createdAt,
-            updatedAt: this.updatedAt,
-            timestamp: this.timestamp || this.updatedAt,
-            version: this.version,
-            checksum: this.checksum,
-            integrity: this.integrity
-          };
-        }
-        static fromJSON(data) {
-          if (!data || !data.module || !data.operation) return null;
-          return new _RecoveryContext(data);
-        }
-      };
-      module.exports = RecoveryContext;
-    }
-  });
-
-  // frontend/shared/recovery/RecoveryStorage.js
-  var require_RecoveryStorage = __commonJS({
-    "frontend/shared/recovery/RecoveryStorage.js"(exports, module) {
-      var STORAGE_KEY = "cds-recovery:v1";
-      function getStore() {
-        if (typeof localStorage === "undefined") return { records: {} };
-        try {
-          const raw = localStorage.getItem(STORAGE_KEY);
-          if (!raw) return { records: {} };
-          const parsed = JSON.parse(raw);
-          if (!parsed || typeof parsed !== "object") return { records: {} };
-          if (!parsed.records || typeof parsed.records !== "object") return { records: {} };
-          return parsed;
-        } catch (_e2) {
-          return { records: {} };
-        }
-      }
-      function writeStore(store) {
-        if (typeof localStorage === "undefined") return false;
-        try {
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
-          return true;
-        } catch (_e2) {
-          return false;
-        }
-      }
-      function buildKey(moduleId, operation, entityId) {
-        return `${moduleId}::${operation}::${entityId == null ? "_" : String(entityId)}`;
-      }
-      function read(key) {
-        const store = getStore();
-        return store.records[key] || null;
-      }
-      function write(key, record) {
-        const store = getStore();
-        store.records[key] = { ...record };
-        if (!store.records[key].updatedAt) {
-          store.records[key].updatedAt = (/* @__PURE__ */ new Date()).toISOString();
-        }
-        return writeStore(store);
-      }
-      function remove(key) {
-        const store = getStore();
-        if (!store.records[key]) return false;
-        delete store.records[key];
-        return writeStore(store);
-      }
-      function listAll() {
-        const store = getStore();
-        return Object.keys(store.records).map((key) => ({
-          key,
-          ...store.records[key]
-        }));
-      }
-      function clearAll() {
-        return writeStore({ records: {} });
-      }
-      function clearModule(moduleId) {
-        const store = getStore();
-        Object.keys(store.records).forEach((key) => {
-          var _a2;
-          if (((_a2 = store.records[key]) == null ? void 0 : _a2.module) === moduleId) {
-            delete store.records[key];
-          }
-        });
-        return writeStore(store);
-      }
-      module.exports = {
-        STORAGE_KEY,
-        buildKey,
-        read,
-        write,
-        remove,
-        listAll,
-        clearAll,
-        clearModule
-      };
-    }
-  });
-
-  // frontend/shared/recovery/RecoveryRegistry.js
-  var require_RecoveryRegistry = __commonJS({
-    "frontend/shared/recovery/RecoveryRegistry.js"(exports, module) {
-      var operationsByModule = /* @__PURE__ */ new Map();
-      var loaders = /* @__PURE__ */ new Map();
-      function loaderKey(moduleId, operation) {
-        return `${moduleId}::${operation}`;
-      }
-      function registerModule(moduleId, operations = []) {
-        if (!moduleId) throw new Error("moduleId \xE9 obrigat\xF3rio");
-        const list = Array.isArray(operations) ? operations.map(String) : [];
-        operationsByModule.set(moduleId, Object.freeze(list.slice()));
-        return operationsByModule.get(moduleId);
-      }
-      function registerLoader(moduleId, operation, loaderFn) {
-        if (!moduleId || !operation) throw new Error("module e operation s\xE3o obrigat\xF3rios");
-        if (typeof loaderFn !== "function") throw new Error("loaderFn deve ser fun\xE7\xE3o");
-        loaders.set(loaderKey(moduleId, operation), loaderFn);
-      }
-      function getOperations(moduleId) {
-        return operationsByModule.get(moduleId) || [];
-      }
-      function listModules() {
-        return Array.from(operationsByModule.keys());
-      }
-      function getLoader(moduleId, operation) {
-        return loaders.get(loaderKey(moduleId, operation)) || null;
-      }
-      function hasOperation(moduleId, operation) {
-        return getOperations(moduleId).includes(operation);
-      }
-      function reset() {
-        operationsByModule.clear();
-        loaders.clear();
-      }
-      module.exports = {
-        registerModule,
-        registerLoader,
-        getOperations,
-        listModules,
-        getLoader,
-        hasOperation,
-        reset
-      };
-    }
-  });
-
-  // frontend/shared/recovery/RecoveryMessages.js
-  var require_RecoveryMessages = __commonJS({
-    "frontend/shared/recovery/RecoveryMessages.js"(exports, module) {
-      var MESSAGES = Object.freeze({
-        NOT_RESUMABLE: "A opera\xE7\xE3o n\xE3o pode mais ser retomada.",
-        REMOVED: "Esta opera\xE7\xE3o foi removida.",
-        RECOVER_FAILED: "N\xE3o foi poss\xEDvel recuperar esta opera\xE7\xE3o agora.",
-        CONNECTION: "Verifique sua conex\xE3o e tente novamente.",
-        CORRUPT: "A opera\xE7\xE3o n\xE3o pode mais ser retomada.",
-        EXPIRED: "A opera\xE7\xE3o n\xE3o pode mais ser retomada.",
-        AUTH_EXPIRED: "A autoriza\xE7\xE3o desta opera\xE7\xE3o expirou. Solicite nova libera\xE7\xE3o se necess\xE1rio."
-      });
-      function toOperationalMessage(error) {
-        const raw = String(
-          error && error.operationalMessage || error && error.message || error || ""
-        );
-        if (/não encontrada|nao encontrada|not found|404|removid/i.test(raw)) {
-          return MESSAGES.REMOVED;
-        }
-        if (/checksum|corrupt|integridade|invalid checkpoint/i.test(raw)) {
-          return MESSAGES.CORRUPT;
-        }
-        if (/network|failed to fetch|offline|econnrefused|timeout|net::|socket/i.test(raw)) {
-          return MESSAGES.CONNECTION;
-        }
-        if (/expir/i.test(raw)) {
-          return MESSAGES.EXPIRED;
-        }
-        if (/não pode mais ser retomada|nao pode mais ser retomada/i.test(raw)) {
-          return MESSAGES.NOT_RESUMABLE;
-        }
-        if (/não foi possível recuperar|nao foi possivel recuperar/i.test(raw)) {
-          return MESSAGES.RECOVER_FAILED;
-        }
-        return MESSAGES.RECOVER_FAILED;
-      }
-      function createOperationalError(codeOrMessage, cause) {
-        const message = MESSAGES[codeOrMessage] || codeOrMessage || MESSAGES.RECOVER_FAILED;
-        const err2 = new Error(message);
-        err2.operational = true;
-        err2.operationalMessage = message;
-        if (cause) err2.cause = cause;
-        return err2;
-      }
-      module.exports = {
-        MESSAGES,
-        toOperationalMessage,
-        createOperationalError
-      };
-    }
-  });
-
-  // frontend/shared/recovery/RecoveryLoader.js
-  var require_RecoveryLoader = __commonJS({
-    "frontend/shared/recovery/RecoveryLoader.js"(exports, module) {
-      var RecoveryRegistry = require_RecoveryRegistry();
-      var RecoveryEvents = require_RecoveryEvents();
-      var RecoveryMessages = require_RecoveryMessages();
-      var RecoveryValidation = require_RecoveryValidation();
-      async function reconstruct(context, helpers = {}) {
-        if (!context) {
-          throw RecoveryMessages.createOperationalError("NOT_RESUMABLE");
-        }
-        const loader = RecoveryRegistry.getLoader(context.module, context.operation);
-        if (!loader) {
-          RecoveryEvents.emit(RecoveryEvents.EVENT_TYPES.RECOVERY_LOAD, {
-            module: context.module,
-            operation: context.operation,
-            entityId: context.entityId,
-            ok: false,
-            reason: "LOADER_NAO_REGISTRADO"
-          });
-          return {
-            context,
-            state: {
-              entity: null,
-              checkpoint: context.checkpoint || {},
-              fromApi: false,
-              fromCheckpoint: Boolean(context.checkpoint && Object.keys(context.checkpoint).length),
-              authorization: context.authorization
-            },
-            source: "checkpoint-only"
-          };
-        }
-        try {
-          const result = await loader(context, helpers);
-          const normalized = normalizeResult(context, result);
-          RecoveryEvents.emit(RecoveryEvents.EVENT_TYPES.RECOVERY_LOAD, {
-            module: context.module,
-            operation: context.operation,
-            entityId: context.entityId,
-            ok: true,
-            source: normalized.source
-          });
-          return normalized;
-        } catch (error) {
-          if (RecoveryValidation.isDraftEntityId(context.entityId)) {
-            return {
-              context,
-              state: {
-                entity: buildDraftEntity(context),
-                checkpoint: context.checkpoint || {},
-                fromApi: false,
-                fromCheckpoint: true,
-                authorization: context.authorization
-              },
-              source: "checkpoint"
-            };
-          }
-          throw error;
-        }
-      }
-      function buildDraftEntity(context) {
-        const cp = context.checkpoint || {};
-        return {
-          id: context.entityId,
-          status: "RASCUNHO",
-          clienteId: cp.clienteId || null,
-          perfilComercialId: cp.perfilComercialId || null,
-          documento: cp.documentoNumero || null,
-          documentoExterno: cp.documentoExterno || "",
-          observacao: cp.observacoes || "",
-          dataAbertura: cp.data || null,
-          dataEntregaPrevista: cp.dataPrevista || null,
-          itens: Array.isArray(cp.itens) ? cp.itens : [],
-          _draft: true
-        };
-      }
-      function normalizeResult(context, result) {
-        if (!result || typeof result !== "object") {
-          return {
-            context,
-            state: {
-              entity: null,
-              checkpoint: context.checkpoint || {},
-              fromApi: false,
-              fromCheckpoint: true,
-              authorization: context.authorization
-            },
-            source: "empty"
-          };
-        }
-        return {
-          context: result.context || context,
-          state: {
-            entity: result.entity != null ? result.entity : null,
-            checkpoint: result.checkpoint != null ? result.checkpoint : context.checkpoint || {},
-            fromApi: Boolean(result.fromApi),
-            fromCheckpoint: Boolean(result.fromCheckpoint),
-            authorization: context.authorization,
-            extras: result.extras || {}
-          },
-          source: result.source || (result.fromApi ? "api+checkpoint" : "checkpoint")
-        };
-      }
-      module.exports = {
-        reconstruct,
-        normalizeResult,
-        buildDraftEntity
-      };
-    }
-  });
-
-  // frontend/shared/recovery/RecoveryManager.js
-  var require_RecoveryManager = __commonJS({
-    "frontend/shared/recovery/RecoveryManager.js"(exports, module) {
-      var RecoveryContext = require_RecoveryContext();
-      var RecoveryStorage = require_RecoveryStorage();
-      var RecoveryLoader = require_RecoveryLoader();
-      var RecoveryEvents = require_RecoveryEvents();
-      var RecoveryRegistry = require_RecoveryRegistry();
-      var RecoveryValidation = require_RecoveryValidation();
-      var RecoveryMessages = require_RecoveryMessages();
-      var {
-        RecoveryStatus,
-        isActiveStatus,
-        isValidStatus
-      } = require_RecoveryStatus();
-      function requireParams({ module: moduleId, operation, entityId }) {
-        if (!moduleId) throw new Error("RecoveryManager: module \xE9 obrigat\xF3rio");
-        if (!operation) throw new Error("RecoveryManager: operation \xE9 obrigat\xF3rio");
-        return {
-          module: String(moduleId),
-          operation: String(operation),
-          entityId: entityId == null ? null : entityId
-        };
-      }
-      function storageKey(params) {
-        const p3 = requireParams(params);
-        return RecoveryStorage.buildKey(p3.module, p3.operation, p3.entityId);
-      }
-      function persistContext(ctx) {
-        const sealed = RecoveryValidation.seal(ctx.toJSON());
-        const key = RecoveryStorage.buildKey(sealed.module, sealed.operation, sealed.entityId);
-        RecoveryStorage.write(key, sealed);
-        return RecoveryContext.fromJSON(sealed);
-      }
-      function readContext(params, options = {}) {
-        const key = storageKey(params);
-        const raw = RecoveryStorage.read(key);
-        if (!raw) return null;
-        const validation = RecoveryValidation.validate(raw, { emitAudit: options.emitAudit !== false });
-        if (!validation.valid) {
-          if (options.emitAudit === false) {
-            RecoveryEvents.emit(RecoveryEvents.EVENT_TYPES.RECOVERY_VALIDATE, {
-              module: raw.module,
-              operation: raw.operation,
-              entityId: raw.entityId,
-              ok: false,
-              reason: validation.reason
-            });
-          }
-          RecoveryEvents.emit(RecoveryEvents.EVENT_TYPES.RECOVERY_DISCARDED, {
-            module: raw.module,
-            operation: raw.operation,
-            entityId: raw.entityId,
-            reason: validation.reason
-          });
-          if (options.removeInvalid !== false) {
-            RecoveryStorage.remove(key);
-          }
-          return null;
-        }
-        let ctx = RecoveryContext.fromJSON(raw);
-        if (validation.upgraded) {
-          ctx = persistContext(ctx);
-        }
-        return ctx;
-      }
-      var RecoveryHandle = class {
-        constructor(context) {
-          this._context = context;
-        }
-        get context() {
-          return this._context;
-        }
-        save(checkpoint = {}, status = null) {
-          return RecoveryManager.save(this._context.keyParts, checkpoint, status);
-        }
-        autosave(checkpoint = {}, status = null) {
-          return RecoveryManager.autosave(this._context.keyParts, checkpoint, status);
-        }
-        async load(helpers = {}) {
-          return RecoveryManager.load(this._context.keyParts, helpers);
-        }
-        async resume(helpers = {}) {
-          return RecoveryManager.resume(this._context.keyParts, helpers);
-        }
-        complete(meta = {}) {
-          return RecoveryManager.complete(this._context.keyParts, meta);
-        }
-        cancel(meta = {}) {
-          return RecoveryManager.cancel(this._context.keyParts, meta);
-        }
-        setAuthorization(authorization) {
-          return RecoveryManager.setAuthorization(this._context.keyParts, authorization);
-        }
-        exists() {
-          return RecoveryManager.exists(this._context.keyParts);
-        }
-        clear() {
-          return RecoveryManager.clear(this._context.keyParts);
-        }
-      };
-      var RecoveryManager = {
-        open(options = {}) {
-          const params = requireParams(options);
-          let ctx = readContext(params);
-          if (!ctx) {
-            ctx = new RecoveryContext({
-              module: params.module,
-              operation: params.operation,
-              entityId: params.entityId,
-              status: isValidStatus(options.status) ? options.status : RecoveryStatus.NOVO,
-              checkpoint: options.checkpoint || {},
-              meta: options.meta || {},
-              authorization: options.authorization || null
-            });
-          } else {
-            if (options.meta) {
-              ctx = new RecoveryContext({ ...ctx.toJSON(), meta: { ...ctx.meta, ...options.meta }, checksum: null });
-            }
-            if (options.checkpoint) ctx = ctx.withCheckpoint(options.checkpoint);
-            if (isValidStatus(options.status)) ctx = ctx.withStatus(options.status);
-            if (options.authorization) ctx = ctx.withAuthorization(options.authorization);
-          }
-          ctx = persistContext(ctx);
-          RecoveryEvents.emit(RecoveryEvents.EVENT_TYPES.RECOVERY_OPEN, {
-            module: ctx.module,
-            operation: ctx.operation,
-            entityId: ctx.entityId,
-            status: ctx.status
-          });
-          return new RecoveryHandle(ctx);
-        },
-        save(params, checkpoint = {}, status = null) {
-          const p3 = requireParams(params);
-          let ctx = readContext(p3, { emitAudit: false });
-          if (!ctx) {
-            ctx = new RecoveryContext({
-              module: p3.module,
-              operation: p3.operation,
-              entityId: p3.entityId,
-              status: RecoveryStatus.EM_ANDAMENTO,
-              checkpoint: {}
-            });
-          }
-          const nextStatus = isValidStatus(status) ? status : ctx.status === RecoveryStatus.NOVO ? RecoveryStatus.EM_ANDAMENTO : ctx.status;
-          ctx = ctx.withCheckpoint(checkpoint, nextStatus);
-          ctx = persistContext(ctx);
-          RecoveryEvents.emit(RecoveryEvents.EVENT_TYPES.RECOVERY_SAVE, {
-            module: ctx.module,
-            operation: ctx.operation,
-            entityId: ctx.entityId,
-            status: ctx.status
-          });
-          return new RecoveryHandle(ctx);
-        },
-        /**
-         * Autosave transparente — estado operacional apenas.
-         * Não interrompe o operador; não grava regras de negócio no backend.
-         */
-        autosave(params, checkpoint = {}, status = null) {
-          const handle = RecoveryManager.save(params, checkpoint, status || RecoveryStatus.EM_ANDAMENTO);
-          RecoveryEvents.emit(RecoveryEvents.EVENT_TYPES.RECOVERY_AUTOSAVE, {
-            module: handle.context.module,
-            operation: handle.context.operation,
-            entityId: handle.context.entityId,
-            status: handle.context.status
-          });
-          return handle;
-        },
-        setAuthorization(params, authorization) {
-          const p3 = requireParams(params);
-          let ctx = readContext(p3, { emitAudit: false });
-          if (!ctx) {
-            ctx = new RecoveryContext({
-              module: p3.module,
-              operation: p3.operation,
-              entityId: p3.entityId,
-              status: RecoveryStatus.EM_ANDAMENTO
-            });
-          }
-          ctx = ctx.withAuthorization(authorization);
-          ctx = persistContext(ctx);
-          return new RecoveryHandle(ctx);
-        },
-        getAuthorization(params) {
-          const ctx = readContext(requireParams(params), { emitAudit: false });
-          if (!ctx) return null;
-          if (!ctx.isAuthorizationValid()) {
-            if (ctx.authorization) {
-              RecoveryEvents.emit(RecoveryEvents.EVENT_TYPES.RECOVERY_EXPIRED, {
-                module: ctx.module,
-                operation: ctx.operation,
-                entityId: ctx.entityId,
-                scope: "authorization"
-              });
-            }
-            return null;
-          }
-          return ctx.toLiberacaoCompat();
-        },
-        async load(params, helpers = {}) {
-          const p3 = requireParams(params);
-          const ctx = readContext(p3);
-          if (!ctx) {
-            return { exists: false, context: null, state: null, source: null, error: null };
-          }
-          try {
-            const reconstructed = await RecoveryLoader.reconstruct(ctx, helpers);
-            return {
-              exists: true,
-              context: reconstructed.context,
-              state: reconstructed.state,
-              source: reconstructed.source,
-              error: null
-            };
-          } catch (error) {
-            const operationalMessage = RecoveryMessages.toOperationalMessage(error);
-            return {
-              exists: true,
-              context: ctx,
-              state: {
-                entity: null,
-                checkpoint: ctx.checkpoint || {},
-                fromApi: false,
-                fromCheckpoint: true,
-                authorization: ctx.authorization
-              },
-              source: "checkpoint-degraded",
-              error: {
-                technical: String(error && error.message || error),
-                operationalMessage
-              }
-            };
-          }
-        },
-        async resume(params, helpers = {}) {
-          var _a2, _b2, _c;
-          const loaded = await RecoveryManager.load(params, helpers);
-          if (!loaded.exists) {
-            return loaded;
-          }
-          RecoveryEvents.emit(RecoveryEvents.EVENT_TYPES.RECOVERY_RESUME, {
-            module: loaded.context.module,
-            operation: loaded.context.operation,
-            entityId: loaded.context.entityId,
-            status: loaded.context.status,
-            source: loaded.source
-          });
-          if (!loaded.error) {
-            RecoveryEvents.emit(RecoveryEvents.EVENT_TYPES.RECOVERY_RECOVERED, {
-              module: loaded.context.module,
-              operation: loaded.context.operation,
-              entityId: loaded.context.entityId,
-              source: loaded.source
-            });
-          }
-          if ((_b2 = (_a2 = loaded.context) == null ? void 0 : _a2.isAuthorizationValid) == null ? void 0 : _b2.call(_a2)) {
-            RecoveryEvents.emit(RecoveryEvents.EVENT_TYPES.RECOVERY_AUTH_RESTORED, {
-              module: loaded.context.module,
-              operation: loaded.context.operation,
-              entityId: loaded.context.entityId,
-              authorizedBy: (_c = loaded.context.authorization) == null ? void 0 : _c.authorizedBy
-            });
-          }
-          return loaded;
-        },
-        complete(params, meta = {}) {
-          const p3 = requireParams(params);
-          let ctx = readContext(p3, { emitAudit: false });
-          if (!ctx) {
-            ctx = new RecoveryContext({
-              module: p3.module,
-              operation: p3.operation,
-              entityId: p3.entityId,
-              status: RecoveryStatus.CONCLUIDO,
-              meta
-            });
-          } else {
-            if (ctx.authorization && ctx.authorization.expiresOnComplete !== false) {
-              ctx = ctx.clearAuthorization();
-            }
-            ctx = ctx.withStatus(RecoveryStatus.CONCLUIDO);
-            if (meta && Object.keys(meta).length) {
-              ctx = new RecoveryContext({ ...ctx.toJSON(), meta: { ...ctx.meta, ...meta }, checksum: null });
-            }
-          }
-          ctx = persistContext(ctx);
-          RecoveryEvents.emit(RecoveryEvents.EVENT_TYPES.RECOVERY_COMPLETE, {
-            module: ctx.module,
-            operation: ctx.operation,
-            entityId: ctx.entityId
-          });
-          return new RecoveryHandle(ctx);
-        },
-        cancel(params, meta = {}) {
-          const p3 = requireParams(params);
-          let ctx = readContext(p3, { emitAudit: false });
-          if (!ctx) {
-            ctx = new RecoveryContext({
-              module: p3.module,
-              operation: p3.operation,
-              entityId: p3.entityId,
-              status: RecoveryStatus.CANCELADO,
-              meta
-            });
-          } else {
-            ctx = ctx.clearAuthorization().withStatus(RecoveryStatus.CANCELADO);
-            if (meta && Object.keys(meta).length) {
-              ctx = new RecoveryContext({ ...ctx.toJSON(), meta: { ...ctx.meta, ...meta }, checksum: null });
-            }
-          }
-          ctx = persistContext(ctx);
-          RecoveryEvents.emit(RecoveryEvents.EVENT_TYPES.RECOVERY_CANCEL, {
-            module: ctx.module,
-            operation: ctx.operation,
-            entityId: ctx.entityId
-          });
-          return new RecoveryHandle(ctx);
-        },
-        exists(params) {
-          const ctx = readContext(requireParams(params), { emitAudit: false });
-          return Boolean(ctx && isActiveStatus(ctx.status));
-        },
-        listPending(filter = {}) {
-          const all = RecoveryStorage.listAll();
-          return all.map((row) => {
-            const validation = RecoveryValidation.validate(row, { emitAudit: false });
-            if (!validation.valid) {
-              RecoveryEvents.emit(RecoveryEvents.EVENT_TYPES.RECOVERY_DISCARDED, {
-                module: row.module,
-                operation: row.operation,
-                entityId: row.entityId,
-                reason: validation.reason
-              });
-              RecoveryStorage.remove(RecoveryStorage.buildKey(row.module, row.operation, row.entityId));
-              return null;
-            }
-            return RecoveryContext.fromJSON(row);
-          }).filter(Boolean).filter((ctx) => isActiveStatus(ctx.status)).filter((ctx) => !filter.module || ctx.module === filter.module).map((ctx) => ctx.toJSON()).sort((a3, b2) => String(b2.updatedAt).localeCompare(String(a3.updatedAt)));
-        },
-        clear(params) {
-          const p3 = requireParams(params);
-          const key = storageKey(p3);
-          const ok = RecoveryStorage.remove(key);
-          RecoveryEvents.emit(RecoveryEvents.EVENT_TYPES.RECOVERY_CLEAR, {
-            module: p3.module,
-            operation: p3.operation,
-            entityId: p3.entityId,
-            ok
-          });
-          return ok;
-        },
-        rebind(params, newEntityId) {
-          const p3 = requireParams(params);
-          const oldKey = storageKey(p3);
-          const raw = RecoveryStorage.read(oldKey);
-          if (!raw) {
-            return RecoveryManager.open({ ...p3, entityId: newEntityId });
-          }
-          RecoveryStorage.remove(oldKey);
-          let ctx = new RecoveryContext({
-            ...raw,
-            entityId: newEntityId,
-            updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
-            checksum: null
-          });
-          if (ctx.authorization) {
-            ctx = ctx.withAuthorization({
-              ...ctx.authorization,
-              consignacaoId: newEntityId
-            });
-          }
-          ctx = persistContext(ctx);
-          return new RecoveryHandle(ctx);
-        },
-        get(params) {
-          return readContext(requireParams(params), { emitAudit: false });
-        },
-        validate(params) {
-          const p3 = requireParams(params);
-          const raw = RecoveryStorage.read(storageKey(p3));
-          return RecoveryValidation.validate(raw || {});
-        },
-        createDraftEntityId: RecoveryValidation.createDraftEntityId,
-        isDraftEntityId: RecoveryValidation.isDraftEntityId,
-        Registry: RecoveryRegistry,
-        Status: RecoveryStatus,
-        Events: RecoveryEvents,
-        Messages: RecoveryMessages,
-        Validation: RecoveryValidation
-      };
-      module.exports = RecoveryManager;
-    }
-  });
-
-  // frontend/shared/recovery/RecoveryProvider.js
-  var require_RecoveryProvider = __commonJS({
-    "frontend/shared/recovery/RecoveryProvider.js"(exports, module) {
-      var RECONSTRUCTION_ORDER = Object.freeze([
-        "api",
-        "provider",
-        "checkpoint",
-        "cache"
-      ]);
-      var providers = /* @__PURE__ */ new Map();
-      function providerKey(moduleId, operation) {
-        return `${moduleId}::${operation}`;
-      }
-      function register(moduleId, operation, fn) {
-        if (typeof fn !== "function") throw new Error("RecoveryProvider: fn inv\xE1lida");
-        providers.set(providerKey(moduleId, operation), fn);
-      }
-      function get(moduleId, operation) {
-        return providers.get(providerKey(moduleId, operation)) || null;
-      }
-      function reset() {
-        providers.clear();
-      }
-      function pickField(sources, field) {
-        var _a2;
-        for (const key of RECONSTRUCTION_ORDER) {
-          const bucket = sources[key];
-          if (!bucket || typeof bucket !== "object") continue;
-          const value = bucket[field];
-          if (Array.isArray(value) && value.length) return { value, source: key };
-          if (value != null && value !== "" && !Array.isArray(value)) {
-            return { value, source: key };
-          }
-        }
-        return { value: Array.isArray((_a2 = sources.api) == null ? void 0 : _a2[field]) ? [] : null, source: null };
-      }
-      function resolveItens(sources) {
-        const picked = pickField(sources, "itens");
-        return {
-          itens: Array.isArray(picked.value) ? picked.value : [],
-          source: picked.source
-        };
-      }
-      module.exports = {
-        RECONSTRUCTION_ORDER,
-        register,
-        get,
-        reset,
-        pickField,
-        resolveItens
-      };
-    }
-  });
-
-  // frontend/shared/recovery/index.js
-  var require_recovery = __commonJS({
-    "frontend/shared/recovery/index.js"(exports, module) {
-      var RecoveryManager = require_RecoveryManager();
-      var RecoveryRegistry = require_RecoveryRegistry();
-      var RecoveryContext = require_RecoveryContext();
-      var RecoveryLoader = require_RecoveryLoader();
-      var RecoveryStorage = require_RecoveryStorage();
-      var RecoveryEvents = require_RecoveryEvents();
-      var RecoveryValidation = require_RecoveryValidation();
-      var RecoveryMessages = require_RecoveryMessages();
-      var RecoveryProvider = require_RecoveryProvider();
-      var {
-        RecoveryStatus,
-        ACTIVE_STATUSES,
-        TERMINAL_STATUSES,
-        isActiveStatus,
-        isTerminalStatus,
-        isValidStatus
-      } = require_RecoveryStatus();
-      module.exports = {
-        RecoveryManager,
-        RecoveryRegistry,
-        RecoveryContext,
-        RecoveryLoader,
-        RecoveryStorage,
-        RecoveryEvents,
-        RecoveryValidation,
-        RecoveryMessages,
-        RecoveryProvider,
-        RecoveryStatus,
-        ACTIVE_STATUSES,
-        TERMINAL_STATUSES,
-        isActiveStatus,
-        isTerminalStatus,
-        isValidStatus
-      };
-    }
-  });
-
-  // frontend/modules/motor-comercial/recovery/operations.js
-  var require_operations = __commonJS({
-    "frontend/modules/motor-comercial/recovery/operations.js"(exports, module) {
-      var MODULE_ID = "motor-comercial";
-      var Operations = Object.freeze({
-        PREPARAR_ENTREGA: "PREPARAR_ENTREGA",
-        ENTREGA: "ENTREGA",
-        FECHAR_ATENDIMENTO: "FECHAR_ATENDIMENTO"
-      });
-      var ALL_OPERATIONS = Object.freeze([
-        Operations.PREPARAR_ENTREGA,
-        Operations.ENTREGA,
-        Operations.FECHAR_ATENDIMENTO
-      ]);
-      module.exports = {
-        MODULE_ID,
-        Operations,
-        ALL_OPERATIONS
-      };
-    }
-  });
-
-  // frontend/modules/motor-comercial/recovery/loaders.js
-  var require_loaders = __commonJS({
-    "frontend/modules/motor-comercial/recovery/loaders.js"(exports, module) {
-      var { RecoveryProvider, RecoveryValidation } = require_recovery();
-      async function loadConsignacaoOperacao(context, helpers = {}) {
-        const api = helpers.api;
-        const projectionApi = helpers.projectionApi;
-        const checkpoint = context.checkpoint || {};
-        const cacheItens = typeof helpers.getCacheItens === "function" ? helpers.getCacheItens(context.entityId) || [] : [];
-        if (RecoveryValidation.isDraftEntityId(context.entityId) || !context.entityId || !api) {
-          const { itens: itens2, source: source2 } = RecoveryProvider.resolveItens({
-            api: { itens: [] },
-            provider: null,
-            checkpoint,
-            cache: { itens: cacheItens }
-          });
-          return {
-            entity: {
-              id: context.entityId,
-              status: "RASCUNHO",
-              clienteId: checkpoint.clienteId || null,
-              perfilComercialId: checkpoint.perfilComercialId || null,
-              documento: checkpoint.documentoNumero || null,
-              documentoExterno: checkpoint.documentoExterno || "",
-              observacao: checkpoint.observacoes || "",
-              dataAbertura: checkpoint.data || null,
-              dataEntregaPrevista: checkpoint.dataPrevista || null,
-              itens: itens2,
-              _draft: RecoveryValidation.isDraftEntityId(context.entityId)
-            },
-            checkpoint,
-            fromApi: false,
-            fromCheckpoint: source2 === "checkpoint",
-            source: source2 || "checkpoint",
-            extras: {}
-          };
-        }
-        const consignacao = await api.obterConsignacao(context.entityId);
-        let apiItens = Array.isArray(consignacao.itens) && consignacao.itens.length ? consignacao.itens.slice() : [];
-        if (!apiItens.length && typeof api.listarItensConsignacao === "function") {
-          try {
-            const listed = await api.listarItensConsignacao(context.entityId);
-            if (Array.isArray(listed) && listed.length) apiItens = listed;
-          } catch (_e2) {
-          }
-        }
-        let perfil = null;
-        let situacao = null;
-        let resumo = null;
-        let providerBucket = null;
-        const providerFn = RecoveryProvider.get(context.module, context.operation);
-        if (providerFn) {
-          try {
-            providerBucket = await providerFn(context, helpers);
-          } catch (_e2) {
-            providerBucket = null;
-          }
-        }
-        if (!providerBucket && projectionApi) {
-          providerBucket = { itens: [] };
-          try {
-            resumo = await projectionApi.obterResumoPrestacao({ consignacaoId: context.entityId });
-            if (Array.isArray(resumo == null ? void 0 : resumo.itens) && resumo.itens.length) {
-              providerBucket.itens = resumo.itens;
-            }
-          } catch (_e2) {
-            resumo = null;
-          }
-          try {
-            if (consignacao.clienteId) {
-              situacao = await projectionApi.obterSituacaoCliente({ clienteId: consignacao.clienteId });
-            }
-          } catch (_e2) {
-            situacao = null;
-          }
-        } else if (projectionApi) {
-          try {
-            situacao = await projectionApi.obterSituacaoCliente({ clienteId: consignacao.clienteId });
-          } catch (_e2) {
-            situacao = null;
-          }
-        }
-        if (api.obterPerfil && consignacao.perfilComercialId) {
-          try {
-            perfil = await api.obterPerfil(consignacao.perfilComercialId);
-          } catch (_e2) {
-            perfil = null;
-          }
-        }
-        const { itens, source } = RecoveryProvider.resolveItens({
-          api: { itens: apiItens },
-          provider: providerBucket,
-          checkpoint,
-          cache: { itens: cacheItens }
-        });
-        const entity = {
-          ...consignacao,
-          itens,
-          clienteNome: (situacao == null ? void 0 : situacao.clienteNome) || checkpoint.clienteNome || null,
-          perfilNome: (perfil == null ? void 0 : perfil.perfilTipo) || checkpoint.perfilNome || null,
-          perfilStatus: perfil ? perfil.ativo && !perfil.bloqueado ? "ATIVO" : "INATIVO" : checkpoint.perfilStatus || null,
-          limite: (situacao == null ? void 0 : situacao.limiteDisponivel) ?? (perfil == null ? void 0 : perfil.limiteComercial) ?? checkpoint.limite ?? null,
-          saldo: (resumo == null ? void 0 : resumo.saldoAtual) ?? (situacao == null ? void 0 : situacao.saldoEmAberto) ?? checkpoint.saldo ?? null
-        };
-        return {
-          entity,
-          checkpoint,
-          fromApi: source === "api" || Boolean(consignacao),
-          fromCheckpoint: source === "checkpoint",
-          source: source === "api" ? "api" : source ? `api+${source}` : "api",
-          extras: { perfil, situacao, resumo, itensSource: source }
-        };
-      }
-      module.exports = {
-        loadConsignacaoOperacao,
-        loadPrepararEntrega: loadConsignacaoOperacao,
-        loadEntrega: loadConsignacaoOperacao
-      };
-    }
-  });
-
-  // frontend/modules/motor-comercial/recovery/register.js
-  var require_register = __commonJS({
-    "frontend/modules/motor-comercial/recovery/register.js"(exports, module) {
-      var { RecoveryRegistry } = require_recovery();
-      var { MODULE_ID, ALL_OPERATIONS, Operations } = require_operations();
-      var { loadPrepararEntrega, loadEntrega } = require_loaders();
-      var registered = false;
-      function registerMotorComercialRecovery() {
-        if (registered && RecoveryRegistry.getLoader(MODULE_ID, Operations.PREPARAR_ENTREGA)) {
-          return;
-        }
-        RecoveryRegistry.registerModule(MODULE_ID, ALL_OPERATIONS);
-        RecoveryRegistry.registerLoader(MODULE_ID, Operations.PREPARAR_ENTREGA, loadPrepararEntrega);
-        RecoveryRegistry.registerLoader(MODULE_ID, Operations.ENTREGA, loadEntrega);
-        registered = true;
-      }
-      function ensureRegistered() {
-        registerMotorComercialRecovery();
-      }
-      module.exports = {
-        registerMotorComercialRecovery,
-        ensureRegistered
-      };
-    }
-  });
-
-  // frontend/modules/motor-comercial/recovery/index.js
-  var require_recovery2 = __commonJS({
-    "frontend/modules/motor-comercial/recovery/index.js"(exports, module) {
-      var {
-        RecoveryManager,
-        RecoveryStatus,
-        RecoveryMessages
-      } = require_recovery();
-      var { MODULE_ID, Operations } = require_operations();
-      var { registerMotorComercialRecovery, ensureRegistered } = require_register();
-      function params(operation, entityId) {
-        return {
-          module: MODULE_ID,
-          operation,
-          entityId
-        };
-      }
-      function resolveEntityId(pageLike) {
-        if (pageLike.consignacaoId != null) return pageLike.consignacaoId;
-        if (!pageLike._recoveryDraftId) {
-          pageLike._recoveryDraftId = RecoveryManager.createDraftEntityId();
-        }
-        return pageLike._recoveryDraftId;
-      }
-      function obterItensRecovery(entityId) {
-        var _a2, _b2, _c, _d;
-        if (entityId == null) return [];
-        ensureRegistered();
-        for (const operation of [Operations.PREPARAR_ENTREGA, Operations.ENTREGA]) {
-          const ctx = RecoveryManager.get(params(operation, entityId));
-          if ((_b2 = (_a2 = ctx == null ? void 0 : ctx.checkpoint) == null ? void 0 : _a2.itens) == null ? void 0 : _b2.length) {
-            return ctx.checkpoint.itens.slice();
-          }
-        }
-        const pending = RecoveryManager.listPending({ module: MODULE_ID });
-        for (const row of pending) {
-          if (row.operation === Operations.PREPARAR_ENTREGA && ((_d = (_c = row.checkpoint) == null ? void 0 : _c.itens) == null ? void 0 : _d.length)) {
-            if (String(row.entityId) === String(entityId)) return row.checkpoint.itens.slice();
-          }
-        }
-        return [];
-      }
-      function buildPrepararCheckpoint(pageLike) {
-        var _a2, _b2;
-        const data = pageLike.data || {};
-        return {
-          step: pageLike.currentStep,
-          concluido: Boolean(pageLike.concluido),
-          clienteId: data.clienteId,
-          perfilComercialId: data.perfilComercialId,
-          documentoExterno: data.documentoExterno || "",
-          observacoes: data.observacoes || "",
-          data: data.data,
-          dataPrevista: data.dataPrevista || "",
-          empresa: data.empresa,
-          filial: data.filial,
-          documentoNumero: data.documentoNumero || null,
-          itens: Array.isArray(data.itens) ? data.itens.map((item) => ({ ...item })) : [],
-          clienteNome: ((_a2 = data.cliente) == null ? void 0 : _a2.nome) || ((_b2 = pageLike.clienteProfile) == null ? void 0 : _b2.nome) || null
-        };
-      }
-      function savePrepararEntrega(pageLike, status = RecoveryStatus.EM_ANDAMENTO) {
-        ensureRegistered();
-        const entityId = resolveEntityId(pageLike);
-        return RecoveryManager.open(params(Operations.PREPARAR_ENTREGA, entityId)).save(buildPrepararCheckpoint(pageLike), status);
-      }
-      function autosavePrepararEntrega(pageLike, status = RecoveryStatus.EM_ANDAMENTO) {
-        ensureRegistered();
-        const entityId = resolveEntityId(pageLike);
-        return RecoveryManager.autosave(
-          params(Operations.PREPARAR_ENTREGA, entityId),
-          buildPrepararCheckpoint(pageLike),
-          status
-        );
-      }
-      function rebindPrepararEntrega(pageLike, consignacaoId) {
-        ensureRegistered();
-        if (!pageLike._recoveryDraftId || consignacaoId == null) return null;
-        const handle = RecoveryManager.rebind(
-          params(Operations.PREPARAR_ENTREGA, pageLike._recoveryDraftId),
-          consignacaoId
-        );
-        pageLike._recoveryDraftId = null;
-        pageLike.consignacaoId = consignacaoId;
-        return handle;
-      }
-      function saveEntrega(entityId, checkpoint = {}, status = RecoveryStatus.AGUARDANDO_CONFIRMACAO) {
-        var _a2;
-        ensureRegistered();
-        if (entityId == null) return null;
-        const existing = RecoveryManager.get(params(Operations.ENTREGA, entityId)) || RecoveryManager.get(params(Operations.PREPARAR_ENTREGA, entityId));
-        const incomingItens = checkpoint.itens;
-        const hasIncoming = Array.isArray(incomingItens) && incomingItens.length > 0;
-        const previousItens = (_a2 = existing == null ? void 0 : existing.checkpoint) == null ? void 0 : _a2.itens;
-        const mergedCheckpoint = {
-          ...(existing == null ? void 0 : existing.checkpoint) || {},
-          ...checkpoint,
-          itens: hasIncoming ? incomingItens : Array.isArray(previousItens) && previousItens.length ? previousItens : incomingItens || []
-        };
-        return RecoveryManager.open(params(Operations.ENTREGA, entityId)).save(mergedCheckpoint, status);
-      }
-      function saveAuthorization(operation, entityId, liberacao) {
-        ensureRegistered();
-        if (entityId == null || !liberacao) return null;
-        return RecoveryManager.setAuthorization(params(operation, entityId), {
-          authorized: true,
-          autorizado: true,
-          authorizedBy: liberacao.authorizedBy || liberacao.supervisorUsername || liberacao.username,
-          authorizedAt: liberacao.authorizedAt || (/* @__PURE__ */ new Date()).toISOString(),
-          reason: liberacao.motivo || liberacao.reason,
-          expiresOnComplete: true,
-          expiresAt: liberacao.expiresAt,
-          fingerprint: liberacao.fingerprint,
-          supervisorToken: liberacao.supervisorToken,
-          consignacaoId: liberacao.consignacaoId != null ? liberacao.consignacaoId : entityId
-        });
-      }
-      function loadAuthorization(operation, entityId) {
-        ensureRegistered();
-        if (entityId == null) return null;
-        return RecoveryManager.getAuthorization(params(operation, entityId));
-      }
-      async function resumePrepararEntrega(entityId, helpers) {
-        ensureRegistered();
-        return RecoveryManager.resume(params(Operations.PREPARAR_ENTREGA, entityId), helpers);
-      }
-      async function resumeEntrega(entityId, helpers) {
-        ensureRegistered();
-        let loaded = await RecoveryManager.resume(params(Operations.ENTREGA, entityId), helpers);
-        if (loaded.exists) return loaded;
-        loaded = await RecoveryManager.resume(params(Operations.PREPARAR_ENTREGA, entityId), helpers);
-        return loaded;
-      }
-      function completeOperacoesEntrega(entityId) {
-        ensureRegistered();
-        RecoveryManager.complete(params(Operations.PREPARAR_ENTREGA, entityId));
-        RecoveryManager.complete(params(Operations.ENTREGA, entityId));
-      }
-      function cancelPrepararEntrega(entityId) {
-        ensureRegistered();
-        if (entityId == null) return null;
-        return RecoveryManager.cancel(params(Operations.PREPARAR_ENTREGA, entityId));
-      }
-      function listPendingMotorComercial() {
-        ensureRegistered();
-        return RecoveryManager.listPending({ module: MODULE_ID });
-      }
-      function operationalMessage(error) {
-        return RecoveryMessages.toOperationalMessage(error);
-      }
-      module.exports = {
-        MODULE_ID,
-        Operations,
-        RecoveryManager,
-        RecoveryStatus,
-        RecoveryMessages,
-        registerMotorComercialRecovery,
-        ensureRegistered,
-        resolveEntityId,
-        obterItensRecovery,
-        buildPrepararCheckpoint,
-        savePrepararEntrega,
-        autosavePrepararEntrega,
-        rebindPrepararEntrega,
-        saveEntrega,
-        saveAuthorization,
-        loadAuthorization,
-        resumePrepararEntrega,
-        resumeEntrega,
-        completeOperacoesEntrega,
-        cancelPrepararEntrega,
-        listPendingMotorComercial,
-        operationalMessage
-      };
-    }
-  });
-
-  // frontend/modules/motor-comercial/utils/operacional.js
-  var require_operacional = __commonJS({
-    "frontend/modules/motor-comercial/utils/operacional.js"(exports, module) {
-      var Modal = require_Modal2();
-      var Button = require_Button2();
-      var Input = require_Input2();
-      var toastContext = require_ToastContext();
-      var loadingContext = require_LoadingContext();
-      var { getUsuarioId, mapConsignacaoView } = require_helpers();
-      var { isOperadorAutorizado, possuiPermissao, isAutorizacaoGerencial } = require_autorizacao();
-      var { extrairValorInput } = require_formField();
-      function getApiUrl() {
-        if (typeof window !== "undefined" && typeof window.API_URL === "string") {
-          return window.API_URL;
-        }
-        return `${window.location.origin}/api`;
-      }
-      function notify(message, variant = "info") {
-        if (typeof window !== "undefined" && typeof window.showNotification === "function") {
-          const tipo = variant === "error" ? "danger" : variant;
-          window.showNotification(message, tipo);
-          return;
-        }
-        if (variant === "success") toastContext.success(message);
-        else if (variant === "error") toastContext.error(message);
-        else if (variant === "warning") toastContext.warning(message);
-        else toastContext.info(message);
-      }
-      function navigate(path, options = {}) {
-        if (typeof window !== "undefined" && window.MotorComercial) {
-          return window.MotorComercial.navigate(path, options);
-        }
-        if (typeof navigateComercial === "function") {
-          return navigateComercial(path, options);
-        }
-        return Promise.resolve(null);
-      }
-      function openModal(backdrop) {
-        requestAnimationFrame(() => {
-          backdrop.classList.add("cds-modal-backdrop--open", "is-open");
-        });
-        document.body.appendChild(backdrop);
-      }
-      function closeModal(backdrop) {
-        backdrop.classList.remove("cds-modal-backdrop--open", "is-open");
-        setTimeout(() => backdrop.remove(), 250);
-      }
-      function confirmDialog(options = {}) {
-        return new Promise((resolve) => {
-          const footer = document.createElement("div");
-          footer.style.display = "flex";
-          footer.style.gap = "8px";
-          footer.style.justifyContent = "flex-end";
-          const cancelBtn = Button.create({
-            text: options.cancelLabel || "Cancelar",
-            variant: "secondary",
-            onClick: () => {
-              closeModal(backdrop);
-              resolve(false);
-            }
-          });
-          const confirmBtn = Button.create({
-            text: options.confirmLabel || "Confirmar",
-            variant: options.danger ? "danger" : "primary",
-            onClick: () => {
-              closeModal(backdrop);
-              resolve(true);
-            }
-          });
-          footer.appendChild(cancelBtn);
-          footer.appendChild(confirmBtn);
-          const content = document.createElement("p");
-          content.textContent = options.message || "Deseja continuar?";
-          const backdrop = Modal.create({
-            title: options.title || "Confirma\xE7\xE3o",
-            content,
-            footer,
-            open: false,
-            onClose: () => {
-              closeModal(backdrop);
-              resolve(false);
-            }
-          });
-          openModal(backdrop);
-        });
-      }
-      function promptDialog(options = {}) {
-        return new Promise((resolve) => {
-          const body = document.createElement("div");
-          const label = document.createElement("p");
-          label.textContent = options.message || "Informe o valor:";
-          body.appendChild(label);
-          const field = Input.create({
-            type: options.inputType || "text",
-            placeholder: options.placeholder || "",
-            value: options.defaultValue || ""
-          });
-          body.appendChild(field);
-          const inputEl = field.querySelector("input, textarea, select") || field;
-          const footer = document.createElement("div");
-          footer.style.display = "flex";
-          footer.style.gap = "8px";
-          footer.style.justifyContent = "flex-end";
-          const finish = (value) => {
-            closeModal(backdrop);
-            resolve(value);
-          };
-          footer.appendChild(Button.create({
-            text: "Cancelar",
-            variant: "secondary",
-            onClick: () => finish(null)
-          }));
-          footer.appendChild(Button.create({
-            text: options.confirmLabel || "Confirmar",
-            variant: "primary",
-            onClick: () => finish(inputEl.value)
-          }));
-          const backdrop = Modal.create({
-            title: options.title || "Informa\xE7\xE3o",
-            content: body,
-            footer,
-            open: false,
-            onClose: () => finish(null)
-          });
-          openModal(backdrop);
-          if (inputEl.focus) inputEl.focus();
-        });
-      }
-      function choiceDialog(options = {}) {
-        return new Promise((resolve) => {
-          const body = document.createElement("p");
-          body.textContent = options.message || "Escolha uma op\xE7\xE3o:";
-          const footer = document.createElement("div");
-          footer.style.display = "flex";
-          footer.style.flexWrap = "wrap";
-          footer.style.gap = "8px";
-          footer.style.justifyContent = "flex-end";
-          (options.choices || []).forEach((choice) => {
-            footer.appendChild(Button.create({
-              text: choice.label,
-              variant: choice.variant || "secondary",
-              onClick: () => {
-                closeModal(backdrop);
-                resolve(choice.value);
-              }
-            }));
-          });
-          const backdrop = Modal.create({
-            title: options.title || "Escolha",
-            content: body,
-            footer,
-            open: false,
-            onClose: () => {
-              closeModal(backdrop);
-              resolve(null);
-            }
-          });
-          openModal(backdrop);
-        });
-      }
-      async function fetchErp(path, options = {}) {
-        const headers = {
-          "Content-Type": "application/json",
-          ...options.headers || {}
-        };
-        const token = typeof localStorage !== "undefined" ? localStorage.getItem("token") : null;
-        if (token) headers.Authorization = `Bearer ${token}`;
-        const response = await fetch(`${getApiUrl()}${path}`, {
-          ...options,
-          headers
-        });
-        if (!response.ok) {
-          let message = `HTTP ${response.status}`;
-          try {
-            const body = await response.json();
-            message = body.message || body.error || message;
-          } catch (_error) {
-          }
-          throw new Error(message);
-        }
-        return response.json();
-      }
-      async function buscarClientePorIdErp(clienteId) {
-        const id = Number(clienteId);
-        if (!Number.isFinite(id) || id <= 0) return null;
-        try {
-          const cliente = await fetchErp(`/clientes/${id}`);
-          return cliente && cliente.id != null ? cliente : null;
-        } catch (_error) {
-          return null;
-        }
-      }
-      function filtrarClientesLocal(lista, termo) {
-        const q2 = String(termo).trim().toLowerCase();
-        const qDigits = q2.replace(/\D/g, "");
-        return lista.filter((c4) => {
-          const nome = String(c4.nome || "").toLowerCase();
-          const doc = String(c4.cpf_cnpj || c4.documento || "");
-          const docLower = doc.toLowerCase();
-          const docDigits = doc.replace(/\D/g, "");
-          const telDigits = String(c4.telefone || "").replace(/\D/g, "");
-          const idStr = String(c4.id);
-          const idMatch = idStr === q2 || idStr.includes(q2);
-          const nomeMatch = nome.includes(q2);
-          const docMatch = docLower.includes(q2) || qDigits && docDigits.includes(qDigits);
-          const telMatch = qDigits.length >= 3 && telDigits.includes(qDigits);
-          return idMatch || nomeMatch || docMatch || telMatch;
-        }).slice(0, 20);
-      }
-      async function buscarClientesErp(termo = "") {
-        const q2 = String(termo).trim();
-        if (!q2) {
-          const clientes2 = await fetchErp("/clientes");
-          const lista2 = Array.isArray(clientes2) ? clientes2 : [];
-          return lista2.slice(0, 20);
-        }
-        if (/^\d+$/.test(q2)) {
-          const porId = await buscarClientePorIdErp(q2);
-          if (porId) return [porId];
-        }
-        try {
-          const resultados = await fetchErp(`/clientes/buscar?termo=${encodeURIComponent(q2)}`);
-          if (Array.isArray(resultados) && resultados.length) {
-            const enriquecidos = await Promise.all(
-              resultados.map(async (parcial) => {
-                if (parcial.telefone != null && parcial.cpf_cnpj != null) return parcial;
-                const completo = await buscarClientePorIdErp(parcial.id);
-                return completo || parcial;
-              })
-            );
-            return enriquecidos.slice(0, 20);
-          }
-        } catch (_error) {
-        }
-        const clientes = await fetchErp("/clientes");
-        const lista = Array.isArray(clientes) ? clientes : [];
-        return filtrarClientesLocal(lista, q2);
-      }
-      function normalizarProdutoBusca(produto = {}) {
-        return {
-          ...produto,
-          nome: produto.nome || produto.descricao || `Produto #${produto.id}`,
-          preco_venda: Number(produto.preco_venda ?? produto.preco ?? 0)
-        };
-      }
-      function filtrarProdutosLocal(lista, termo) {
-        const q2 = String(termo).trim().toLowerCase();
-        const qDigits = q2.replace(/\D/g, "");
-        return lista.filter((p3) => {
-          const nome = String(p3.nome || p3.descricao || "").toLowerCase();
-          const codigo = String(p3.codigo || "").toLowerCase();
-          const barras = String(p3.codigo_barras || "").toLowerCase();
-          const idStr = String(p3.id);
-          const idMatch = idStr === q2 || idStr.includes(q2);
-          const nomeMatch = nome.includes(q2);
-          const codigoMatch = codigo.includes(q2) || barras.includes(q2);
-          const barrasMatch = qDigits.length >= 3 && barras.replace(/\D/g, "").includes(qDigits);
-          return idMatch || nomeMatch || codigoMatch || barrasMatch;
-        }).map(normalizarProdutoBusca).slice(0, 20);
-      }
-      async function buscarProdutoPorIdErp(produtoId) {
-        const id = Number(produtoId);
-        if (!Number.isFinite(id) || id <= 0) return null;
-        try {
-          const produto = await fetchErp(`/produtos/${id}`);
-          return produto && produto.id != null ? produto : null;
-        } catch (_error) {
-          return null;
-        }
-      }
-      async function buscarProdutosErp(termo = "") {
-        const q2 = String(termo).trim();
-        if (!q2) return [];
-        if (/^\d+$/.test(q2)) {
-          const porId = await buscarProdutoPorIdErp(q2);
-          if (porId) return [normalizarProdutoBusca(porId)];
-        }
-        try {
-          const resultados = await fetchErp(
-            `/produtos/consulta-pdv/buscar?q=${encodeURIComponent(q2)}&limite=20`
-          );
-          if (Array.isArray(resultados) && resultados.length) {
-            return resultados.map(normalizarProdutoBusca).slice(0, 20);
-          }
-        } catch (_error) {
-        }
-        const produtos = await fetchErp("/produtos");
-        const lista = Array.isArray(produtos) ? produtos : [];
-        return filtrarProdutosLocal(lista, q2);
-      }
-      function cacheItensConsignacao(consignacaoId, itens) {
-        if (typeof sessionStorage === "undefined") return;
-        sessionStorage.setItem(`motor-comercial:itens:${consignacaoId}`, JSON.stringify(itens));
-      }
-      function obterItensCacheConsignacao(consignacaoId) {
-        if (typeof sessionStorage === "undefined") return [];
-        try {
-          const raw = sessionStorage.getItem(`motor-comercial:itens:${consignacaoId}`);
-          return raw ? JSON.parse(raw) : [];
-        } catch (_error) {
-          return [];
-        }
-      }
-      function obterItensRecoveryConsignacao(consignacaoId) {
-        try {
-          const { obterItensRecovery } = require_recovery2();
-          return obterItensRecovery(consignacaoId);
-        } catch (_error) {
-          return [];
-        }
-      }
-      async function carregarConsignacaoCompleta(api, projectionApi, consignacaoId) {
-        var _a2;
-        const consignacao = await api.obterConsignacao(consignacaoId);
-        let perfil = null;
-        let situacao = null;
-        let resumo = null;
-        let itens = Array.isArray(consignacao.itens) && consignacao.itens.length ? consignacao.itens.slice() : [];
-        if (!itens.length && typeof api.listarItensConsignacao === "function") {
-          try {
-            const apiItens = await api.listarItensConsignacao(consignacaoId);
-            if (Array.isArray(apiItens) && apiItens.length) itens = apiItens;
-          } catch (_error) {
-          }
-        }
-        try {
-          if (consignacao.perfilComercialId) {
-            perfil = await api.obterPerfil(consignacao.perfilComercialId);
-          }
-        } catch (_error) {
-          perfil = null;
-        }
-        try {
-          if (consignacao.clienteId) {
-            situacao = await projectionApi.obterSituacaoCliente({ clienteId: consignacao.clienteId });
-          }
-        } catch (_error) {
-          situacao = null;
-        }
-        try {
-          resumo = await projectionApi.obterResumoPrestacao({ consignacaoId });
-          if (((_a2 = resumo == null ? void 0 : resumo.itens) == null ? void 0 : _a2.length) && !itens.length) itens = resumo.itens;
-        } catch (_error) {
-          resumo = null;
-        }
-        if (!itens.length) {
-          const recoveryItens = obterItensRecoveryConsignacao(consignacaoId);
-          if (recoveryItens.length) itens = recoveryItens;
-        }
-        if (!itens.length) {
-          itens = obterItensCacheConsignacao(consignacaoId);
-        }
-        return mapConsignacaoView(consignacao, {
-          itens,
-          clienteNome: situacao == null ? void 0 : situacao.clienteNome,
-          perfilNome: perfil == null ? void 0 : perfil.perfilTipo,
-          perfilStatus: (perfil == null ? void 0 : perfil.ativo) && !(perfil == null ? void 0 : perfil.bloqueado) ? "ATIVO" : "INATIVO",
-          limite: (situacao == null ? void 0 : situacao.limiteDisponivel) ?? (perfil == null ? void 0 : perfil.limiteComercial),
-          saldo: (resumo == null ? void 0 : resumo.saldoAtual) ?? (situacao == null ? void 0 : situacao.saldoEmAberto)
-        });
-      }
-      function withLoading(message, fn) {
-        loadingContext.start(message);
-        return Promise.resolve().then(fn).finally(() => loadingContext.stop());
-      }
-      module.exports = {
-        notify,
-        navigate,
-        confirmDialog,
-        promptDialog,
-        choiceDialog,
-        fetchErp,
-        extrairValorInput,
-        buscarClientePorIdErp,
-        buscarClientesErp,
-        buscarProdutoPorIdErp,
-        buscarProdutosErp,
-        normalizarProdutoBusca,
-        cacheItensConsignacao,
-        obterItensCacheConsignacao,
-        carregarConsignacaoCompleta,
-        withLoading,
-        isOperadorAutorizado,
-        possuiPermissao,
-        isAutorizacaoGerencial,
-        getUsuarioId
-      };
-    }
-  });
-
   // frontend/modules/motor-comercial/utils/electronNavigationGuard.js
   var require_electronNavigationGuard = __commonJS({
     "frontend/modules/motor-comercial/utils/electronNavigationGuard.js"(exports, module) {
@@ -84804,6 +85459,13 @@ ${lines.join("\n")}
         logElectronFlow,
         clearCentralArrivalGuard
       } = require_electronNavigationGuard();
+      var {
+        notifySuccess,
+        notifyWarning,
+        notifyInfo,
+        notifyError,
+        loadingText
+      } = require_messages();
       var REFRESH_INTERVAL_MS = 6e4;
       function getOperadorAuditoria() {
         try {
@@ -85037,11 +85699,11 @@ ${lines.join("\n")}
           if (isCentralActionBlocked()) return;
           clearCentralArrivalGuard();
           if (!item.consignacaoId) {
-            notify("N\xE3o h\xE1 d\xEDvida eleg\xEDvel na Conta Corrente deste cliente.", "warning");
+            notifyWarning("SEM_DIVIDA_ELEGIVEL");
             return;
           }
           if (String(item.statusConsignacao || "").toUpperCase() === "QUITADA") {
-            notify("Cliente j\xE1 quitado. Removendo da fila...", "info");
+            notifyInfo("CLIENTE_QUITADO_FILA");
             this._loadData();
             return;
           }
@@ -85066,7 +85728,7 @@ ${lines.join("\n")}
                 await this._prepararRecebimentoContaCorrente(item.consignacaoId);
                 const auditoria = getOperadorAuditoria();
                 const resultado = await withLoading(
-                  "Registrando recebimento na Conta Corrente...",
+                  loadingText("REGISTRANDO_RECEBIMENTO"),
                   () => this.api.registrarPagamento(item.consignacaoId, {
                     valor,
                     formaPagamento: formaPagamento || "DINHEIRO",
@@ -85096,14 +85758,14 @@ ${lines.join("\n")}
                   } catch (closeError) {
                     console.warn("[Central Conta Corrente] fecharPrestacao:", closeError);
                   }
-                  notify("Recebimento registrado. D\xEDvida quitada \u2014 cliente removido da fila.", "success");
+                  notifySuccess("RECEBIMENTO_QUITADO");
                 } else {
-                  notify("Recebimento parcial registrado na Conta Corrente Comercial.", "success");
+                  notifySuccess("RECEBIMENTO_PARCIAL");
                 }
                 await this._loadData();
               } catch (error) {
                 const msg = mensagemErroOperacional(error.message, "pagamento");
-                notify(msg, "error");
+                notifyError(msg);
                 if (/QUITADA/i.test(error.message || "")) {
                   await this._loadData();
                 }
@@ -85214,25 +85876,42 @@ ${lines.join("\n")}
     "frontend/modules/motor-comercial/pages/Consignacoes/badges.js"(exports, module) {
       var Badge = require_Badge2();
       var STATUS_BADGES = {
-        RASCUNHO: { variant: "default", text: "Rascunho" },
-        ENTREGUE: { variant: "info", text: "Entregue" },
-        "PRESTACAO_ABERTA": { variant: "warning", text: "Fechamento em Aberto" },
-        ACERTADA: { variant: "success", text: "Acertada" },
-        ENCERRADA: { variant: "primary", text: "Encerrada" },
-        QUITADA: { variant: "success", text: "Quitada" },
-        CANCELADA: { variant: "error", text: "Cancelada" },
-        ATRASADA: { variant: "error", text: "Atrasada" },
-        URGENTE: { variant: "error", text: "Urgente" }
+        RASCUNHO: { variant: "default", text: "RASCUNHO" },
+        PREPARACAO: { variant: "info", text: "PREPARA\xC7\xC3O" },
+        EM_ENTREGA: { variant: "info", text: "EM ENTREGA" },
+        ENTREGUE: { variant: "primary", text: "ENTREGUE" },
+        PRESTACAO_PENDENTE: { variant: "warning", text: "PRESTA\xC7\xC3O PENDENTE" },
+        PRESTACAO_ABERTA: { variant: "warning", text: "PRESTA\xC7\xC3O PENDENTE" },
+        FINALIZADA: { variant: "success", text: "FINALIZADA" },
+        ACERTADA: { variant: "success", text: "FINALIZADA" },
+        ENCERRADA: { variant: "success", text: "FINALIZADA" },
+        QUITADA: { variant: "success", text: "FINALIZADA" },
+        CANCELADA: { variant: "error", text: "CANCELADA" },
+        ATRASADA: { variant: "error", text: "PRESTA\xC7\xC3O PENDENTE" },
+        URGENTE: { variant: "error", text: "PRESTA\xC7\xC3O PENDENTE" }
       };
       function resolveOperationalStatus(consignacao) {
+        var _a2;
         if (!consignacao) return "RASCUNHO";
-        if (consignacao.operationalStatus) return consignacao.operationalStatus;
-        if (consignacao.status === "ENTREGUE") {
-          if (consignacao.prestacaoAberta) return "PRESTACAO_ABERTA";
-          if (consignacao.prestacaoAtrasada) return "ATRASADA";
-          if (consignacao.urgente) return "URGENTE";
+        const raw = String(consignacao.status || "").toUpperCase();
+        if (raw === "CANCELADA") return "CANCELADA";
+        if (raw === "ACERTADA" || raw === "ENCERRADA" || raw === "QUITADA" || raw === "FINALIZADA") {
+          return "FINALIZADA";
         }
-        return consignacao.status || "RASCUNHO";
+        if (raw === "EM_ENTREGA" || raw === "EM ENTREGA") return "EM_ENTREGA";
+        if (raw === "PREPARACAO" || raw === "PREPARA\xC7\xC3O" || raw === "PREPARACAO") return "PREPARACAO";
+        if (raw === "ENTREGUE") {
+          if (consignacao.prestacaoAberta || consignacao.prestacaoAtrasada || consignacao.urgente) {
+            return "PRESTACAO_PENDENTE";
+          }
+          return "ENTREGUE";
+        }
+        if (raw === "RASCUNHO") {
+          const temItens = Number(consignacao.quantidadeItens || ((_a2 = consignacao.itens) == null ? void 0 : _a2.length) || 0) > 0;
+          return temItens ? "PREPARACAO" : "RASCUNHO";
+        }
+        if (consignacao.operationalStatus) return consignacao.operationalStatus;
+        return raw || "RASCUNHO";
       }
       function createOperationalBadge(consignacao) {
         const status = resolveOperationalStatus(consignacao);
@@ -85241,26 +85920,31 @@ ${lines.join("\n")}
       }
       function enrichConsignacaoOperationalFlags(item, resumoMap = {}) {
         const resumo = resumoMap[item.id] || {};
-        const saldo = Number(resumo.saldoAtual ?? resumo.saldo ?? 0);
+        const status = String(item.status || "").toUpperCase();
+        const isRascunho = status === "RASCUNHO" || status === "PREPARACAO" || status === "PREPARA\xC7\xC3O";
+        const saldo = isRascunho ? null : Number(resumo.saldoAtual ?? resumo.saldo ?? item.saldoAberto ?? 0);
         const entrega = item.dataEntrega ? new Date(item.dataEntrega) : null;
         const diasDesdeEntrega = entrega ? Math.floor((Date.now() - entrega.getTime()) / (1e3 * 60 * 60 * 24)) : 0;
-        const prestacaoAberta = item.status === "ENTREGUE" && saldo > 0;
+        const prestacaoAberta = status === "ENTREGUE" && Number(saldo || 0) > 0;
         const prestacaoAtrasada = prestacaoAberta && diasDesdeEntrega > 30;
         const urgente = prestacaoAberta && diasDesdeEntrega > 45;
-        return {
+        const valor = isRascunho ? null : Number(
+          resumo.valorConsignado ?? resumo.valorVendido ?? item.valorTotalEntregue ?? item.valor ?? 0
+        );
+        const enriched = {
           ...item,
           prestacaoAberta,
           prestacaoAtrasada,
           urgente,
-          saldo,
-          valor: Number(resumo.valorConsignado ?? resumo.valorVendido ?? 0),
-          prestacaoStatus: prestacaoAberta ? "ABERTA" : item.status === "ACERTADA" ? "FECHADA" : "-",
-          operationalStatus: resolveOperationalStatus({
-            ...item,
-            prestacaoAberta,
-            prestacaoAtrasada,
-            urgente
-          })
+          saldo: isRascunho ? null : saldo,
+          valor,
+          valorLabel: isRascunho ? "Aguardando Entrega" : null,
+          aguardandoEntrega: isRascunho,
+          prestacaoStatus: isRascunho ? "AGUARDANDO_ENTREGA" : prestacaoAberta ? "ABERTA" : status === "ACERTADA" || status === "FINALIZADA" ? "FECHADA" : "-"
+        };
+        return {
+          ...enriched,
+          operationalStatus: resolveOperationalStatus(enriched)
         };
       }
       module.exports = {
@@ -85649,6 +86333,16 @@ ${lines.join("\n")}
         routeWithActiveContext,
         buildRouteWithCliente360Context
       } = require_cliente360Context();
+      var {
+        ErrorMessages,
+        ConfirmMessages,
+        emptyState,
+        notifySuccess,
+        notifyError,
+        notifyWarning,
+        loadingText,
+        resolveOperationalError
+      } = require_messages();
       var FAVORITES_KEY = "motor-comercial:cockpit-filtros-favoritos";
       var REFRESH_INTERVAL_MS = 6e4;
       function getOperadorNome() {
@@ -85717,6 +86411,7 @@ ${lines.join("\n")}
           setTimeout(() => {
             this._loadData();
             this._startAutoRefresh();
+            this._bindFocusRefresh();
           }, 0);
           return layout;
         }
@@ -85879,10 +86574,15 @@ ${lines.join("\n")}
           const actions = document.createElement("div");
           actions.className = "cds-consignacoes-filters__actions";
           actions.appendChild(Button.create({ text: "Pesquisar", variant: "primary", onClick: () => this._applyFilters() }));
-          actions.appendChild(Button.create({ text: "Limpar", variant: "ghost", onClick: () => this._clearFilters() }));
+          actions.appendChild(Button.create({ text: "Limpar Filtros", variant: "ghost", onClick: () => this._clearFilters() }));
           actions.appendChild(Button.create({ text: "Salvar favorito", variant: "ghost", onClick: () => this._saveFavoriteFilter() }));
           actions.appendChild(Button.create({ text: "Carregar favorito", variant: "ghost", onClick: () => this._loadFavoriteFilter() }));
           container.appendChild(actions);
+          const indicator = document.createElement("div");
+          indicator.id = "cockpit-filtros-ativos";
+          indicator.className = "cds-filtros-ativos";
+          indicator.hidden = true;
+          container.appendChild(indicator);
           return container;
         }
         _createFilterSelect(name, label, options) {
@@ -85953,18 +86653,15 @@ ${lines.join("\n")}
           container.className = "cds-consignacoes-content cds-consignacoes-table--virtual-ready";
           container.id = "consignacoes-content";
           if (this.loading) {
-            container.appendChild(Loading.create({ message: "Carregando consigna\xE7\xF5es..." }));
+            container.appendChild(Loading.create({ message: loadingText("CARREGANDO_CONSIGNACAO") }));
           } else if (this.error) {
             container.appendChild(Alert.create({
-              message: "Erro ao carregar consigna\xE7\xF5es: " + this.error.message,
+              message: resolveOperationalError(this.error, { context: "consignacao" }) || ErrorMessages.CONSIGNACAO_CARREGAR,
               variant: "error",
               dismissible: true
             }));
           } else if (this.consignacoes.length === 0) {
-            container.appendChild(EmptyState.create({
-              title: "Nenhuma consigna\xE7\xE3o encontrada",
-              description: "Ajuste os filtros ou crie uma nova consigna\xE7\xE3o"
-            }));
+            container.appendChild(EmptyState.create(emptyState("CONSIGNACOES")));
           } else {
             container.appendChild(this._createTable());
           }
@@ -85991,12 +86688,12 @@ ${lines.join("\n")}
             indicador: this._createVisualIndicator(c4),
             pendencias: this._createPendenciasIndicator(c4),
             documento: c4.documento,
-            cliente: c4.cliente,
+            cliente: c4.clienteNome || c4.cliente,
             consignado: c4.consignado,
             status: createOperationalBadge(c4),
-            prestacao: c4.prestacaoStatus,
-            valor: this._formatCurrency(c4.valor),
-            saldo: this._formatCurrency(c4.saldo),
+            prestacao: c4.aguardandoEntrega ? "Aguardando Entrega" : c4.prestacaoStatus,
+            valor: this._formatCurrency(c4.valor, c4),
+            saldo: this._formatCurrency(c4.saldo, c4),
             entrega: this._formatDate(c4.dataEntrega),
             ultimaMovimentacao: this._formatDate(c4.ultimaMovimentacao),
             usuario: c4.usuario,
@@ -86096,15 +86793,25 @@ ${lines.join("\n")}
             const apiParams = {};
             if (this.filters.status) apiParams.status = this.filters.status;
             const clienteFilter = String(this.filters.cliente || "").trim();
-            if (/^\d+$/.test(clienteFilter)) apiParams.clienteId = clienteFilter;
+            if (/^\d+$/.test(clienteFilter)) {
+              apiParams.clienteId = clienteFilter;
+            } else if (clienteFilter) {
+              apiParams.busca = clienteFilter;
+            }
+            const search = String(this.filters.search || "").trim();
+            if (search && !apiParams.busca) apiParams.busca = search;
+            if (this.filters.documento) apiParams.busca = this.filters.documento;
+            this.allConsignacoes = [];
+            this.consignacoes = [];
             const [listResult, dashboard, pendenciasPayload] = await Promise.all([
-              this.api.listarConsignacoes(apiParams),
-              this.projectionApi.obterProjecaoDashboard().catch(() => ({})),
-              this.projectionApi.obterProjecaoPendencias().catch(() => ({}))
+              this.api.listarConsignacoes({ ...apiParams, _t: Date.now() }),
+              this.projectionApi.obterProjecaoDashboard({ _t: Date.now() }).catch(() => ({})),
+              this.projectionApi.obterProjecaoPendencias({ _t: Date.now() }).catch(() => ({}))
             ]);
             const items = (listResult.items || []).map((item) => mapConsignacaoView(item));
             const resumoMap = {};
-            await Promise.all(items.slice(0, 50).map(async (item) => {
+            const paraResumo = items.filter((item) => String(item.status || "").toUpperCase() !== "RASCUNHO");
+            await Promise.all(paraResumo.slice(0, 50).map(async (item) => {
               try {
                 const resumo = await this.projectionApi.obterResumoPrestacao({ consignacaoId: item.id });
                 resumoMap[item.id] = resumo;
@@ -86118,6 +86825,7 @@ ${lines.join("\n")}
             this.lastUpdated = /* @__PURE__ */ new Date();
             this.loading = false;
             this._applyClientPipeline();
+            this._updateFiltrosAtivos();
             this._createCards();
             this._updateHeaderMeta();
             if (this.cockpitDrawer && this.drawerOpen) {
@@ -86134,13 +86842,34 @@ ${lines.join("\n")}
           const q2 = (this.filters.search || "").toLowerCase();
           if (q2) {
             filtered = filtered.filter((c4) => {
-              const blob = [c4.documento, c4.cliente, c4.consignado, c4.observacao, c4.produtoResumo].map((v3) => String(v3 || "").toLowerCase()).join(" ");
-              return blob.includes(q2);
+              const blob = [
+                c4.documento,
+                c4.cliente,
+                c4.clienteNome,
+                c4.clienteDocumento,
+                c4.clienteFantasia,
+                c4.clienteTelefone,
+                c4.consignado,
+                c4.observacao,
+                c4.produtoResumo,
+                c4.id,
+                c4.clienteId
+              ].map((v3) => String(v3 || "").toLowerCase()).join(" ");
+              return blob.includes(q2) || blob.replace(/\D/g, "").includes(q2.replace(/\D/g, ""));
             });
           }
           if (this.filters.cliente) {
             const term = this.filters.cliente.toLowerCase();
-            filtered = filtered.filter((c4) => String(c4.cliente || "").toLowerCase().includes(term));
+            const termDigits = term.replace(/\D/g, "");
+            filtered = filtered.filter((c4) => {
+              const nome = String(c4.clienteNome || c4.cliente || "").toLowerCase();
+              const fantasia = String(c4.clienteFantasia || "").toLowerCase();
+              const doc = String(c4.clienteDocumento || "").toLowerCase();
+              const tel = String(c4.clienteTelefone || "").toLowerCase();
+              const id = String(c4.clienteId || "");
+              const obs = String(c4.observacao || "").toLowerCase();
+              return nome.includes(term) || fantasia.includes(term) || doc.includes(term) || tel.includes(term) || id.includes(term) || obs.includes(term) || termDigits && (doc.replace(/\D/g, "").includes(termDigits) || tel.replace(/\D/g, "").includes(termDigits));
+            });
           }
           if (this.filters.consignado) {
             const term = this.filters.consignado.toLowerCase();
@@ -86148,7 +86877,12 @@ ${lines.join("\n")}
           }
           if (this.filters.documento) {
             const term = this.filters.documento.toLowerCase();
-            filtered = filtered.filter((c4) => String(c4.documento || "").toLowerCase().includes(term));
+            filtered = filtered.filter((c4) => {
+              const doc = String(c4.documento || "").toLowerCase();
+              const id = String(c4.id || "");
+              const cliDoc = String(c4.clienteDocumento || "").toLowerCase();
+              return doc.includes(term) || id.includes(term) || cliDoc.includes(term);
+            });
           }
           if (this.filters.operador) {
             const term = this.filters.operador.toLowerCase();
@@ -86178,9 +86912,73 @@ ${lines.join("\n")}
           }
           const start = (this.pagination.currentPage - 1) * this.pagination.pageSize;
           this.consignacoes = filtered.slice(start, start + this.pagination.pageSize);
+          this._updateFiltrosAtivos();
           this._updateContent();
           this._updatePagination();
           this._updateFooter();
+        }
+        _getFiltrosAtivos() {
+          const chips = [];
+          if (this.filters.status) chips.push({ label: "Status", value: this.filters.status });
+          if (this.filters.cliente) chips.push({ label: "Cliente", value: this.filters.cliente });
+          if (this.filters.documento) chips.push({ label: "Documento", value: this.filters.documento });
+          if (this.filters.consignado) chips.push({ label: "Consignado", value: this.filters.consignado });
+          if (this.filters.prestacao) chips.push({ label: "Fechamento", value: this.filters.prestacao });
+          if (this.filters.operador) chips.push({ label: "Operador", value: this.filters.operador });
+          if (this.filters.search) chips.push({ label: "Busca", value: this.filters.search });
+          if (this.filters.periodoInicio || this.filters.periodoFim) {
+            const ini = this.filters.periodoInicio || "\u2026";
+            const fim = this.filters.periodoFim || "\u2026";
+            chips.push({ label: "Per\xEDodo", value: `${ini} \u2192 ${fim}` });
+          }
+          return chips;
+        }
+        _updateFiltrosAtivos() {
+          const host = document.getElementById("cockpit-filtros-ativos");
+          if (!host) return;
+          const chips = this._getFiltrosAtivos();
+          if (!chips.length) {
+            host.hidden = true;
+            host.innerHTML = "";
+            return;
+          }
+          host.hidden = false;
+          host.innerHTML = "";
+          const title = document.createElement("div");
+          title.className = "cds-filtros-ativos__title";
+          title.textContent = "Filtros ativos:";
+          host.appendChild(title);
+          chips.forEach((chip) => {
+            const el = document.createElement("span");
+            el.className = "cds-filtros-ativos__chip";
+            el.innerHTML = `<strong>${chip.label}:</strong> ${chip.value}`;
+            host.appendChild(el);
+          });
+          const limpar = document.createElement("button");
+          limpar.type = "button";
+          limpar.className = "cds-filtros-ativos__limpar";
+          limpar.textContent = "Limpar Filtros";
+          limpar.addEventListener("click", () => this._clearFilters());
+          host.appendChild(limpar);
+        }
+        _bindFocusRefresh() {
+          if (this._focusRefreshBound) return;
+          this._focusRefreshBound = true;
+          this._onFocusRefresh = () => {
+            if (!document.getElementById("consignacoes-content")) return;
+            this._invalidateLocalCache();
+            this._loadData({ silent: true });
+          };
+          window.addEventListener("focus", this._onFocusRefresh);
+          document.addEventListener("visibilitychange", () => {
+            if (document.visibilityState === "visible") this._onFocusRefresh();
+          });
+        }
+        _invalidateLocalCache() {
+          this.allConsignacoes = [];
+          this.consignacoes = [];
+          this.dashboardData = null;
+          this.lastUpdated = null;
         }
         _updatePagination() {
           const host = document.getElementById("cockpit-pagination");
@@ -86318,6 +87116,8 @@ ${lines.join("\n")}
               this.selectedId = null;
               this.activeDrawer = null;
               this.cockpitDrawer = null;
+              this._invalidateLocalCache();
+              this._loadData({ silent: true });
             }
           });
           this.activeDrawer = drawer;
@@ -86412,42 +87212,43 @@ ${lines.join("\n")}
         async _openPrestacao(consignacao) {
           try {
             if (consignacao.status === "ENTREGUE") {
-              await withLoading("Abrindo presta\xE7\xE3o...", () => this.api.abrirPrestacao(consignacao.id));
+              await withLoading(loadingText("ABRINDO_PRESTACAO"), () => this.api.abrirPrestacao(consignacao.id));
             }
             await navigate(routeWithActiveContext(`/consignacoes/${consignacao.id}/prestacao`, this.navigationContext));
           } catch (error) {
-            notify("Erro ao abrir presta\xE7\xE3o: " + error.message, "error");
+            notifyError("PRESTACAO_ABRIR", error);
           }
         }
         async _cancelConsignacao(consignacao) {
           if (consignacao.status !== "RASCUNHO") {
-            notify("Somente rascunhos podem ser cancelados.", "warning");
+            notifyWarning("SOMENTE_RASCUNHO");
             return;
           }
           const confirmed = await confirmDialog({
-            title: "Cancelar consigna\xE7\xE3o",
-            message: `Deseja cancelar a consigna\xE7\xE3o ${consignacao.documento}?`,
+            ...ConfirmMessages.CANCELAR_CONSIGNACAO,
+            message: `Deseja cancelar a consigna\xE7\xE3o ${consignacao.documento}?
+Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
             danger: true,
             confirmLabel: "Cancelar consigna\xE7\xE3o"
           });
           if (!confirmed) return;
           try {
-            await withLoading("Cancelando consigna\xE7\xE3o...", () => this.api.cancelarConsignacao(consignacao.id));
-            notify("Consigna\xE7\xE3o cancelada com sucesso.", "success");
+            await withLoading(loadingText("CANCELANDO_CONSIGNACAO"), () => this.api.cancelarConsignacao(consignacao.id));
+            notifySuccess("CONSIGNACAO_CANCELADA");
             await this._loadData();
           } catch (error) {
-            notify("Erro ao cancelar consigna\xE7\xE3o: " + error.message, "error");
+            notifyError("CONSIGNACAO_CANCELAR", error);
           }
         }
         async _duplicateConsignacao(consignacao) {
           const confirmed = await confirmDialog({
-            title: "Duplicar consigna\xE7\xE3o",
+            ...ConfirmMessages.DUPLICAR_CONSIGNACAO,
             message: `Deseja duplicar a consigna\xE7\xE3o ${consignacao.documento}?`
           });
           if (!confirmed) return;
           try {
             const completa = await carregarConsignacaoCompleta(this.api, this.projectionApi, consignacao.id);
-            const created = await withLoading("Duplicando consigna\xE7\xE3o...", async () => {
+            const created = await withLoading(loadingText("DUPLICANDO_CONSIGNACAO"), async () => {
               const result = await this.api.criarConsignacao({
                 clienteId: completa.clienteId,
                 perfilComercialId: completa.perfilComercialId,
@@ -86466,16 +87267,20 @@ ${lines.join("\n")}
               }
               return nova;
             });
-            notify("Consigna\xE7\xE3o duplicada com sucesso.", "success");
+            notifySuccess("CONSIGNACAO_DUPLICADA");
             await navigate(`/consignacoes/${created.id}/entrega`);
           } catch (error) {
-            notify("Erro ao duplicar consigna\xE7\xE3o: " + error.message, "error");
+            notifyError("CONSIGNACAO_DUPLICAR", error);
           }
         }
         _printConsignacao(consignacao) {
           this._openDrawer(consignacao).then(() => window.print());
         }
-        _formatCurrency(value) {
+        _formatCurrency(value, item = null) {
+          if (item && (item.aguardandoEntrega || String(item.status || "").toUpperCase() === "RASCUNHO")) {
+            return item.valorLabel || "\u2014";
+          }
+          if (value == null || value === "") return "\u2014";
           return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(Number(value) || 0);
         }
         _formatDate(date) {
@@ -88701,7 +89506,9 @@ ${lines.join("\n")}
       }
       function simularInclusaoProduto(itens = [], clienteProfile = {}, produto = {}, quantidade = 1) {
         const qtd = Math.max(1, Number(quantidade) || 1);
-        const preco = Number(produto.preco ?? produto.preco_venda ?? 0);
+        const preco = Number(
+          produto.preco ?? produto.precoVenda ?? produto.preco_unitario ?? 0
+        );
         const valorInclusao = qtd * preco;
         const painelAtual = buildPainelResumo(itens, clienteProfile);
         const itensSimulados = itens.map((item) => ({ ...item }));
@@ -88766,6 +89573,24 @@ ${lines.join("\n")}
         }
         return avisos;
       }
+      function formatOrigemPreco(origem, fallback = false) {
+        if (fallback) return "Pre\xE7o de Seguran\xE7a";
+        const o3 = String(origem || "").toLowerCase();
+        if (!o3) return "\u2014";
+        if (o3.includes("seguranca") || o3.includes("seguran\xE7a") || o3.includes("fallback") || o3.includes("safety")) {
+          return "Pre\xE7o de Seguran\xE7a";
+        }
+        if (o3.includes("tabela")) return "Tabela";
+        if (o3.includes("linha")) return "Linha de Precifica\xE7\xE3o";
+        if (o3.includes("produto")) return "Produto";
+        return String(origem);
+      }
+      function rotuloLinhaItem(item = {}) {
+        return item.linhaComercialDescricao || item.linhaComercialCodigo || (item.linhaComercialId != null ? `#${item.linhaComercialId}` : "\u2014");
+      }
+      function rotuloTabelaItem(item = {}, fallbackTabela = null) {
+        return item.tabelaPrecoNome || fallbackTabela || (item.tabelaPrecoId != null ? `#${item.tabelaPrecoId}` : "\u2014");
+      }
       function buildClienteResumo(clienteProfile = {}) {
         const profile = clienteProfile && typeof clienteProfile === "object" ? clienteProfile : {};
         return [
@@ -88773,11 +89598,13 @@ ${lines.join("\n")}
           { label: "Telefone", value: profile.telefone || "\u2014" },
           { label: "Cidade", value: profile.cidade || "\u2014" },
           {
+            label: "Tipo Comercial",
+            value: profile.tipoComercialDescricao || profile.tipoComercialCodigo || "\u2014"
+          },
+          {
             label: "Capacidades",
             value: (profile.capacidades || []).join(", ") || "\u2014"
-          },
-          { label: "Saldo Atual", value: formatCurrency(profile.saldo), highlight: true },
-          { label: "Limite", value: formatCurrency(profile.limiteDisponivel ?? profile.limiteComercial) }
+          }
         ];
       }
       function buildConferenciaResumo(data = {}, clienteProfile = {}, painel = {}) {
@@ -88786,9 +89613,7 @@ ${lines.join("\n")}
           { label: "Documento", value: data.documentoNumero || data.documentoPreview || "\u2014" },
           { label: "Itens", value: String(painel.quantidadeItens || 0) },
           { label: "Quantidade Total", value: String(painel.quantidadeTotal || 0) },
-          { label: "Valor", value: formatCurrency(painel.valorTotal), highlight: true },
-          { label: "Limite Dispon\xEDvel", value: formatCurrency(painel.limiteDisponivel) },
-          { label: "Saldo ap\xF3s a Entrega", value: formatCurrency(painel.saldoAposEntrega) }
+          { label: "Valor desta Entrega", value: formatCurrency(painel.valorTotal), highlight: true }
         ];
       }
       function formatCurrency(value) {
@@ -88826,6 +89651,9 @@ ${lines.join("\n")}
         buildConferenciaResumo,
         formatCurrency,
         formatDate,
+        formatOrigemPreco,
+        rotuloLinhaItem,
+        rotuloTabelaItem,
         inicializarSteps,
         stepIndexFromKey
       };
@@ -88847,7 +89675,9 @@ ${lines.join("\n")}
         buildClienteResumo,
         buildConferenciaResumo,
         formatCurrency,
-        formatDate
+        formatOrigemPreco,
+        rotuloLinhaItem,
+        rotuloTabelaItem
       } = require_prepararEntregaMappers();
       var PrepararEntregaView = class _PrepararEntregaView {
         static renderMomento(momento, state, ctx) {
@@ -88964,11 +89794,7 @@ ${lines.join("\n")}
             } else {
               const clienteBar = document.createElement("div");
               clienteBar.className = "cds-preparar-entrega__cliente-bar";
-              clienteBar.innerHTML = `
-          <span><strong>${state.clienteProfile.nome}</strong></span>
-          <span>Limite: ${formatCurrency(state.clienteProfile.limiteDisponivel)}</span>
-          <span>Saldo: ${formatCurrency(state.clienteProfile.saldo)}</span>
-        `;
+              clienteBar.innerHTML = `<span><strong>${state.clienteProfile.nome}</strong></span>`;
               wrap.appendChild(clienteBar);
             }
           }
@@ -88982,7 +89808,6 @@ ${lines.join("\n")}
           lipSimHost.hidden = true;
           wrap.appendChild(lipSimHost);
           wrap.appendChild(_PrepararEntregaView._renderAtalhosTeclado());
-          wrap.appendChild(_PrepararEntregaView._renderResumoCompactoGrade(state));
           const gradeHost = document.createElement("div");
           gradeHost.className = "cds-preparar-entrega__grade";
           gradeHost.id = "prep-itens-grade";
@@ -89010,8 +89835,9 @@ ${lines.join("\n")}
           return bar;
         }
         static _renderGradeItens(state, ctx) {
+          var _a2;
           const table = document.createElement("div");
-          table.className = "cds-preparar-entrega__grade-tabela";
+          table.className = "cds-preparar-entrega__grade-tabela cds-preparar-entrega__grade-tabela--snapshot";
           const head = document.createElement("div");
           head.className = "cds-preparar-entrega__grade-head";
           head.innerHTML = `
@@ -89023,13 +89849,18 @@ ${lines.join("\n")}
       <span></span>
     `;
           table.appendChild(head);
+          const tabelaOp = ((_a2 = state.operacaoResumo) == null ? void 0 : _a2.tabelaPreco) || null;
           state.data.itens.forEach((item, index2) => {
             const row = document.createElement("div");
             row.className = `cds-preparar-entrega__grade-row${state.focusedItemIndex === index2 ? " cds-preparar-entrega__grade-row--focus" : ""}`;
             row.dataset.index = String(index2);
             const prodCell = document.createElement("div");
             prodCell.className = "cds-preparar-entrega__grade-produto";
-            prodCell.innerHTML = `<strong>${item.produto}</strong>${item.codigo ? `<small>${item.codigo}</small>` : ""}`;
+            prodCell.innerHTML = `
+        <strong>${item.produto}</strong>
+        ${item.codigo ? `<small>${item.codigo}</small>` : ""}
+        ${_PrepararEntregaView._htmlSnapshotItem(item, tabelaOp)}
+      `;
             row.appendChild(prodCell);
             const qtyInput = document.createElement("input");
             qtyInput.type = "number";
@@ -89046,9 +89877,14 @@ ${lines.join("\n")}
             });
             qtyInput.addEventListener("change", () => ctx.onItemQtyChange(index2, qtyInput.value));
             row.appendChild(qtyInput);
-            const preco = document.createElement("span");
-            preco.textContent = formatCurrency(item.preco);
-            row.appendChild(preco);
+            const precoCell = document.createElement("div");
+            precoCell.className = "cds-preparar-entrega__grade-preco";
+            const ucLabel = item.unidadeComercial ? ` / ${item.unidadeComercial}` : "";
+            precoCell.innerHTML = `
+        <span>${formatCurrency(item.preco)}${ucLabel}</span>
+        ${item.precoFallback ? '<small class="cds-preparar-entrega__preco-seguranca">Utilizando Pre\xE7o de Seguran\xE7a</small>' : ""}
+      `;
+            row.appendChild(precoCell);
             const total = document.createElement("span");
             total.className = "cds-preparar-entrega__grade-total";
             total.textContent = formatCurrency((item.quantidade || 0) * (item.preco || 0));
@@ -89081,7 +89917,23 @@ ${lines.join("\n")}
           });
           return table;
         }
+        /** Snapshot discreto da precificação (RCM-6.1 / RCM-7.5) */
+        static _htmlSnapshotItem(item, tabelaOp = null) {
+          const linha = rotuloLinhaItem(item);
+          const tabela = rotuloTabelaItem(item, tabelaOp);
+          const uc = item.unidadeComercial || "\u2014";
+          const origem = formatOrigemPreco(item.precoOrigem, !!item.precoFallback);
+          return `
+      <div class="cds-item-snapshot" aria-label="Snapshot da precifica\xE7\xE3o">
+        <span><em>Linha de Precifica\xE7\xE3o</em> ${linha}</span>
+        <span><em>Tabela de Pre\xE7os</em> ${tabela}</span>
+        <span><em>UC</em> ${uc}</span>
+        <span><em>Origem</em> ${origem}</span>
+      </div>
+    `;
+        }
         static renderConferencia(state, ctx) {
+          var _a2;
           const wrap = document.createElement("div");
           wrap.className = "cds-preparar-entrega__momento";
           const title = document.createElement("h2");
@@ -89112,15 +89964,35 @@ ${lines.join("\n")}
           });
           wrap.appendChild(resumo);
           if (state.data.itens.length) {
+            const tabelaOp = ((_a2 = state.operacaoResumo) == null ? void 0 : _a2.tabelaPreco) || null;
             const lista = document.createElement("div");
-            lista.className = "cds-preparar-entrega__conferencia-itens";
+            lista.className = "cds-preparar-entrega__conferencia-itens cds-preparar-entrega__conferencia-itens--snapshot";
+            lista.innerHTML = `
+        <div class="cds-preparar-entrega__conferencia-itens-head">
+          <span>Produto</span>
+          <span>Linha de Precifica\xE7\xE3o</span>
+          <span>Tabela de Pre\xE7os</span>
+          <span>UC</span>
+          <span>Pre\xE7o</span>
+          <span>Origem</span>
+          <span>Quantidade</span>
+          <span>Total</span>
+        </div>
+      `;
             state.data.itens.forEach((item) => {
               const linha = document.createElement("div");
               linha.className = "cds-preparar-entrega__conferencia-linha";
+              const origem = formatOrigemPreco(item.precoOrigem, !!item.precoFallback);
+              const fallbackHint = item.precoFallback ? '<small class="cds-preparar-entrega__preco-seguranca">Pre\xE7o de Seguran\xE7a</small>' : "";
               linha.innerHTML = `
-          <span>${item.produto}</span>
-          <span>${item.quantidade} un.</span>
-          <span>${formatCurrency(item.quantidade * item.preco)}</span>
+          <span>${item.produto}${fallbackHint}</span>
+          <span>${rotuloLinhaItem(item)}</span>
+          <span>${rotuloTabelaItem(item, tabelaOp)}</span>
+          <span>${item.unidadeComercial || "\u2014"}</span>
+          <span>${formatCurrency(item.preco)}</span>
+          <span>${origem}</span>
+          <span>${item.quantidade}</span>
+          <span>${formatCurrency((item.quantidade || 0) * (item.preco || 0))}</span>
         `;
               lista.appendChild(linha);
             });
@@ -89177,33 +90049,6 @@ ${lines.join("\n")}
           wrap.appendChild(actions);
           return wrap;
         }
-        static _renderResumoCompactoGrade(state) {
-          var _a2;
-          const painel = ((_a2 = state.lipSimulacao) == null ? void 0 : _a2.painelProjetado) || buildPainelResumo(state.data.itens, state.clienteProfile || {});
-          const bar = document.createElement("div");
-          bar.className = "cds-preparar-entrega__resumo-grade";
-          bar.id = "prep-resumo-grade";
-          const saldoCls = _PrepararEntregaView._classeDestaqueSaldo(painel.destaqueSaldoRestante);
-          bar.innerHTML = `
-      <span class="cds-preparar-entrega__resumo-grade-item">
-        <label>Itens:</label>
-        <strong data-resumo-itens>${painel.quantidadeItens}</strong>
-      </span>
-      <span class="cds-preparar-entrega__resumo-grade-item">
-        <label>Quantidade:</label>
-        <strong data-resumo-quantidade>${painel.quantidadeTotal}</strong>
-      </span>
-      <span class="cds-preparar-entrega__resumo-grade-item cds-preparar-entrega__resumo-grade-item--total">
-        <label>Valor Total:</label>
-        <strong data-resumo-valor>${formatCurrency(painel.valorTotal)}</strong>
-      </span>
-      <span class="cds-preparar-entrega__resumo-grade-item cds-preparar-entrega__resumo-grade-item--saldo ${saldoCls}">
-        <label>Cr\xE9dito Restante:</label>
-        <strong data-resumo-saldo>${painel.saldoRestanteExibicao}</strong>
-      </span>
-    `;
-          return bar;
-        }
         static _classeDestaqueSaldo(destaque) {
           if (destaque === "critico") return "cds-preparar-entrega__destaque--critico";
           if (destaque === "alerta") return "cds-preparar-entrega__destaque--alerta";
@@ -89220,127 +90065,70 @@ ${lines.join("\n")}
         <div><label>Produto</label><strong>${simulacao.produto}</strong></div>
         <div><label>Quantidade</label><strong>${simulacao.quantidade}</strong></div>
         <div><label>Valor da inclus\xE3o</label><strong>${simulacao.valorInclusaoExibicao}</strong></div>
-        <div><label>Novo valor da entrega</label><strong>${formatCurrency(painel.valorTotal)}</strong></div>
-        <div><label>Cr\xE9dito ap\xF3s entrega</label><strong>${painel.creditoAposEntregaExibicao || painel.creditoDisponivelExibicao}</strong></div>
-        <div><label>Utiliza\xE7\xE3o</label><strong>${painel.percentualUtilizadoTexto}</strong></div>
+        <div><label>Valor desta Entrega</label><strong>${formatCurrency(painel.valorTotal)}</strong></div>
+        <div><label>Saldo ap\xF3s Entrega</label><strong>${painel.creditoAposEntregaExibicao || painel.creditoDisponivelExibicao}</strong></div>
+        <div><label>Utiliza\xE7\xE3o</label><strong>${painel.percentualLimiteExibicao || painel.percentualUtilizadoTexto}</strong></div>
       </div>
     `;
           return host;
         }
-        static _renderSecaoPainel(titulo) {
-          const sec = document.createElement("div");
-          sec.className = "cds-preparar-entrega__painel-secao";
-          if (titulo) {
-            const h3 = document.createElement("div");
-            h3.className = "cds-preparar-entrega__painel-secao-titulo";
-            h3.textContent = titulo;
-            sec.appendChild(h3);
-          }
-          return sec;
-        }
-        static _renderBarraUtilizacao(painel) {
-          const wrap = document.createElement("div");
-          wrap.className = "cds-preparar-entrega__utilizacao";
-          const faixa = painel.faixaInfo || { emoji: "", label: "" };
-          const header = document.createElement("div");
-          header.className = "cds-preparar-entrega__utilizacao-header";
-          header.innerHTML = `<span>${faixa.emoji} ${faixa.label}</span>`;
-          const pctLabel = document.createElement("strong");
-          pctLabel.textContent = painel.percentualUtilizadoTexto || painel.percentualLimiteExibicao;
-          header.appendChild(pctLabel);
-          wrap.appendChild(header);
-          const track = document.createElement("div");
-          track.className = "cds-preparar-entrega__utilizacao-track";
-          track.setAttribute("role", "progressbar");
-          track.setAttribute("aria-valuemin", "0");
-          track.setAttribute("aria-valuemax", "100");
-          track.setAttribute("aria-valuenow", String(Math.min(painel.percentualLimite || 0, 100)));
-          const fill = document.createElement("div");
-          const larguraBarra = painel.percentualLimite != null ? Math.min(Math.max(painel.percentualLimite, 0), 100) : 0;
-          fill.className = `cds-preparar-entrega__utilizacao-fill cds-preparar-entrega__utilizacao-fill--${painel.faixaUtilizacao}`;
-          fill.style.width = `${larguraBarra}%`;
-          track.appendChild(fill);
-          wrap.appendChild(track);
-          return wrap;
-        }
-        static _renderMensagemInteligente(painel) {
+        /**
+         * RCM-7.5 — Resumo Financeiro único (substitui strip + painel lateral duplicados).
+         */
+        static renderResumoFinanceiro(painel = {}) {
           const box = document.createElement("div");
-          box.className = `cds-preparar-entrega__mensagem cds-preparar-entrega__mensagem--${painel.mensagemNivel || "info"}`;
-          box.setAttribute("role", "status");
-          box.textContent = painel.mensagemInteligente || "";
+          box.className = "cds-resumo-financeiro";
+          box.setAttribute("role", "region");
+          box.setAttribute("aria-label", "Resumo Financeiro");
+          const pct = painel.percentualLimite != null ? Math.min(Math.max(Number(painel.percentualLimite), 0), 100) : 0;
+          const pctLabel = painel.percentualLimiteExibicao || "\u2014";
+          const limite = Number(painel.limiteComercial) > 0 ? formatCurrency(painel.limiteComercial) : painel.creditoDisponivelExibicao || formatCurrency(painel.limiteDisponivel || 0);
+          box.innerHTML = `
+      <div class="cds-resumo-financeiro__titulo">Resumo Financeiro</div>
+      <div class="cds-resumo-financeiro__grid">
+        <div class="cds-resumo-financeiro__item">
+          <span class="cds-resumo-financeiro__label">Limite Comercial</span>
+          <strong class="cds-resumo-financeiro__value" data-fin-limite>${limite}</strong>
+        </div>
+        <div class="cds-resumo-financeiro__item">
+          <span class="cds-resumo-financeiro__label">Valor desta Entrega</span>
+          <strong class="cds-resumo-financeiro__value" data-fin-valor>${formatCurrency(painel.valorTotal || 0)}</strong>
+        </div>
+        <div class="cds-resumo-financeiro__item">
+          <span class="cds-resumo-financeiro__label">Saldo ap\xF3s Entrega</span>
+          <strong class="cds-resumo-financeiro__value" data-fin-saldo>${painel.saldoRestanteExibicao || "\u2014"}</strong>
+        </div>
+        <div class="cds-resumo-financeiro__item cds-resumo-financeiro__item--utilizacao">
+          <span class="cds-resumo-financeiro__label">Utiliza\xE7\xE3o <strong data-fin-pct>${pctLabel}</strong></span>
+          <div class="cds-resumo-financeiro__bar" role="progressbar"
+               aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}">
+            <div class="cds-resumo-financeiro__bar-fill cds-resumo-financeiro__bar-fill--${painel.faixaUtilizacao || "neutro"}"
+                 data-fin-fill style="width:${pct}%"></div>
+          </div>
+        </div>
+      </div>
+    `;
           return box;
         }
-        static renderPainelLateral(state) {
-          var _a2;
-          const painel = ((_a2 = state.lipSimulacao) == null ? void 0 : _a2.painelProjetado) || buildPainelResumo(state.data.itens, state.clienteProfile || {});
-          const simulando = Boolean(state.lipSimulacao);
-          const container = document.createElement("aside");
-          container.className = `cds-preparar-entrega__painel${simulando ? " cds-preparar-entrega__painel--simulando" : ""}`;
-          container.id = "prep-painel-operacional";
-          container.innerHTML = "<h3>Assistente Operacional</h3>";
-          const clienteSec = _PrepararEntregaView._renderSecaoPainel("Cliente");
-          const clienteNome = document.createElement("div");
-          clienteNome.className = "cds-preparar-entrega__painel-cliente-nome";
-          clienteNome.textContent = painel.clienteNome;
-          clienteSec.appendChild(clienteNome);
-          container.appendChild(clienteSec);
-          const creditoSec = _PrepararEntregaView._renderSecaoPainel("Cr\xE9dito Dispon\xEDvel");
-          const creditoValor = document.createElement("div");
-          creditoValor.className = "cds-preparar-entrega__painel-hero";
-          creditoValor.innerHTML = `<strong data-painel-credito>${Number(painel.valorTotal) > 0 ? painel.creditoAposEntregaExibicao || painel.creditoDisponivelExibicao : painel.creditoDisponivelExibicao}</strong>`;
-          creditoSec.appendChild(creditoValor);
-          if (painel.percentualLimite != null) {
-            creditoSec.appendChild(_PrepararEntregaView._renderBarraUtilizacao(painel));
+        static atualizarResumoFinanceiroDom(host, painel = {}) {
+          if (!host) return;
+          const limiteEl = host.querySelector("[data-fin-limite]");
+          const valorEl = host.querySelector("[data-fin-valor]");
+          const saldoEl = host.querySelector("[data-fin-saldo]");
+          const pctEl = host.querySelector("[data-fin-pct]");
+          const fillEl = host.querySelector("[data-fin-fill]");
+          const barEl = host.querySelector(".cds-resumo-financeiro__bar");
+          const limite = Number(painel.limiteComercial) > 0 ? formatCurrency(painel.limiteComercial) : painel.creditoDisponivelExibicao || formatCurrency(painel.limiteDisponivel || 0);
+          const pct = painel.percentualLimite != null ? Math.min(Math.max(Number(painel.percentualLimite), 0), 100) : 0;
+          if (limiteEl) limiteEl.textContent = limite;
+          if (valorEl) valorEl.textContent = formatCurrency(painel.valorTotal || 0);
+          if (saldoEl) saldoEl.textContent = painel.saldoRestanteExibicao || "\u2014";
+          if (pctEl) pctEl.textContent = painel.percentualLimiteExibicao || "\u2014";
+          if (fillEl) {
+            fillEl.style.width = `${pct}%`;
+            fillEl.className = `cds-resumo-financeiro__bar-fill cds-resumo-financeiro__bar-fill--${painel.faixaUtilizacao || "neutro"}`;
           }
-          container.appendChild(creditoSec);
-          const numsSec = _PrepararEntregaView._renderSecaoPainel("");
-          const gridNums = document.createElement("div");
-          gridNums.className = "cds-preparar-entrega__painel-grid";
-          [
-            { label: "Limite Comercial", value: formatCurrency(painel.limiteComercial), cls: "" },
-            {
-              label: "Valor da Entrega",
-              value: formatCurrency(painel.valorTotal),
-              cls: "cds-preparar-entrega__painel-campo--destaque"
-            },
-            {
-              label: "Saldo Restante",
-              value: painel.saldoRestanteExibicao,
-              cls: `cds-preparar-entrega__painel-campo--saldo ${_PrepararEntregaView._classeDestaqueSaldo(painel.destaqueSaldoRestante)}`
-            }
-          ].forEach((campo) => {
-            const cell = document.createElement("div");
-            cell.className = `cds-preparar-entrega__painel-campo ${campo.cls}`.trim();
-            cell.innerHTML = `<label>${campo.label}</label><strong>${campo.value}</strong>`;
-            gridNums.appendChild(cell);
-          });
-          numsSec.appendChild(gridNums);
-          container.appendChild(numsSec);
-          const itensSec = _PrepararEntregaView._renderSecaoPainel("");
-          const gridItens = document.createElement("div");
-          gridItens.className = "cds-preparar-entrega__painel-grid cds-preparar-entrega__painel-grid--compacto";
-          [
-            { label: "Itens", value: String(painel.quantidadeItens) },
-            { label: "Quantidade Total", value: String(painel.quantidadeTotal) },
-            { label: "Valor M\xE9dio por Item", value: painel.valorMedioItemExibicao }
-          ].forEach((campo) => {
-            const cell = document.createElement("div");
-            cell.className = "cds-preparar-entrega__painel-campo";
-            cell.innerHTML = `<label>${campo.label}</label><strong>${campo.value}</strong>`;
-            gridItens.appendChild(cell);
-          });
-          itensSec.appendChild(gridItens);
-          container.appendChild(itensSec);
-          const sitSec = _PrepararEntregaView._renderSecaoPainel("Situa\xE7\xE3o");
-          sitSec.appendChild(_PrepararEntregaView._renderMensagemInteligente(painel));
-          if (simulando) {
-            const simTag = document.createElement("p");
-            simTag.className = "cds-preparar-entrega__painel-sim-tag";
-            simTag.textContent = "Exibindo proje\xE7\xE3o antes de confirmar a inclus\xE3o.";
-            sitSec.appendChild(simTag);
-          }
-          container.appendChild(sitSec);
-          return container;
+          if (barEl) barEl.setAttribute("aria-valuenow", String(pct));
         }
       };
       module.exports = PrepararEntregaView;
@@ -89416,7 +90204,22 @@ ${lines.join("\n")}
         resolveEntityId,
         RecoveryManager
       } = require_recovery2();
+      var {
+        ErrorMessages,
+        RecoveryMessages: CatalogRecovery,
+        ConfirmMessages,
+        notifySuccess,
+        notifyError,
+        notifyWarning,
+        notifyInfo,
+        notifyRecovery,
+        loadingText
+      } = require_messages();
       var REFRESH_CLIENTE_DEBOUNCE = 320;
+      var CANAL_OPERACAO_CONSIGNACAO = "CONSIGNADO";
+      function escapeHtml(value) {
+        return String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+      }
       var NovaConsignacaoPage = class _NovaConsignacaoPage {
         constructor(routeParams = {}, routeQuery = {}) {
           this.routeParams = routeParams;
@@ -89447,12 +90250,18 @@ ${lines.join("\n")}
             data: (/* @__PURE__ */ new Date()).toISOString().split("T")[0],
             dataPrevista: "",
             observacoes: "",
+            canalVenda: CANAL_OPERACAO_CONSIGNACAO,
             itens: []
           };
           this.clienteProfile = null;
           this.clienteBusca = "";
           this.clienteResultados = [];
           this.clienteSearchTimeout = null;
+          this.operacaoResumo = {
+            tipoComercial: null,
+            canalOperacao: CANAL_OPERACAO_CONSIGNACAO,
+            tabelaPreco: null
+          };
           this.dirtyState = DirtyState.create(this.data);
           this.loading = { profile: false, saving: false };
           this.lipInstance = null;
@@ -89524,22 +90333,22 @@ ${lines.join("\n")}
                 this.liberacaoLimiteSessao = auth;
               }
               if (options.notifyResume) {
-                notify("Opera\xE7\xE3o retomada automaticamente.", "info");
+                notifyInfo("OPERACAO_RETOMADA");
               }
               return;
             }
           } catch (error) {
-            notify(operationalMessage(error), "warning");
+            notifyRecovery(operationalMessage(error));
             return;
           }
           if (RecoveryManager.isDraftEntityId(consignacaoId)) {
-            notify(operationalMessage("A opera\xE7\xE3o n\xE3o pode mais ser retomada."), "warning");
+            notifyRecovery(CatalogRecovery.RETOMADA_INDISPONIVEL);
             return;
           }
           try {
             await this._loadConsignacaoRascunho(consignacaoId);
           } catch (error) {
-            notify(operationalMessage(error), "warning");
+            notifyError("CONSIGNACAO_CARREGAR", error);
           }
         }
         _scheduleAutosave() {
@@ -89555,7 +90364,7 @@ ${lines.join("\n")}
         async _applyRecoveredConsignacao(entity, checkpoint = {}) {
           var _a2;
           if (String(entity.status || "").toUpperCase() !== "RASCUNHO") {
-            notify("Somente rascunhos podem ser editados.", "warning");
+            notifyWarning("SOMENTE_RASCUNHO");
             return;
           }
           if (entity._draft || RecoveryManager.isDraftEntityId(entity.id)) {
@@ -89613,10 +90422,15 @@ ${lines.join("\n")}
           bodyInner.className = "cds-preparar-entrega__shell";
           bodyInner.id = "preparar-entrega-shell";
           const credit = document.createElement("div");
-          credit.id = "preparar-entrega-credit-strip";
-          credit.className = "cds-preparar-entrega__credit-strip";
+          credit.id = "preparar-entrega-resumo-financeiro";
+          credit.className = "cds-preparar-entrega__resumo-financeiro-host";
           credit.hidden = true;
           bodyInner.appendChild(credit);
+          const statusHost = document.createElement("div");
+          statusHost.id = "preparar-entrega-operacao-resumo";
+          statusHost.className = "cds-preparar-entrega__operacao-resumo";
+          bodyInner.appendChild(statusHost);
+          this._renderOperacaoResumo();
           const stepperHost = document.createElement("div");
           stepperHost.id = "preparar-entrega-stepper";
           stepperHost.className = "cds-preparar-entrega__stepper";
@@ -89643,7 +90457,7 @@ ${lines.join("\n")}
           this.root.dataset.estacaoTrabalho = "preparar-entrega";
           this._setupExitConfirmation();
           this._bindKeyboardShortcuts();
-          this._refreshCreditStrip();
+          this._refreshResumoFinanceiroUnico();
           if (this._isProdutosStep()) {
             setTimeout(() => this._mountLip(), 0);
           }
@@ -89725,20 +90539,29 @@ ${lines.join("\n")}
           return this._buildWorkspaceFooter();
         }
         _refreshCreditStrip() {
-          const strip = document.getElementById("preparar-entrega-credit-strip");
-          if (!strip) return;
+          this._refreshResumoFinanceiroUnico();
+        }
+        /**
+         * RCM-7.5 — único painel financeiro (sem strip/crédito duplicados).
+         */
+        _refreshResumoFinanceiroUnico() {
+          var _a2;
+          const host = document.getElementById("preparar-entrega-resumo-financeiro");
+          if (!host) return;
           if (this.concluido || this.currentStep < 1 || !this.data.clienteId) {
-            strip.hidden = true;
-            strip.innerHTML = "";
+            host.hidden = true;
+            host.innerHTML = "";
             return;
           }
-          const painel = this._getPainelLimite();
-          strip.hidden = false;
-          strip.innerHTML = `
-      <span>Cr\xE9dito dispon\xEDvel: <strong>${painel.creditoDisponivelExibicao || formatCurrency(painel.limiteDisponivel || 0)}</strong></span>
-      <span>Valor da entrega: <strong>${formatCurrency(painel.valorTotal || 0)}</strong></span>
-      <span>Saldo restante: <strong>${painel.saldoRestanteExibicao || "\u2014"}</strong></span>
-    `;
+          const painel = ((_a2 = this.lipSimulacao) == null ? void 0 : _a2.painelProjetado) || this._getPainelLimite();
+          host.hidden = false;
+          const existing = host.querySelector(".cds-resumo-financeiro");
+          if (existing) {
+            PrepararEntregaView.atualizarResumoFinanceiroDom(host, painel);
+          } else {
+            host.innerHTML = "";
+            host.appendChild(PrepararEntregaView.renderResumoFinanceiro(painel));
+          }
         }
         _getPainelLimite() {
           return buildPainelResumo(this.data.itens, this.clienteProfile || {});
@@ -89827,7 +90650,8 @@ ${lines.join("\n")}
             focusedItemIndex: this.focusedItemIndex,
             documentoCriado: this.documentoCriado,
             voltarLabel: this._getVoltarConclusaoLabel(),
-            lipSimulacao: this.lipSimulacao
+            lipSimulacao: this.lipSimulacao,
+            operacaoResumo: this.operacaoResumo
           };
         }
         _viewCtx() {
@@ -89885,7 +90709,7 @@ ${lines.join("\n")}
           try {
             this.clienteResultados = await buscarClientesErp(query);
             if (!this.clienteResultados.length && !silent) {
-              notify("Nenhum cliente encontrado.", "warning");
+              notifyWarning(ErrorMessages.CLIENTE_BUSCA_VAZIA);
             }
           } catch (error) {
             if (!silent) notify(error.message, "error");
@@ -89917,7 +90741,7 @@ ${lines.join("\n")}
           try {
             const cliente = await buscarClientePorIdErp(clienteId);
             if (!cliente) {
-              notify("Cliente n\xE3o encontrado.", "warning");
+              notifyWarning(ErrorMessages.CLIENTE_NAO_ENCONTRADO);
               return;
             }
             await this._applyClientePerfil(cliente);
@@ -89940,6 +90764,11 @@ ${lines.join("\n")}
           this.clienteProfile = null;
           this.clienteResultados = [];
           this.clienteBusca = "";
+          this.operacaoResumo = {
+            tipoComercial: null,
+            canalOperacao: CANAL_OPERACAO_CONSIGNACAO,
+            tabelaPreco: null
+          };
           this.data.clienteId = null;
           this.data.perfilComercialId = null;
           this.data.cliente = null;
@@ -89985,6 +90814,8 @@ ${lines.join("\n")}
             cidade: cliente.cidade || cliente.municipio || "\u2014",
             capacidades: extrairCapacidadesDosPerfis(items),
             perfilComercial: perfil.perfilTipo || "CONSIGNADO",
+            tipoComercialCodigo: cliente.tipo_comercial_codigo || null,
+            tipoComercialDescricao: cliente.tipo_comercial_descricao || null,
             limiteComercial: Number(perfil.limiteComercial ?? (situacao == null ? void 0 : situacao.limiteComercial) ?? 0),
             // STAB-02: crédito exclusivo da API (CreditoComercialService) — sem fallback local
             limiteDisponivel: Number((situacao == null ? void 0 : situacao.creditoDisponivel) ?? (situacao == null ? void 0 : situacao.limiteDisponivel) ?? 0),
@@ -89994,12 +90825,37 @@ ${lines.join("\n")}
             creditoDisponivel: Number((situacao == null ? void 0 : situacao.creditoDisponivel) ?? (situacao == null ? void 0 : situacao.limiteDisponivel) ?? 0),
             situacao: (situacao == null ? void 0 : situacao.situacao) || (perfil.bloqueado ? "BLOQUEADO" : "ATIVO")
           };
+          this.operacaoResumo.tipoComercial = cliente.tipo_comercial_descricao || cliente.tipo_comercial_codigo || null;
+          this.operacaoResumo.canalOperacao = CANAL_OPERACAO_CONSIGNACAO;
           this.data.clienteId = Number(cliente.id);
           this.data.perfilComercialId = Number(perfil.id);
           this.data.cliente = cliente.nome;
           this.dirtyState.updateValues(this.data);
           this._scheduleAutosave();
           this._updateSidebar();
+          this._renderOperacaoResumo();
+        }
+        /**
+         * RCM-7.2.1 / RCM-7.5 — canal_manual = CONSIGNADO tem prioridade absoluta.
+         * Não exibe aviso ao selecionar cliente: Tipo Comercial (ex.: Consumidor Final)
+         * não precisa incluir CONSIGNADO para a operação de consignação seguir.
+         * Diagnóstico opt-in: localStorage CDS_AVISO_CONSIGNACAO_CANAL = '1'
+         */
+        async _validarCanalConsignadoTipoComercial(clienteId) {
+          const avisoAtivo = typeof localStorage !== "undefined" && localStorage.getItem("CDS_AVISO_CONSIGNACAO_CANAL") === "1";
+          if (!avisoAtivo || !clienteId) return;
+          try {
+            const res = await this.api.validarCanalTipoComercial({
+              cliente_id: clienteId,
+              canal: "CONSIGNADO"
+            });
+            if (res && res.permitido === false) {
+              notifyWarning(
+                `Tipo Comercial (${res.tipo_comercial_codigo || "\u2014"}) n\xE3o inclui o canal CONSIGNADO. A consigna\xE7\xE3o segue com canal CONSIGNADO, mas revise o cadastro do Tipo.`
+              );
+            }
+          } catch (_err) {
+          }
         }
         _mountLip() {
           if (!this._isProdutosStep()) return;
@@ -90054,32 +90910,134 @@ ${lines.join("\n")}
           const existente = this.data.itens.find((item) => Number(item.produtoId) === Number(produto.id));
           if (existente) {
             existente.quantidade = Number(existente.quantidade || 0) + Math.max(1, Number(quantidade) || 1);
+            if (existente.categoriaId == null && produto.categoria_id != null) {
+              existente.categoriaId = produto.categoria_id;
+            }
           } else {
             this.data.itens.push({
               produtoId: produto.id,
               produto: produto.nome || produto.descricao,
               codigo: produto.codigo || produto.codigo_barras || "",
               quantidade: Math.max(1, Number(quantidade) || 1),
-              preco: Number(produto.preco ?? produto.preco_venda ?? 0),
+              preco: Number(produto.preco ?? produto.precoVenda ?? 0),
+              categoriaId: produto.categoria_id ?? produto.categoriaId ?? null,
               observacao: ""
             });
           }
           this.dirtyState.updateValues(this.data);
-          this._refreshProdutosView();
-          this._scheduleAutosave();
-          if (this.lipInstance) this.lipInstance.focus();
+          this._recalcularPrecosCanalVenda().finally(() => {
+            this._refreshProdutosView();
+            this._scheduleAutosave();
+            if (this.lipInstance) this.lipInstance.focus();
+          });
         }
         _updateItemQty(index2, value, { refreshGrade = true } = {}) {
           const q2 = Math.max(1, Number(value) || 1);
           if (!this.data.itens[index2]) return;
           this.data.itens[index2].quantidade = q2;
           this.dirtyState.updateValues(this.data);
-          this._scheduleAutosave();
-          if (refreshGrade) {
-            this._refreshProdutosView();
-          } else {
-            this._refreshResumoFinanceiro();
+          this._recalcularPrecosCanalVenda().finally(() => {
+            this._scheduleAutosave();
+            if (refreshGrade) {
+              this._refreshProdutosView();
+            } else {
+              this._refreshResumoFinanceiro();
+            }
+          });
+        }
+        /**
+         * RCM-04.5 / RCM-7.2.1 — canal_manual = CONSIGNADO (prioridade absoluta).
+         * Nunca exibe/usa canal do Tipo Comercial nesta operação.
+         */
+        async _recalcularPrecosCanalVenda() {
+          this.data.canalVenda = CANAL_OPERACAO_CONSIGNACAO;
+          this.operacaoResumo.canalOperacao = CANAL_OPERACAO_CONSIGNACAO;
+          if (!Array.isArray(this.data.itens) || this.data.itens.length === 0) {
+            this.operacaoResumo.tabelaPreco = null;
+            this._renderOperacaoResumo();
+            return;
           }
+          try {
+            const res = await this.api.resolverPrecosVenda(this.data.itens, {
+              canal: CANAL_OPERACAO_CONSIGNACAO
+            });
+            this.data.canalVenda = CANAL_OPERACAO_CONSIGNACAO;
+            const mapa = new Map(((res == null ? void 0 : res.itens) || []).map((row) => [Number(row.produto_id), row]));
+            let tabelaNome = null;
+            this.data.itens.forEach((item) => {
+              const row = mapa.get(Number(item.produtoId));
+              if (!row || row.erro) return;
+              const preco = Number(row.preco_venda);
+              if (Number.isFinite(preco) && preco >= 0) {
+                item.preco = preco;
+              }
+              const uc = row.unidade_comercial || row.unidadeComercial;
+              if (uc) item.unidadeComercial = String(uc).trim().toUpperCase();
+              if (row.linha_comercial_id != null) item.linhaComercialId = Number(row.linha_comercial_id);
+              if (row.tabela_preco_id != null) item.tabelaPrecoId = Number(row.tabela_preco_id);
+              item.canalVenda = CANAL_OPERACAO_CONSIGNACAO;
+              item.precoOrigem = row.preco_origem || null;
+              item.precoFallback = !!row.preco_fallback;
+              const linhaObj = row.linhaComercial || row.linha_comercial || null;
+              item.linhaComercialDescricao = (linhaObj == null ? void 0 : linhaObj.descricao) || row.linha_comercial_descricao || item.linhaComercialDescricao || null;
+              item.linhaComercialCodigo = (linhaObj == null ? void 0 : linhaObj.codigo) || row.linha_comercial_codigo || item.linhaComercialCodigo || null;
+              if (row.tabela_preco_nome || row.tabelaPrecoNome) {
+                item.tabelaPrecoNome = row.tabela_preco_nome || row.tabelaPrecoNome;
+              }
+              if (!tabelaNome && item.tabelaPrecoNome) {
+                tabelaNome = item.tabelaPrecoNome;
+              }
+            });
+            this.operacaoResumo.tabelaPreco = tabelaNome || this.operacaoResumo.tabelaPreco;
+            this._renderOperacaoResumo();
+          } catch (err2) {
+            console.warn("[RCM-7.2.1] Falha ao resolver pre\xE7os (canal CONSIGNADO):", (err2 == null ? void 0 : err2.message) || err2);
+            this.data.canalVenda = CANAL_OPERACAO_CONSIGNACAO;
+            this._renderOperacaoResumo();
+          }
+        }
+        /**
+         * RCM-7.5 — card Operação (Cliente · Tipo · Tabela · Status congelado).
+         */
+        _renderOperacaoResumo() {
+          var _a2, _b2, _c, _d, _e2;
+          const host = document.getElementById("preparar-entrega-operacao-resumo");
+          if (!host) return;
+          const visivel = this._isProdutosStep() || this.currentStep >= 1;
+          host.hidden = !visivel;
+          if (!visivel) return;
+          const cliente = ((_a2 = this.clienteProfile) == null ? void 0 : _a2.nome) || this.data.cliente || "\u2014";
+          const tipo = ((_b2 = this.operacaoResumo) == null ? void 0 : _b2.tipoComercial) || ((_c = this.clienteProfile) == null ? void 0 : _c.tipoComercialDescricao) || ((_d = this.clienteProfile) == null ? void 0 : _d.tipoComercialCodigo) || "\u2014";
+          const tabela = ((_e2 = this.operacaoResumo) == null ? void 0 : _e2.tabelaPreco) || "\u2014";
+          const temItens = Array.isArray(this.data.itens) && this.data.itens.length > 0;
+          const status = temItens ? "Precifica\xE7\xE3o Congelada" : "Aguardando itens";
+          host.innerHTML = `
+      <div class="cds-operacao-resumo cds-operacao-resumo--card" role="status" aria-label="Resumo da opera\xE7\xE3o">
+        <div class="cds-operacao-resumo__item">
+          <span class="cds-operacao-resumo__label">Opera\xE7\xE3o</span>
+          <span class="cds-operacao-resumo__value">Consigna\xE7\xE3o</span>
+        </div>
+        <div class="cds-operacao-resumo__item">
+          <span class="cds-operacao-resumo__label">Cliente</span>
+          <span class="cds-operacao-resumo__value">${escapeHtml(cliente)}</span>
+        </div>
+        <div class="cds-operacao-resumo__item">
+          <span class="cds-operacao-resumo__label">Tipo Comercial</span>
+          <span class="cds-operacao-resumo__value">${escapeHtml(tipo)}</span>
+        </div>
+        <div class="cds-operacao-resumo__item">
+          <span class="cds-operacao-resumo__label">Tabela de Pre\xE7os</span>
+          <span class="cds-operacao-resumo__value">${escapeHtml(tabela)}</span>
+        </div>
+        <div class="cds-operacao-resumo__item">
+          <span class="cds-operacao-resumo__label">Status</span>
+          <span class="cds-operacao-resumo__value cds-operacao-resumo__value--status">
+            ${temItens ? '<span class="cds-operacao-resumo__check" aria-hidden="true">\u2714</span>' : ""}
+            ${escapeHtml(status)}
+          </span>
+        </div>
+      </div>
+    `;
         }
         _refreshResumoFinanceiro() {
           this._invalidateLiberacaoSeNecessario();
@@ -90102,24 +91060,8 @@ ${lines.join("\n")}
           }
         }
         _refreshPainelFinanceiroDom() {
-          var _a2;
-          this._refreshCreditStrip();
-          const painel = ((_a2 = this.lipSimulacao) == null ? void 0 : _a2.painelProjetado) || buildPainelResumo(this.data.itens, this.clienteProfile || {});
-          const resumoEl = document.getElementById("prep-resumo-grade");
-          if (resumoEl) {
-            const itensEl = resumoEl.querySelector("[data-resumo-itens]");
-            const qtdEl = resumoEl.querySelector("[data-resumo-quantidade]");
-            const valorEl = resumoEl.querySelector("[data-resumo-valor]");
-            const saldoEl = resumoEl.querySelector("[data-resumo-saldo]");
-            const saldoWrap = resumoEl.querySelector(".cds-preparar-entrega__resumo-grade-item--saldo");
-            if (itensEl) itensEl.textContent = String(painel.quantidadeItens);
-            if (qtdEl) qtdEl.textContent = String(painel.quantidadeTotal);
-            if (valorEl) valorEl.textContent = formatCurrency(painel.valorTotal);
-            if (saldoEl) saldoEl.textContent = painel.saldoRestanteExibicao;
-            if (saldoWrap) {
-              saldoWrap.className = `cds-preparar-entrega__resumo-grade-item cds-preparar-entrega__resumo-grade-item--saldo ${PrepararEntregaView._classeDestaqueSaldo(painel.destaqueSaldoRestante)}`.trim();
-            }
-          }
+          this._refreshResumoFinanceiroUnico();
+          this._renderOperacaoResumo();
         }
         _updateItemObs(index2, value) {
           if (!this.data.itens[index2]) return;
@@ -90138,6 +91080,7 @@ ${lines.join("\n")}
             observacao: item.observacao || ""
           });
           this.dirtyState.updateValues(this.data);
+          await this._recalcularPrecosCanalVenda();
           this._refreshProdutosView();
           this._scheduleAutosave();
         }
@@ -90148,13 +91091,14 @@ ${lines.join("\n")}
             try {
               await withLoading("Removendo item...", () => this.api.removerItem(this.consignacaoId, item.itemId));
             } catch (error) {
-              notify("Erro ao remover item: " + error.message, "error");
+              notifyError("CONSIGNACAO_ITEM_REMOVER", error);
               return;
             }
           }
           this.data.itens.splice(index2, 1);
           this.focusedItemIndex = -1;
           this.dirtyState.updateValues(this.data);
+          await this._recalcularPrecosCanalVenda();
           this._refreshProdutosView();
           this._scheduleAutosave();
         }
@@ -90238,6 +91182,7 @@ ${lines.join("\n")}
             });
           }
           this._refreshCreditStrip();
+          this._renderOperacaoResumo();
           if (this._isProdutosStep()) {
             setTimeout(() => this._mountLip(), 0);
           }
@@ -90284,7 +91229,7 @@ ${lines.join("\n")}
           try {
             const consignacao = await carregarConsignacaoCompleta(this.api, this.projectionApi, consignacaoId);
             if (String(consignacao.status || "").toUpperCase() !== "RASCUNHO") {
-              notify("Somente rascunhos podem ser editados.", "warning");
+              notifyWarning("SOMENTE_RASCUNHO");
               return;
             }
             this.consignacaoId = consignacao.id;
@@ -90318,7 +91263,7 @@ ${lines.join("\n")}
             this.dirtyState.setInitialValues({ ...this.data });
             this._updateWizard();
           } catch (error) {
-            notify(operationalMessage(error), "error");
+            notifyError("CONSIGNACAO_CARREGAR", error);
           }
         }
         async _loadProximoDocumentoPreview() {
@@ -90330,6 +91275,19 @@ ${lines.join("\n")}
           } catch (_error) {
             this.data.documentoPreview = "CONS-(ao salvar)";
           }
+        }
+        /**
+         * Extrai ID oficial da resposta de criarConsignacao (já unwrapped pela API).
+         * @private
+         */
+        _extractCreatedConsignacao(created) {
+          var _a2, _b2, _c;
+          if (!created || typeof created !== "object") return null;
+          if (created.id != null) return created;
+          if (created.consignacao && created.consignacao.id != null) return created.consignacao;
+          if (((_b2 = (_a2 = created.dados) == null ? void 0 : _a2.consignacao) == null ? void 0 : _b2.id) != null) return created.dados.consignacao;
+          if (((_c = created.dados) == null ? void 0 : _c.id) != null) return created.dados;
+          return null;
         }
         async _persistConsignacao() {
           var _a2;
@@ -90345,7 +91303,10 @@ ${lines.join("\n")}
           let consignacaoId = this.consignacaoId;
           if (!consignacaoId) {
             const created = await this.api.criarConsignacao(payload);
-            const consignacao = created.consignacao || created;
+            const consignacao = this._extractCreatedConsignacao(created);
+            if (!consignacao || consignacao.id == null) {
+              throw new Error(ErrorMessages.CONSIGNACAO_ID_AUSENTE);
+            }
             consignacaoId = consignacao.id;
             this.consignacaoId = consignacaoId;
             this.data.documentoNumero = ((_a2 = consignacao.documento) == null ? void 0 : _a2.numero) || consignacao.documento || this.data.documentoPreview;
@@ -90363,9 +91324,16 @@ ${lines.join("\n")}
               produtoId: item.produtoId,
               quantidade: Number(item.quantidade),
               precoUnitario: Number(item.preco),
+              unidadeComercial: item.unidadeComercial || null,
+              linhaComercialId: item.linhaComercialId ?? null,
+              tabelaPrecoId: item.tabelaPrecoId ?? null,
+              canalVenda: CANAL_OPERACAO_CONSIGNACAO,
+              precoOrigem: item.precoOrigem || null,
+              precoFallback: !!item.precoFallback,
               usuarioId: getUsuarioId()
             });
-            const savedItems = await this.api.obterConsignacao(consignacaoId).then((c4) => c4.itens || []);
+            const cons = await this.api.obterConsignacao(consignacaoId);
+            const savedItems = Array.isArray(cons == null ? void 0 : cons.itens) ? cons.itens : [];
             const saved = savedItems.find((i3) => Number(i3.produtoId) === Number(item.produtoId));
             if (saved) item.itemId = saved.id;
             item.persistido = true;
@@ -90389,16 +91357,16 @@ ${lines.join("\n")}
         }
         async _saveDraft() {
           if (!this.data.clienteId || !this.data.perfilComercialId) {
-            notify("Selecione um cliente antes de salvar.", "warning");
+            notifyWarning("SELECIONE_CLIENTE_SALVAR");
             return;
           }
           this.loading.saving = true;
           try {
-            await withLoading("Salvando rascunho...", () => this._persistConsignacao());
+            await withLoading(loadingText("SALVANDO_RASCUNHO"), () => this._persistConsignacao());
             this.dirtyState.setInitialValues({ ...this.data });
-            notify("Rascunho salvo.", "success");
+            notifySuccess("CONSIGNACAO_RASCUNHO_SALVO");
           } catch (error) {
-            notify(operationalMessage(error), "error");
+            notifyError("CONSIGNACAO_SALVAR_RASCUNHO", error);
           } finally {
             this.loading.saving = false;
             this._updateWizard();
@@ -90411,8 +91379,12 @@ ${lines.join("\n")}
             return;
           }
           this.loading.saving = true;
+          let consignacaoId = null;
           try {
-            const consignacaoId = await withLoading("Preparando entrega...", () => this._persistConsignacao());
+            consignacaoId = await withLoading(loadingText("CRIANDO_CONSIGNACAO"), () => this._persistConsignacao());
+            if (consignacaoId == null) {
+              throw new Error(ErrorMessages.CONSIGNACAO_ID_AUSENTE);
+            }
             this.dirtyState.setInitialValues({ ...this.data });
             this.documentoCriado = this.data.documentoNumero || this.data.documentoPreview;
             this.consignacaoId = consignacaoId;
@@ -90420,16 +91392,28 @@ ${lines.join("\n")}
             this.currentStep = 3;
             this.steps[2].state = "completed";
             this.steps[3].state = "current";
-            savePrepararEntrega(this, RecoveryStatus.AGUARDANDO_CONFIRMACAO);
-            saveEntrega(consignacaoId, {
-              itens: this.data.itens.map((item) => ({ ...item })),
-              clienteId: this.data.clienteId,
-              from: Operations.PREPARAR_ENTREGA
-            }, RecoveryStatus.AGUARDANDO_CONFIRMACAO);
+            try {
+              savePrepararEntrega(this, RecoveryStatus.AGUARDANDO_CONFIRMACAO);
+              saveEntrega(consignacaoId, {
+                itens: this.data.itens.map((item) => ({ ...item })),
+                clienteId: this.data.clienteId,
+                from: Operations.PREPARAR_ENTREGA
+              }, RecoveryStatus.AGUARDANDO_CONFIRMACAO);
+            } catch (_recoveryError) {
+            }
             this._destroyLip();
-            this._updateWizard();
+            notifySuccess("CONSIGNACAO_CRIADA");
+            try {
+              await navigate(this._buildEntregaPath());
+            } catch (_navError) {
+              notifyRecovery("CONSIGNACAO_CRIADA_ENTREGA_FALHOU");
+            }
           } catch (error) {
-            notify(operationalMessage(error), "error");
+            if (consignacaoId != null) {
+              notifyRecovery("CONSIGNACAO_CRIADA_ENTREGA_FALHOU");
+            } else {
+              notifyError("CONSIGNACAO_CRIAR", error);
+            }
           } finally {
             this.loading.saving = false;
           }
@@ -90466,10 +91450,7 @@ ${lines.join("\n")}
         }
         async _handleCancel() {
           if (this.dirtyState.isDirty()) {
-            const confirmed = await confirmDialog({
-              title: "Cancelar",
-              message: "Existem altera\xE7\xF5es n\xE3o salvas. Deseja sair?"
-            });
+            const confirmed = await confirmDialog(ConfirmMessages.SAIR_WIZARD);
             if (!confirmed) return;
           }
           await navigate(resolveBackPath(this.navigationContext, "/consignacoes"));
@@ -90568,6 +91549,16 @@ ${lines.join("\n")}
         completeOperacoesEntrega,
         operationalMessage
       } = require_recovery2();
+      var {
+        ErrorMessages,
+        ConfirmMessages,
+        emptyState,
+        notifySuccess,
+        notifyError,
+        notifyWarning,
+        notifyRecovery,
+        loadingText
+      } = require_messages();
       var EntregaConsignacaoPage = class _EntregaConsignacaoPage {
         constructor(consignacaoId, routeQuery = {}) {
           this.routeQuery = routeQuery;
@@ -90692,22 +91683,19 @@ ${lines.join("\n")}
           container.className = "cds-entrega-content";
           container.id = "entrega-content";
           if (this.loading.consignacao || this.loading.prestacao) {
-            container.appendChild(Loading.create({ message: "Carregando dados da consigna\xE7\xE3o..." }));
+            container.appendChild(Loading.create({ message: loadingText("CARREGANDO_CONSIGNACAO") }));
             return container;
           }
           if (this.error) {
             container.appendChild(Alert.create({
-              message: this.error.message || operationalMessage(this.error),
+              message: this.error.message || operationalMessage(this.error, { context: "entrega" }),
               variant: "error",
               dismissible: true
             }));
             return container;
           }
           if (!this.consignacao) {
-            container.appendChild(EmptyState.create({
-              title: "Consigna\xE7\xE3o n\xE3o encontrada",
-              description: "A consigna\xE7\xE3o solicitada n\xE3o existe ou foi removida"
-            }));
+            container.appendChild(EmptyState.create(emptyState("PRESTACAO_NAO_ENCONTRADA")));
             return container;
           }
           container.appendChild(this._createIdentityLine());
@@ -91018,7 +92006,7 @@ ${lines.join("\n")}
          * @private
          */
         async _loadData() {
-          var _a2, _b2, _c;
+          var _a2, _b2, _c, _d;
           this.loading.consignacao = true;
           this.loading.prestacao = true;
           this.error = null;
@@ -91026,9 +92014,11 @@ ${lines.join("\n")}
           try {
             ensureRegistered();
             const helpers = { api: this.api, projectionApi: this.projectionApi };
-            const recovered = await resumeEntrega(this.consignacaoId, helpers);
-            if ((recovered == null ? void 0 : recovered.error) && !((_c = (_b2 = (_a2 = recovered.state) == null ? void 0 : _a2.checkpoint) == null ? void 0 : _b2.itens) == null ? void 0 : _c.length)) {
-              notify(recovered.error.operationalMessage || operationalMessage(recovered.error), "warning");
+            let recovered = null;
+            try {
+              recovered = await resumeEntrega(this.consignacaoId, helpers);
+            } catch (_resumeError) {
+              recovered = null;
             }
             const auth = loadAuthorization(Operations.ENTREGA, this.consignacaoId) || loadAuthorization(Operations.PREPARAR_ENTREGA, this.consignacaoId) || ((recovered == null ? void 0 : recovered.context) && typeof recovered.context.toLiberacaoCompat === "function" ? recovered.context.toLiberacaoCompat() : null);
             if (auth) {
@@ -91040,6 +92030,11 @@ ${lines.join("\n")}
             ]);
             this.consignacao = consignacao;
             this.resumoPrestacao = resumo;
+            if ((recovered == null ? void 0 : recovered.error) && !((_a2 = consignacao == null ? void 0 : consignacao.itens) == null ? void 0 : _a2.length) && !((_d = (_c = (_b2 = recovered.state) == null ? void 0 : _b2.checkpoint) == null ? void 0 : _c.itens) == null ? void 0 : _d.length)) {
+              notifyRecovery(
+                recovered.error.operationalMessage || operationalMessage(recovered.error, { context: "entrega" })
+              );
+            }
             saveEntrega(this.consignacaoId, {
               itens: (consignacao.itens || []).map((item) => ({ ...item })),
               statusConsignacao: consignacao.status,
@@ -91053,8 +92048,8 @@ ${lines.join("\n")}
             this.loading.consignacao = false;
             this.loading.prestacao = false;
             this.error = {
-              message: operationalMessage(error),
-              technical: String(error && error.message || error)
+              message: operationalMessage(error, { context: "entrega" }) || ErrorMessages.ENTREGA_CARREGAR,
+              technical: String(error && error.message || error || "")
             };
             this._updateContent();
           }
@@ -91166,18 +92161,15 @@ ${lines.join("\n")}
          */
         async _handleDelivery() {
           if (!this._canDeliver()) {
-            notify("N\xE3o \xE9 poss\xEDvel realizar a entrega. Verifique o checklist.", "warning");
+            notifyWarning("ENTREGA_CHECKLIST");
             return;
           }
-          const confirmed = await confirmDialog({
-            title: "Confirmar entrega",
-            message: "Deseja confirmar a entrega desta consigna\xE7\xE3o?"
-          });
+          const confirmed = await confirmDialog(ConfirmMessages.CONFIRMAR_ENTREGA);
           if (!confirmed) return;
           this.loading.delivering = true;
           this._updateFooter();
           try {
-            await withLoading("Registrando entrega...", () => {
+            await withLoading(loadingText("REGISTRANDO_ENTREGA"), () => {
               var _a2;
               return this.api.entregarConsignacao(this.consignacaoId, {
                 observacao: "Entrega confirmada via ERP",
@@ -91189,6 +92181,7 @@ ${lines.join("\n")}
             completeOperacoesEntrega(this.consignacaoId);
             this.loading.delivering = false;
             this._updateFooter();
+            notifySuccess("ENTREGA_REGISTRADA");
             await this._showSuccessDialog();
           } catch (error) {
             this.loading.delivering = false;
@@ -91196,10 +92189,11 @@ ${lines.join("\n")}
             const jaEntregue = await this._verificarEntregaJaPersistida();
             if (jaEntregue) {
               completeOperacoesEntrega(this.consignacaoId);
+              notifyRecovery("ENTREGA_OK_EVENTOS_FALHOU");
               await this._showSuccessDialog();
               return;
             }
-            notify(this._getFriendlyErrorMessage(error), "error");
+            notifyError("ENTREGA_REGISTRAR", error);
           }
         }
         /**
@@ -91220,40 +92214,15 @@ ${lines.join("\n")}
           return false;
         }
         async _showSuccessDialog() {
-          var _a2, _b2;
-          const escolhaTermo = await exibirDialogoTermoEntrega({
-            title: "Entrega realizada com sucesso",
-            message: "Deseja imprimir o Termo de Entrega?"
-          });
-          await processarEscolhaTermo(escolhaTermo, this.api, this.projectionApi, this.consignacaoId, {
-            empresa: (_a2 = this.consignacao) == null ? void 0 : _a2.empresa,
-            filial: (_b2 = this.consignacao) == null ? void 0 : _b2.filial
-          });
-          const choice = await choiceDialog({
-            title: "Entrega realizada",
-            message: "Entrega realizada com sucesso! O que deseja fazer agora?",
-            choices: [
-              { label: "Fechar Atendimento", value: "prestacao", variant: "primary" },
-              { label: "Voltar \xE0 Central", value: "central", variant: "secondary" }
-            ]
-          });
-          if (choice === "prestacao") {
-            try {
-              await this.api.abrirPrestacao(this.consignacaoId);
-            } catch (_error) {
-            }
-            await navigate(routeWithActiveContext(
-              `/consignacoes/${this.consignacaoId}/prestacao`,
-              this.navigationContext
-            ));
-            return;
-          }
-          await navigate(resolveBackPath(this.navigationContext, "/consignacoes"));
+          await navigate(routeWithActiveContext(
+            `/consignacoes/${this.consignacaoId}/comprovante`,
+            this.navigationContext
+          ));
         }
         async _handleCancel() {
           const backLabel = this.navigationContext.locked ? "a Central do Cliente" : "a Central de Consigna\xE7\xF5es";
           const confirmed = await confirmDialog({
-            title: "Cancelar entrega",
+            ...ConfirmMessages.CANCELAR_ENTREGA,
             message: `Deseja cancelar a entrega e voltar para ${backLabel}?`
           });
           if (confirmed) {
@@ -91265,15 +92234,7 @@ ${lines.join("\n")}
          * @private
          */
         _getFriendlyErrorMessage(error) {
-          const errorMessages = {
-            "Perfil bloqueado": "O perfil do cliente est\xE1 bloqueado. Entre em contato com o administrador.",
-            "Limite insuficiente": "O limite comercial do cliente \xE9 insuficiente para esta opera\xE7\xE3o.",
-            "Cliente bloqueado": "O cliente est\xE1 bloqueado. N\xE3o \xE9 poss\xEDvel realizar a entrega.",
-            "Consigna\xE7\xE3o inv\xE1lida": "A consigna\xE7\xE3o n\xE3o est\xE1 em um estado v\xE1lido para entrega.",
-            "Falha na integra\xE7\xE3o": "Ocorreu um erro na integra\xE7\xE3o. Tente novamente."
-          };
-          if (errorMessages[error.message]) return errorMessages[error.message];
-          return operationalMessage(error);
+          return operationalMessage(error, { context: "entrega" }) || ErrorMessages.ENTREGA_REGISTRAR;
         }
         /**
          * Generates correlation ID.
@@ -91309,6 +92270,325 @@ ${lines.join("\n")}
         }
       };
       module.exports = EntregaConsignacaoPage;
+    }
+  });
+
+  // frontend/modules/motor-comercial/pages/ComprovanteEntrega/index.js
+  var require_ComprovanteEntrega = __commonJS({
+    "frontend/modules/motor-comercial/pages/ComprovanteEntrega/index.js"(exports, module) {
+      var DashboardLayout = require_DashboardLayout2();
+      var Button = require_Button2();
+      var Loading = require_Loading2();
+      var Alert = require_Alert2();
+      var MotorComercialApi = require_MotorComercialApi();
+      var {
+        notify,
+        navigate,
+        withLoading
+      } = require_operacional();
+      var {
+        parseCliente360Context,
+        routeWithActiveContext,
+        buildRouteWithCliente360Context
+      } = require_cliente360Context();
+      function money(v3) {
+        const n2 = Number(v3);
+        const safe = Number.isFinite(n2) ? n2 : 0;
+        return safe.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+      }
+      var ComprovanteEntregaPage = class _ComprovanteEntregaPage {
+        constructor(consignacaoId, query = {}) {
+          this.consignacaoId = consignacaoId;
+          this.query = query || {};
+          this.navigationContext = parseCliente360Context(query);
+          this.api = new MotorComercialApi();
+          this.comprovante = null;
+          this.error = null;
+          this.root = null;
+        }
+        static create(consignacaoId, query = {}) {
+          const page = new _ComprovanteEntregaPage(consignacaoId, query);
+          return page.render();
+        }
+        render() {
+          this._ensureStyles();
+          const layout = DashboardLayout.create({
+            header: this._createHeader(),
+            content: this._createContentHost()
+          });
+          this.root = layout;
+          setTimeout(() => this._load(), 0);
+          return layout;
+        }
+        _ensureStyles() {
+          if (typeof document === "undefined") return;
+          if (document.getElementById("cds-comprovante-entrega-css")) return;
+          const style = document.createElement("style");
+          style.id = "cds-comprovante-entrega-css";
+          style.textContent = `
+      .cds-comprovante-entrega{display:flex;flex-direction:column;gap:16px;padding:8px 0 32px}
+      .cds-comp-card{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:16px 18px}
+      .cds-comp-card--head{display:flex;justify-content:space-between;gap:16px;align-items:flex-start}
+      .cds-comp-kicker{font-size:12px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em}
+      .cds-comp-status{display:inline-flex;align-items:center;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:700}
+      .cds-comp-status--VERDE{background:#dcfce7;color:#166534}
+      .cds-comp-status--AMARELO{background:#fef9c3;color:#854d0e}
+      .cds-comp-status--VERMELHO{background:#fee2e2;color:#991b1b}
+      .cds-comp-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;font-size:13px;color:#374151}
+      .cds-comp-table{width:100%;border-collapse:collapse;font-size:13px}
+      .cds-comp-table th,.cds-comp-table td{border-bottom:1px solid #e5e7eb;padding:8px 6px;text-align:left}
+      .cds-comp-foot{display:flex;flex-wrap:wrap;gap:16px;margin-top:10px;font-size:13px}
+      .cds-comp-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+    `;
+          document.head.appendChild(style);
+        }
+        _createHeader() {
+          const header = document.createElement("header");
+          header.className = "cds-page-header";
+          header.innerHTML = `
+      <div>
+        <h1>Resumo Inteligente da Entrega</h1>
+        <p class="cds-muted">Comprovante oficial gerado pelo Motor de Comprovantes</p>
+      </div>
+    `;
+          return header;
+        }
+        _createContentHost() {
+          const host = document.createElement("div");
+          host.id = "comprovante-entrega-root";
+          host.className = "cds-comprovante-entrega";
+          host.appendChild(Loading.create({ message: "Carregando comprovante\u2026" }));
+          return host;
+        }
+        async _load() {
+          const host = document.getElementById("comprovante-entrega-root");
+          if (!host) return;
+          try {
+            this.comprovante = await withLoading(
+              "Montando comprovante\u2026",
+              () => this.api.obterComprovanteEntrega(this.consignacaoId)
+            );
+            this.error = null;
+            this._renderSnapshot(host);
+          } catch (err2) {
+            this.error = err2;
+            host.innerHTML = "";
+            host.appendChild(Alert.create({
+              variant: "error",
+              title: "Falha ao carregar comprovante",
+              message: (err2 == null ? void 0 : err2.message) || "Erro desconhecido"
+            }));
+          }
+        }
+        _renderSnapshot(host) {
+          var _a2, _b2, _c, _d, _e2;
+          const c4 = this.comprovante;
+          const snap = c4.snapshot || c4;
+          const h3 = snap.cabecalho || {};
+          const prod = ((_a2 = snap.cards) == null ? void 0 : _a2.produtos) || {};
+          const sit = ((_b2 = snap.cards) == null ? void 0 : _b2.situacaoComercial) || {};
+          const hist = ((_c = snap.cards) == null ? void 0 : _c.historico) || {};
+          const obs = ((_d = snap.cards) == null ? void 0 : _d.observacoes) || {};
+          const status = sit.statusComercial || ((_e2 = snap.indicadores) == null ? void 0 : _e2.statusCredito) || "\u2014";
+          host.innerHTML = `
+      <section class="cds-comp-card cds-comp-card--head">
+        <div>
+          <div class="cds-comp-kicker">${this._esc(h3.empresaNome || h3.empresa || "")}</div>
+          <h2>Comprovante ${this._esc(h3.numeroComprovante || snap.numeroComprovante || "")}</h2>
+          <p>${this._esc(h3.data || "")} ${this._esc(h3.hora || "")} \xB7 Vendedor: ${this._esc(h3.vendedor || "\u2014")}</p>
+        </div>
+        <span class="cds-comp-status cds-comp-status--${this._esc(status)}">${this._esc(status)}</span>
+      </section>
+
+      <section class="cds-comp-card">
+        <h3>Cliente</h3>
+        <p><strong>${this._esc(h3.clienteNome || h3.cliente || "\u2014")}</strong></p>
+        <p>C\xF3digo ${this._esc(h3.clienteCodigo || "\u2014")} \xB7 Doc ${this._esc(h3.clienteDocumento || "\u2014")}</p>
+        <p>Rota ${this._esc(h3.rota || "\u2014")} \xB7 Ve\xEDculo ${this._esc(h3.veiculo || "\u2014")}</p>
+      </section>
+
+      <section class="cds-comp-card">
+        <h3>Produtos</h3>
+        <div class="cds-comp-table-wrap">
+          <table class="cds-comp-table">
+            <thead><tr><th>Produto</th><th>Qtd</th><th>Un</th><th>Pre\xE7o</th><th>Total</th></tr></thead>
+            <tbody>
+              ${(prod.itens || []).map((i3) => `
+                <tr>
+                  <td>${this._esc(i3.produto)}</td>
+                  <td>${this._esc(i3.quantidade)}</td>
+                  <td>${this._esc(i3.unidade)}</td>
+                  <td>${money(i3.preco)}</td>
+                  <td>${money(i3.total)}</td>
+                </tr>`).join("") || '<tr><td colspan="5">Sem itens</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+        <div class="cds-comp-foot">
+          <span>Qtd total: <strong>${this._esc(prod.quantidadeTotal)}</strong></span>
+          <span>Volumes: <strong>${this._esc(prod.volumes)}</strong></span>
+          <span>Valor: <strong>${money(prod.valorComercial)}</strong></span>
+        </div>
+      </section>
+
+      <section class="cds-comp-card">
+        <h3>Situa\xE7\xE3o Comercial</h3>
+        <div class="cds-comp-grid">
+          <div>Saldo anterior<br><strong>${money(sit.saldoAnterior)}</strong></div>
+          <div>Nova remessa<br><strong>${money(sit.novaRemessa)}</strong></div>
+          <div>Saldo atual<br><strong>${money(sit.saldoAtual)}</strong></div>
+          <div>Limite<br><strong>${money(sit.limite)}</strong></div>
+          <div>Cr\xE9dito dispon\xEDvel<br><strong>${money(sit.creditoDisponivel)}</strong></div>
+          <div>Abertas<br><strong>${this._esc(sit.consignacoesAbertas)}</strong></div>
+          <div>Valor em aberto<br><strong>${money(sit.valorEmAberto)}</strong></div>
+        </div>
+      </section>
+
+      <section class="cds-comp-card">
+        <h3>Hist\xF3rico</h3>
+        <div class="cds-comp-grid">
+          <div>\xDAltima entrega<br><strong>${this._esc(hist.ultimaEntrega || "\u2014")}</strong></div>
+          <div>\xDAltima presta\xE7\xE3o<br><strong>${this._esc(hist.ultimaPrestacao || "\u2014")}</strong></div>
+          <div>Maior remessa<br><strong>${money(hist.maiorRemessa)}</strong></div>
+          <div>M\xE9dia remessas<br><strong>${money(hist.mediaRemessas)}</strong></div>
+          <div>Perdas empresa<br><strong>${money(hist.perdasEmpresa)}</strong></div>
+          <div>Perdas cliente<br><strong>${money(hist.perdasCliente)}</strong></div>
+          <div>\xCDndice perdas<br><strong>${this._esc(hist.indicePerdas != null ? `${hist.indicePerdas}%` : "\u2014")}</strong></div>
+        </div>
+      </section>
+
+      <section class="cds-comp-card">
+        <h3>Observa\xE7\xF5es</h3>
+        <p>${this._esc(obs.entrega || "\u2014")}</p>
+      </section>
+
+      <section class="cds-comp-card" id="comp-share-actions"></section>
+      <section class="cds-comp-card" id="comp-nav-actions"></section>
+    `;
+          this._bindShareActions(host.querySelector("#comp-share-actions"));
+          this._bindNavActions(host.querySelector("#comp-nav-actions"));
+        }
+        _bindShareActions(container) {
+          var _a2, _b2, _c;
+          if (!container) return;
+          container.innerHTML = "<h3>Compartilhamento</h3>";
+          const row = document.createElement("div");
+          row.className = "cds-comp-actions";
+          const botoes = ((_c = (_b2 = (_a2 = this.comprovante) == null ? void 0 : _a2.cards) == null ? void 0 : _b2.compartilhamento) == null ? void 0 : _c.botoes) || [];
+          botoes.forEach((btn) => {
+            if (btn.estrutura && !btn.habilitado) {
+              row.appendChild(Button.create({
+                text: `${btn.icone || ""} ${btn.label}`.trim(),
+                variant: "ghost",
+                onClick: () => notify("Dispon\xEDvel em breve.", "info")
+              }));
+              return;
+            }
+            row.appendChild(Button.create({
+              text: `${btn.icone || ""} ${btn.label}`.trim(),
+              variant: btn.id === "whatsapp" ? "primary" : "secondary",
+              onClick: () => this._onShare(btn.id)
+            }));
+          });
+          container.appendChild(row);
+        }
+        _bindNavActions(container) {
+          if (!container) return;
+          container.innerHTML = "<h3>Pr\xF3ximos passos</h3>";
+          const row = document.createElement("div");
+          row.className = "cds-comp-actions";
+          row.appendChild(Button.create({
+            text: "Nova Entrega",
+            variant: "primary",
+            onClick: () => navigate(buildRouteWithCliente360Context("/consignacoes/nova", this.navigationContext))
+          }));
+          row.appendChild(Button.create({
+            text: "Voltar",
+            variant: "secondary",
+            onClick: () => navigate(routeWithActiveContext("/consignacoes", this.navigationContext))
+          }));
+          row.appendChild(Button.create({
+            text: "Reimprimir",
+            variant: "ghost",
+            onClick: () => this._onShare("imprimir")
+          }));
+          row.appendChild(Button.create({
+            text: "Compartilhar Novamente",
+            variant: "ghost",
+            onClick: () => this._onShare("whatsapp")
+          }));
+          container.appendChild(row);
+        }
+        async _audit(acao) {
+          var _a2, _b2;
+          try {
+            await this.api.registrarAcaoComprovante(this.consignacaoId, {
+              acao,
+              comprovanteId: (_a2 = this.comprovante) == null ? void 0 : _a2.id,
+              numeroComprovante: (_b2 = this.comprovante) == null ? void 0 : _b2.numeroComprovante
+            });
+          } catch (_e2) {
+          }
+        }
+        async _onShare(acao) {
+          var _a2, _b2, _c, _d, _e2, _f;
+          const texto = ((_a2 = this.comprovante) == null ? void 0 : _a2.textoCompartilhavel) || ((_c = (_b2 = this.comprovante) == null ? void 0 : _b2.snapshot) == null ? void 0 : _c.textoCompartilhavel) || "";
+          const pdf = ((_d = this.comprovante) == null ? void 0 : _d.pdf) || ((_f = (_e2 = this.comprovante) == null ? void 0 : _e2.snapshot) == null ? void 0 : _f.pdf);
+          if (acao === "copiar") {
+            await navigator.clipboard.writeText(texto);
+            await this._audit("resumo_copiado");
+            notify("Resumo copiado com sucesso.", "success");
+            return;
+          }
+          if (acao === "whatsapp") {
+            await this._audit("whatsapp");
+            const url = `https://wa.me/?text=${encodeURIComponent(texto)}`;
+            window.open(url, "_blank");
+            if (pdf == null ? void 0 : pdf.base64) {
+              this._downloadPdf(pdf);
+            }
+            return;
+          }
+          if (acao === "pdf") {
+            await this._audit("pdf");
+            this._downloadPdf(pdf);
+            notify("PDF gerado a partir do snapshot oficial.", "success");
+            return;
+          }
+          if (acao === "imprimir") {
+            await this._audit("impressao");
+            const html2 = (pdf == null ? void 0 : pdf.html) || "";
+            const w2 = window.open("", "_blank");
+            if (w2) {
+              w2.document.write(html2);
+              w2.document.close();
+              w2.focus();
+              setTimeout(() => w2.print(), 300);
+            }
+            return;
+          }
+          notify("A\xE7\xE3o em estrutura (pr\xF3ximas RCs).", "info");
+        }
+        _downloadPdf(pdf) {
+          if (!(pdf == null ? void 0 : pdf.base64)) {
+            notify("PDF indispon\xEDvel no snapshot.", "warning");
+            return;
+          }
+          const bin = atob(pdf.base64);
+          const bytes = new Uint8Array(bin.length);
+          for (let i3 = 0; i3 < bin.length; i3 += 1) bytes[i3] = bin.charCodeAt(i3);
+          const blob = new Blob([bytes], { type: pdf.contentType || "application/pdf" });
+          const a3 = document.createElement("a");
+          a3.href = URL.createObjectURL(blob);
+          a3.download = pdf.fileName || "comprovante-entrega.pdf";
+          a3.click();
+          URL.revokeObjectURL(a3.href);
+        }
+        _esc(v3) {
+          return String(v3 ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+        }
+      };
+      module.exports = ComprovanteEntregaPage;
     }
   });
 
@@ -91725,9 +93005,10 @@ ${lines.join("\n")}
         ERRO_SEFAZ: "\u26A0 A SEFAZ est\xE1 indispon\xEDvel no momento. Voc\xEA pode tentar novamente sem duplicar a venda.",
         ERRO_TIMEOUT: "\u26A0 A opera\xE7\xE3o demorou mais do que o esperado. Tente novamente.",
         ERRO_REDE: "\u26A0 N\xE3o foi poss\xEDvel conectar. Verifique a internet e tente novamente.",
-        ERRO_GENERICO: "\u26A0 N\xE3o foi poss\xEDvel concluir a opera\xE7\xE3o. Tente novamente ou contate o suporte.",
+        ERRO_GENERICO: "\u26A0 N\xE3o foi poss\xEDvel concluir a opera\xE7\xE3o.\nTente novamente ou contate o suporte.",
         STATUS_VAZIO: "\u2014",
-        CAMPO_AUSENTE: "\u2014"
+        CAMPO_AUSENTE: "\u2014",
+        OPERACAO_EM_ANDAMENTO: "Opera\xE7\xE3o em andamento..."
       });
       var PLACEHOLDER_RE = /^(Produto|Cliente|Item)\s*#/i;
       function safeText(value, fallback = MENSAGENS_HARDENING.CAMPO_AUSENTE) {
@@ -91780,7 +93061,7 @@ ${lines.join("\n")}
         }
         if (contexto === "pagamento" && /SALDO|PAGAMENTO/i.test(upper)) {
           return {
-            mensagem: "\u26A0 N\xE3o foi poss\xEDvel registrar o pagamento. Confira o valor e o saldo em aberto.",
+            mensagem: "\u26A0 N\xE3o foi poss\xEDvel registrar o pagamento.\nConfira o valor e o saldo em aberto.",
             retryable: false,
             tipo: "PAGAMENTO",
             acaoSugerida: null
@@ -91821,7 +93102,7 @@ ${lines.join("\n")}
         if (loading || emitindo) {
           if (acao === "emitir") return MENSAGENS_HARDENING.EMITINDO_NFCE;
           if (acao === "encerrar") return MENSAGENS_HARDENING.ENCERRANDO;
-          return "Aguarde a opera\xE7\xE3o em andamento.";
+          return MENSAGENS_HARDENING.OPERACAO_EM_ANDAMENTO;
         }
         if (salvando) return MENSAGENS_HARDENING.SALVANDO_ALTERACOES;
         if (dirty && (acao === "emitir" || acao === "encerrar" || acao === "continuar")) {
@@ -91982,6 +93263,402 @@ ${lines.join("\n")}
     }
   });
 
+  // frontend/modules/motor-comercial/pages/PrestacaoContas/rateioPerdaDomain.js
+  var require_rateioPerdaDomain = __commonJS({
+    "frontend/modules/motor-comercial/pages/PrestacaoContas/rateioPerdaDomain.js"(exports, module) {
+      var TIPOS_RATEIO = Object.freeze({
+        CLIENTE: "CLIENTE",
+        EMPRESA: "EMPRESA",
+        COMPARTILHADA: "COMPARTILHADA"
+      });
+      var MOTIVOS_PERDA = Object.freeze([
+        "DERRETIMENTO",
+        "VENCIMENTO",
+        "QUEBRA",
+        "FURTO",
+        "DEFEITO_FREEZER",
+        "TRANSPORTE",
+        "OUTRO"
+      ]);
+      var MOTIVO_LABEL = Object.freeze({
+        DERRETIMENTO: "Derretimento",
+        VENCIMENTO: "Vencimento",
+        QUEBRA: "Quebra",
+        FURTO: "Furto",
+        DEFEITO_FREEZER: "Defeito no Freezer",
+        TRANSPORTE: "Transporte",
+        OUTRO: "Outro"
+      });
+      function round2(n2) {
+        return Math.round((Number(n2) || 0) * 100) / 100;
+      }
+      function roundPct(n2) {
+        return Math.round((Number(n2) || 0) * 1e4) / 1e4;
+      }
+      function calcularRateio(tipo, valorTotal, opts = {}) {
+        const total = round2(valorTotal);
+        const tipoNorm = String(tipo || TIPOS_RATEIO.CLIENTE).toUpperCase();
+        if (total <= 1e-3) {
+          return {
+            tipoRateio: tipoNorm,
+            valorTotalPerdas: 0,
+            valorCliente: 0,
+            valorEmpresa: 0,
+            percentualCliente: 0,
+            percentualEmpresa: 0
+          };
+        }
+        let valorCliente = 0;
+        let valorEmpresa = 0;
+        if (tipoNorm === TIPOS_RATEIO.CLIENTE) {
+          valorCliente = total;
+          valorEmpresa = 0;
+        } else if (tipoNorm === TIPOS_RATEIO.EMPRESA) {
+          valorCliente = 0;
+          valorEmpresa = total;
+        } else {
+          const campo = opts.campoEditado || null;
+          const rawCliente = opts.valorCliente;
+          const rawEmpresa = opts.valorEmpresa;
+          if (campo === "cliente" && rawCliente != null && rawCliente !== "") {
+            valorCliente = round2(Math.max(0, Number(rawCliente)));
+            valorEmpresa = round2(Math.max(0, total - valorCliente));
+          } else if (campo === "empresa" && rawEmpresa != null && rawEmpresa !== "") {
+            valorEmpresa = round2(Math.max(0, Number(rawEmpresa)));
+            valorCliente = round2(Math.max(0, total - valorEmpresa));
+          } else if (rawCliente != null && rawCliente !== "" && (rawEmpresa == null || rawEmpresa === "")) {
+            valorCliente = round2(Math.max(0, Number(rawCliente)));
+            valorEmpresa = round2(Math.max(0, total - valorCliente));
+          } else if (rawEmpresa != null && rawEmpresa !== "" && (rawCliente == null || rawCliente === "")) {
+            valorEmpresa = round2(Math.max(0, Number(rawEmpresa)));
+            valorCliente = round2(Math.max(0, total - valorEmpresa));
+          } else {
+            valorCliente = round2(Math.max(0, Number(rawCliente || 0)));
+            valorEmpresa = round2(Math.max(0, Number(rawEmpresa || 0)));
+          }
+        }
+        const percentualCliente = total > 0 ? roundPct(valorCliente / total * 100) : 0;
+        const percentualEmpresa = total > 0 ? roundPct(valorEmpresa / total * 100) : 0;
+        return {
+          tipoRateio: tipoNorm,
+          valorTotalPerdas: total,
+          valorCliente,
+          valorEmpresa,
+          percentualCliente,
+          percentualEmpresa
+        };
+      }
+      function validarRateio(rateio = {}) {
+        const total = round2(rateio.valorTotalPerdas);
+        const cliente = round2(rateio.valorCliente);
+        const empresa = round2(rateio.valorEmpresa);
+        const soma = round2(cliente + empresa);
+        if (cliente < -1e-3 || empresa < -1e-3) {
+          return { ok: false, erro: "Valores do rateio n\xE3o podem ser negativos." };
+        }
+        if (Math.abs(soma - total) > 0.01) {
+          return {
+            ok: false,
+            erro: `Cliente + Empresa (${soma.toFixed(2)}) deve ser igual ao valor total das perdas (${total.toFixed(2)}).`
+          };
+        }
+        const tipo = String(rateio.tipoRateio || "").toUpperCase();
+        if (!Object.values(TIPOS_RATEIO).includes(tipo)) {
+          return { ok: false, erro: "Tipo de rateio inv\xE1lido." };
+        }
+        const motivo = String(rateio.motivoPerda || "").toUpperCase();
+        if (total > 0.01) {
+          if (!motivo || !MOTIVOS_PERDA.includes(motivo)) {
+            return { ok: false, erro: "Motivo da perda \xE9 obrigat\xF3rio." };
+          }
+          if (motivo === "OUTRO" && !String(rateio.observacaoPerda || "").trim()) {
+            return { ok: false, erro: "Observa\xE7\xE3o \xE9 obrigat\xF3ria quando o motivo \xE9 Outro." };
+          }
+        }
+        return { ok: true };
+      }
+      function buildResumoFinanceiroRateio({
+        valorVenda = 0,
+        valorRecebido = 0,
+        valorPerdas = 0,
+        valorCliente = 0,
+        valorEmpresa = 0
+      } = {}) {
+        const venda = round2(valorVenda);
+        const recebido = round2(valorRecebido);
+        const perdas = round2(valorPerdas);
+        const clienteAssume = round2(valorCliente);
+        const empresaAssume = round2(valorEmpresa);
+        const valorLiquidoConsignado = round2(venda + clienteAssume - recebido);
+        return {
+          valorVenda: venda,
+          valorRecebido: recebido,
+          perdas,
+          clienteAssume,
+          empresaAssume,
+          valorLiquidoConsignado
+        };
+      }
+      module.exports = {
+        TIPOS_RATEIO,
+        MOTIVOS_PERDA,
+        MOTIVO_LABEL,
+        round2,
+        calcularRateio,
+        validarRateio,
+        buildResumoFinanceiroRateio
+      };
+    }
+  });
+
+  // frontend/modules/motor-comercial/pages/PrestacaoContas/rateioPerdaUi.js
+  var require_rateioPerdaUi = __commonJS({
+    "frontend/modules/motor-comercial/pages/PrestacaoContas/rateioPerdaUi.js"(exports, module) {
+      var domain = require_rateioPerdaDomain();
+      var { formatCurrency } = require_fecharConsignacaoMappers();
+      function buildRateioCardHtml(rateio = {}, { totalPerdas = 0, motivos = null } = {}) {
+        const tipo = String(rateio.tipoRateio || domain.TIPOS_RATEIO.CLIENTE).toUpperCase();
+        const calc = domain.calcularRateio(tipo, totalPerdas, {
+          valorCliente: rateio.valorCliente,
+          valorEmpresa: rateio.valorEmpresa
+        });
+        const listaMotivos = motivos || domain.MOTIVOS_PERDA.map((m4) => ({
+          codigo: m4,
+          label: domain.MOTIVO_LABEL[m4] || m4
+        }));
+        const motivo = String(rateio.motivoPerda || "").toUpperCase();
+        const compart = tipo === domain.TIPOS_RATEIO.COMPARTILHADA;
+        return `
+    <section class="cds-op-card cds-rateio-perda" id="fechar-rateio-perda" data-total-perdas="${Number(totalPerdas) || 0}">
+      <h3 class="cds-op-card__titulo">Rateio da Perda</h3>
+      <p class="cds-muted cds-rateio-perda__total">Perda total: <strong data-rateio="total">${formatCurrency(totalPerdas)}</strong></p>
+      <div class="cds-rateio-perda__tipos" role="radiogroup" aria-label="Respons\xE1vel pela perda">
+        <label class="cds-rateio-perda__tipo">
+          <input type="radio" name="rateio-tipo" value="CLIENTE" ${tipo === "CLIENTE" ? "checked" : ""}>
+          <span>Cliente</span>
+        </label>
+        <label class="cds-rateio-perda__tipo">
+          <input type="radio" name="rateio-tipo" value="EMPRESA" ${tipo === "EMPRESA" ? "checked" : ""}>
+          <span>Empresa</span>
+        </label>
+        <label class="cds-rateio-perda__tipo">
+          <input type="radio" name="rateio-tipo" value="COMPARTILHADA" ${tipo === "COMPARTILHADA" ? "checked" : ""}>
+          <span>Compartilhada</span>
+        </label>
+      </div>
+      <div class="cds-rateio-perda__valores" id="rateio-valores" ${compart ? "" : "hidden"}>
+        <label>
+          <span>Cliente (R$)</span>
+          <input type="number" step="0.01" min="0" data-rateio-campo="cliente"
+            value="${Number(calc.valorCliente || 0).toFixed(2)}">
+        </label>
+        <label>
+          <span>Empresa (R$)</span>
+          <input type="number" step="0.01" min="0" data-rateio-campo="empresa"
+            value="${Number(calc.valorEmpresa || 0).toFixed(2)}">
+        </label>
+      </div>
+      <dl class="cds-rateio-perda__pct">
+        <div><dt>Cliente</dt><dd data-rateio="pct-cliente">${Number(calc.percentualCliente || 0).toFixed(2)}%</dd></div>
+        <div><dt>Empresa</dt><dd data-rateio="pct-empresa">${Number(calc.percentualEmpresa || 0).toFixed(2)}%</dd></div>
+        <div><dt>Cliente assume</dt><dd data-rateio="val-cliente">${formatCurrency(calc.valorCliente)}</dd></div>
+        <div><dt>Empresa assume</dt><dd data-rateio="val-empresa">${formatCurrency(calc.valorEmpresa)}</dd></div>
+      </dl>
+      <label class="cds-rateio-perda__motivo">
+        <span>Motivo da perda *</span>
+        <select data-rateio="motivo">
+          <option value="">Selecione\u2026</option>
+          ${listaMotivos.map((m4) => `
+            <option value="${m4.codigo}" ${motivo === m4.codigo ? "selected" : ""}>${m4.label}</option>
+          `).join("")}
+        </select>
+      </label>
+      <label class="cds-rateio-perda__obs" id="rateio-obs-wrap" ${motivo === "OUTRO" ? "" : "hidden"}>
+        <span>Observa\xE7\xE3o *</span>
+        <textarea data-rateio="observacao" rows="2">${rateio.observacaoPerda || ""}</textarea>
+      </label>
+      <p class="cds-rateio-perda__erro" data-rateio="erro" hidden></p>
+      <button type="button" class="cds-btn cds-btn--primary" data-rateio-action="salvar">
+        Salvar rateio
+      </button>
+    </section>
+  `;
+      }
+      function buildResumoFinanceiroRateioHtml(resumo = {}) {
+        return `
+    <section class="cds-op-card cds-rateio-resumo-fin" id="fechar-resumo-rateio" data-card="resumo-rateio">
+      <h3 class="cds-op-card__titulo">Resumo Financeiro</h3>
+      <dl class="cds-rateio-resumo-fin__lista">
+        <div><dt>Venda</dt><dd data-rf="venda">${formatCurrency(resumo.valorVenda)}</dd></div>
+        <div><dt>Recebido</dt><dd data-rf="recebido">${formatCurrency(resumo.valorRecebido)}</dd></div>
+        <div><dt>Perdas</dt><dd data-rf="perdas">${formatCurrency(resumo.perdas)}</dd></div>
+        <div><dt>Cliente assume</dt><dd data-rf="cliente">${formatCurrency(resumo.clienteAssume)}</dd></div>
+        <div><dt>Empresa assume</dt><dd data-rf="empresa">${formatCurrency(resumo.empresaAssume)}</dd></div>
+        <div class="is-destaque"><dt>Valor l\xEDquido do consignado</dt><dd data-rf="liquido">${formatCurrency(resumo.valorLiquidoConsignado)}</dd></div>
+      </dl>
+    </section>
+  `;
+      }
+      function patchResumoFinanceiroRateio(host, resumo = {}) {
+        if (!host) return;
+        const map = {
+          venda: formatCurrency(resumo.valorVenda),
+          recebido: formatCurrency(resumo.valorRecebido),
+          perdas: formatCurrency(resumo.perdas),
+          cliente: formatCurrency(resumo.clienteAssume),
+          empresa: formatCurrency(resumo.empresaAssume),
+          liquido: formatCurrency(resumo.valorLiquidoConsignado)
+        };
+        Object.entries(map).forEach(([key, value]) => {
+          const el = host.querySelector(`[data-rf="${key}"]`);
+          if (el) el.textContent = value;
+        });
+      }
+      function lerRateioDoDom(root) {
+        var _a2, _b2, _c, _d, _e2, _f;
+        const host = ((_a2 = root == null ? void 0 : root.querySelector) == null ? void 0 : _a2.call(root, "#fechar-rateio-perda")) || root;
+        if (!host) return null;
+        const tipo = ((_b2 = host.querySelector('input[name="rateio-tipo"]:checked')) == null ? void 0 : _b2.value) || "CLIENTE";
+        const total = Number(host.getAttribute("data-total-perdas") || 0);
+        const valorCliente = (_c = host.querySelector('[data-rateio-campo="cliente"]')) == null ? void 0 : _c.value;
+        const valorEmpresa = (_d = host.querySelector('[data-rateio-campo="empresa"]')) == null ? void 0 : _d.value;
+        return {
+          tipoRateio: tipo,
+          valorTotalPerdas: total,
+          valorCliente: valorCliente !== void 0 && valorCliente !== "" ? Number(valorCliente) : void 0,
+          valorEmpresa: valorEmpresa !== void 0 && valorEmpresa !== "" ? Number(valorEmpresa) : void 0,
+          motivoPerda: ((_e2 = host.querySelector('[data-rateio="motivo"]')) == null ? void 0 : _e2.value) || null,
+          observacaoPerda: ((_f = host.querySelector('[data-rateio="observacao"]')) == null ? void 0 : _f.value) || null
+        };
+      }
+      function aplicarCalculoNoDom(host, calc) {
+        if (!host || !calc) return;
+        const pctC = host.querySelector('[data-rateio="pct-cliente"]');
+        const pctE = host.querySelector('[data-rateio="pct-empresa"]');
+        const valC = host.querySelector('[data-rateio="val-cliente"]');
+        const valE = host.querySelector('[data-rateio="val-empresa"]');
+        if (pctC) pctC.textContent = `${Number(calc.percentualCliente || 0).toFixed(2)}%`;
+        if (pctE) pctE.textContent = `${Number(calc.percentualEmpresa || 0).toFixed(2)}%`;
+        if (valC) valC.textContent = formatCurrency(calc.valorCliente);
+        if (valE) valE.textContent = formatCurrency(calc.valorEmpresa);
+        const inpC = host.querySelector('[data-rateio-campo="cliente"]');
+        const inpE = host.querySelector('[data-rateio-campo="empresa"]');
+        if (typeof document !== "undefined") {
+          if (inpC && document.activeElement !== inpC) inpC.value = Number(calc.valorCliente || 0).toFixed(2);
+          if (inpE && document.activeElement !== inpE) inpE.value = Number(calc.valorEmpresa || 0).toFixed(2);
+        }
+      }
+      function bindRateioCard(host, { onSalvar } = {}) {
+        var _a2, _b2, _c, _d;
+        if (!host || host.dataset.boundRateio === "1") return;
+        host.dataset.boundRateio = "1";
+        const syncTipo = () => {
+          var _a3, _b3, _c2;
+          const tipo = ((_a3 = host.querySelector('input[name="rateio-tipo"]:checked')) == null ? void 0 : _a3.value) || "CLIENTE";
+          const valores = host.querySelector("#rateio-valores");
+          if (valores) valores.hidden = tipo !== "COMPARTILHADA";
+          const total = Number(host.getAttribute("data-total-perdas") || 0);
+          const calc = domain.calcularRateio(tipo, total, {
+            valorCliente: (_b3 = host.querySelector('[data-rateio-campo="cliente"]')) == null ? void 0 : _b3.value,
+            valorEmpresa: (_c2 = host.querySelector('[data-rateio-campo="empresa"]')) == null ? void 0 : _c2.value
+          });
+          aplicarCalculoNoDom(host, calc);
+        };
+        host.querySelectorAll('input[name="rateio-tipo"]').forEach((el) => {
+          el.addEventListener("change", syncTipo);
+        });
+        (_a2 = host.querySelector('[data-rateio-campo="cliente"]')) == null ? void 0 : _a2.addEventListener("input", () => {
+          var _a3;
+          const total = Number(host.getAttribute("data-total-perdas") || 0);
+          const calc = domain.calcularRateio("COMPARTILHADA", total, {
+            valorCliente: (_a3 = host.querySelector('[data-rateio-campo="cliente"]')) == null ? void 0 : _a3.value,
+            campoEditado: "cliente"
+          });
+          const inpE = host.querySelector('[data-rateio-campo="empresa"]');
+          if (inpE) inpE.value = Number(calc.valorEmpresa || 0).toFixed(2);
+          aplicarCalculoNoDom(host, calc);
+        });
+        (_b2 = host.querySelector('[data-rateio-campo="empresa"]')) == null ? void 0 : _b2.addEventListener("input", () => {
+          var _a3;
+          const total = Number(host.getAttribute("data-total-perdas") || 0);
+          const calc = domain.calcularRateio("COMPARTILHADA", total, {
+            valorEmpresa: (_a3 = host.querySelector('[data-rateio-campo="empresa"]')) == null ? void 0 : _a3.value,
+            campoEditado: "empresa"
+          });
+          const inpC = host.querySelector('[data-rateio-campo="cliente"]');
+          if (inpC) inpC.value = Number(calc.valorCliente || 0).toFixed(2);
+          aplicarCalculoNoDom(host, calc);
+        });
+        (_c = host.querySelector('[data-rateio="motivo"]')) == null ? void 0 : _c.addEventListener("change", (e2) => {
+          const wrap = host.querySelector("#rateio-obs-wrap");
+          if (wrap) wrap.hidden = String(e2.target.value || "").toUpperCase() !== "OUTRO";
+        });
+        (_d = host.querySelector('[data-rateio-action="salvar"]')) == null ? void 0 : _d.addEventListener("click", async () => {
+          const erroEl = host.querySelector('[data-rateio="erro"]');
+          const draft = lerRateioDoDom(host);
+          const tipo = draft.tipoRateio;
+          const calc = domain.calcularRateio(tipo, draft.valorTotalPerdas, {
+            valorCliente: draft.valorCliente,
+            valorEmpresa: draft.valorEmpresa,
+            campoEditado: tipo === "COMPARTILHADA" ? "cliente" : null
+          });
+          const payload = {
+            ...calc,
+            motivoPerda: draft.motivoPerda,
+            observacaoPerda: draft.observacaoPerda,
+            campoEditado: tipo === "COMPARTILHADA" ? "cliente" : null
+          };
+          const valid = domain.validarRateio(payload);
+          if (!valid.ok) {
+            if (erroEl) {
+              erroEl.hidden = false;
+              erroEl.textContent = valid.erro;
+            }
+            return;
+          }
+          if (erroEl) erroEl.hidden = true;
+          if (typeof onSalvar === "function") await onSalvar(payload);
+        });
+      }
+      function montarBlocoRateio(state, ctx) {
+        var _a2, _b2, _c, _d, _e2;
+        const wrap = document.createElement("div");
+        wrap.className = "cds-rateio-perda-bloco";
+        const payload = state.rateioPerda || {};
+        const rateio = payload.rateio || {};
+        const total = Number(
+          ((_a2 = payload.totais) == null ? void 0 : _a2.totalPerdido) ?? rateio.valorTotalPerdas ?? 0
+        );
+        const resumo = payload.resumoFinanceiro || domain.buildResumoFinanceiroRateio({
+          valorVenda: (_c = (_b2 = state.snapshot) == null ? void 0 : _b2.financeiro) == null ? void 0 : _c.valorVenda,
+          valorRecebido: (_e2 = (_d = state.snapshot) == null ? void 0 : _d.financeiro) == null ? void 0 : _e2.valorRecebido,
+          valorPerdas: total,
+          valorCliente: rateio.valorCliente,
+          valorEmpresa: rateio.valorEmpresa
+        });
+        wrap.innerHTML = buildRateioCardHtml(rateio, {
+          totalPerdas: total,
+          motivos: payload.motivos
+        }) + buildResumoFinanceiroRateioHtml(resumo);
+        const card = wrap.querySelector("#fechar-rateio-perda");
+        bindRateioCard(card, {
+          onSalvar: (data) => ctx.onSalvarRateioPerda && ctx.onSalvarRateioPerda(data)
+        });
+        return wrap;
+      }
+      module.exports = {
+        buildRateioCardHtml,
+        buildResumoFinanceiroRateioHtml,
+        patchResumoFinanceiroRateio,
+        lerRateioDoDom,
+        bindRateioCard,
+        aplicarCalculoNoDom,
+        montarBlocoRateio,
+        domain
+      };
+    }
+  });
+
   // frontend/modules/motor-comercial/pages/PrestacaoContas/FecharConsignacaoView.js
   var require_FecharConsignacaoView = __commonJS({
     "frontend/modules/motor-comercial/pages/PrestacaoContas/FecharConsignacaoView.js"(exports, module) {
@@ -92023,6 +93700,7 @@ ${lines.join("\n")}
         criarAlertaErroOperacional,
         auditarFinalRC1
       } = require_prestacaoHardening();
+      var { montarBlocoRateio } = require_rateioPerdaUi();
       function _financeiroFromState(state) {
         var _a2, _b2;
         return ((_a2 = state == null ? void 0 : state.snapshot) == null ? void 0 : _a2.financeiro) || ((_b2 = state == null ? void 0 : state.painel) == null ? void 0 : _b2.financeiro) || null;
@@ -92117,7 +93795,7 @@ ${lines.join("\n")}
           return wrap;
         }
         static renderRetornos(state, ctx) {
-          var _a2;
+          var _a2, _b2, _c;
           const wrap = document.createElement("div");
           wrap.className = "cds-fechar-consignacao__momento cds-fechar-consignacao__momento--grade-fill cds-retornos-estacao";
           const header = document.createElement("header");
@@ -92155,7 +93833,13 @@ ${lines.join("\n")}
           main.className = "cds-retornos-main";
           main.appendChild(_FecharConsignacaoView._buildGradeProdutosPanel(state, ctx, itens));
           layout.appendChild(main);
-          layout.appendChild(_FecharConsignacaoView._buildSidebarRetornos(state, painel));
+          const sidebarCol = document.createElement("div");
+          sidebarCol.className = "cds-retornos-sidebar-col";
+          sidebarCol.appendChild(_FecharConsignacaoView._buildSidebarRetornos(state, painel));
+          if (Number(((_c = (_b2 = state.rateioPerda) == null ? void 0 : _b2.totais) == null ? void 0 : _c.totalPerdido) || 0) > 0.01 || Number(painel.perdas || 0) > 0) {
+            sidebarCol.appendChild(montarBlocoRateio(state, ctx));
+          }
+          layout.appendChild(sidebarCol);
           wrap.appendChild(layout);
           return wrap;
         }
@@ -92520,7 +94204,7 @@ ${lines.join("\n")}
         }
         static _buildSidebarRetornos(state, painel = {}) {
           var _a2;
-          const fin = ((_a2 = state.snapshot) == null ? void 0 : _a2.financeiro) || painel.financeiro || {};
+          const fin = painel.preview && painel.financeiro ? painel.financeiro : ((_a2 = state.snapshot) == null ? void 0 : _a2.financeiro) || painel.financeiro || {};
           const situacaoLabel = labelSituacaoFinanceiraOficial(fin.situacaoFinanceira) || labelSituacaoFinanceira(fin.situacaoFinanceira) || "\u2014";
           const tone = _FecharConsignacaoView._situacaoSidebarTone(fin.situacaoFinanceira);
           const aside = document.createElement("aside");
@@ -92605,7 +94289,7 @@ ${lines.join("\n")}
         static patchPainelLateral(asideEl, painel, state = {}) {
           var _a2;
           if (!asideEl || !painel) return;
-          const fin = ((_a2 = state.snapshot) == null ? void 0 : _a2.financeiro) || painel.financeiro || {};
+          const fin = painel.preview && painel.financeiro ? painel.financeiro : ((_a2 = state.snapshot) == null ? void 0 : _a2.financeiro) || painel.financeiro || {};
           const situacaoLabel = labelSituacaoFinanceiraOficial(fin.situacaoFinanceira) || labelSituacaoFinanceira(fin.situacaoFinanceira) || "\u2014";
           const fields = {
             vendidos: String(painel.produtosVendidos ?? 0),
@@ -92945,7 +94629,7 @@ ${lines.join("\n")}
          * Estação Operacional — layout oficial STAB-07.4 (duas colunas).
          */
         static renderConferenciaFinal(state, ctx) {
-          var _a2, _b2, _c, _d, _e2, _f;
+          var _a2, _b2, _c, _d, _e2, _f, _g, _h, _i;
           const wrap = document.createElement("div");
           wrap.className = "cds-fechar-consignacao__momento cds-prestacao-central-operacional";
           const title = document.createElement("h2");
@@ -93011,6 +94695,9 @@ ${lines.join("\n")}
           );
           colEsq.appendChild(finSection);
           colEsq.appendChild(_FecharConsignacaoView._buildBlocoPagamentos(state, ctx, fin));
+          if (Number(((_h = (_g = state.rateioPerda) == null ? void 0 : _g.totais) == null ? void 0 : _h.totalPerdido) || 0) > 0.01 || Number(((_i = state.painel) == null ? void 0 : _i.perdas) || 0) > 0) {
+            colEsq.appendChild(montarBlocoRateio(state, ctx));
+          }
           const colDir = document.createElement("div");
           colDir.className = "cds-prestacao-central-grid__col";
           colDir.appendChild(_FecharConsignacaoView._buildCardFiscal(state, fechamento));
@@ -93759,6 +95446,7 @@ ${lines.join("\n")}
           };
           this.logOperacionalSessao = [];
           this.faturamento = null;
+          this.rateioPerda = null;
           this._ultimaFalhaEmitir = null;
           this._emitindoNfce = false;
           this.proximoAtendimento = null;
@@ -94066,9 +95754,9 @@ ${lines.join("\n")}
             text: this.loading.operation ? "Registrando\u2026" : "Registrar Pagamento",
             variant: "secondary",
             disabled: pagarDis,
-            title: pagarDis ? saldoAberto <= 0.01 ? "N\xE3o h\xE1 saldo em aberto para receber." : "Aguarde a opera\xE7\xE3o em andamento." : null,
+            title: pagarDis ? saldoAberto <= 0.01 ? "N\xE3o h\xE1 saldo em aberto para receber." : "Registrando pagamento..." : null,
             onClick: () => this._registrarPagamento()
-          }), pagarDis ? saldoAberto <= 0.01 ? "N\xE3o h\xE1 saldo em aberto para receber." : "Aguarde a opera\xE7\xE3o em andamento." : ""));
+          }), pagarDis ? saldoAberto <= 0.01 ? "N\xE3o h\xE1 saldo em aberto para receber." : "Registrando pagamento..." : ""));
           const podeMostrarEmitir = fiscal.codigo !== SITUACAO_FISCAL.NAO_APLICAVEL && fiscal.codigo !== SITUACAO_FISCAL.AUTORIZADA && (oficial.podeEmitir || fiscal.codigo === SITUACAO_FISCAL.REJEITADA || fiscal.codigo === SITUACAO_FISCAL.PENDENTE_REGULARIZACAO || fiscal.codigo === SITUACAO_FISCAL.PENDENTE);
           if (podeMostrarEmitir) {
             const emitirDis = this.loading.operation || !permissao || this._emitindoNfce || dirty;
@@ -94151,7 +95839,8 @@ ${lines.join("\n")}
             faturamento: this.faturamento,
             emitindoNfce: Boolean(this._emitindoNfce),
             historico: this.historico,
-            ultimaFalhaEmitir: this._ultimaFalhaEmitir || null
+            ultimaFalhaEmitir: this._ultimaFalhaEmitir || null,
+            rateioPerda: this.rateioPerda || null
           };
         }
         _viewCtx() {
@@ -94171,6 +95860,7 @@ ${lines.join("\n")}
             onRetryLinha: (i3) => this._retryLinha(i3),
             onVisualizarDanfe: (vendaId) => this._abrirDanfe(vendaId),
             onReimprimirDanfe: (vendaId) => this._abrirDanfe(vendaId),
+            onSalvarRateioPerda: (payload) => this._salvarRateioPerda(payload),
             onEmitirNfceRetry: () => {
               this._ultimaFalhaEmitir = null;
               this._emitirNfcePrestacao();
@@ -94266,11 +95956,7 @@ ${lines.join("\n")}
               this._mostrarCupomFiscal(vendaIdDanfe, (resultado == null ? void 0 : resultado.fiscal) || null);
               this._emitindoNfce = false;
               this.loading.operation = false;
-              await this._finalizarComVendaOficial({
-                emitirFiscal: false,
-                fechar: true,
-                skipConfirm: true
-              });
+              await this._encerrarAposEmissaoNfce({ vendaId: vendaIdDanfe });
               return;
             }
             if (fat.situacaoFiscal === "NAO_APLICAVEL") {
@@ -94283,11 +95969,7 @@ ${lines.join("\n")}
               });
               this._emitindoNfce = false;
               this.loading.operation = false;
-              await this._finalizarComVendaOficial({
-                emitirFiscal: false,
-                fechar: true,
-                skipConfirm: true
-              });
+              await this._encerrarAposEmissaoNfce({ vendaId });
               return;
             }
             const fiscalUi = resolverSituacaoFiscal(fat);
@@ -94373,6 +96055,89 @@ ${lines.join("\n")}
           }
           this._abrirDanfe(vendaId);
         }
+        /**
+         * Encerra a prestação logo após NFC-e (AUTORIZADA / NÃO APLICÁVEL).
+         * Não refaz flush da grade — a emissão já exigiu grade limpa.
+         * Fallback: POST /prestacao/fechar se finalizar-venda-oficial falhar.
+         */
+        async _encerrarAposEmissaoNfce({ vendaId = null } = {}) {
+          var _a2, _b2, _c, _d, _e2, _f;
+          if (!this._canEncerrar()) {
+            notify("NFC-e ok, mas sem permiss\xE3o para encerrar automaticamente.", "warning");
+            return;
+          }
+          this.loading.operation = true;
+          this._updateFooter();
+          const t0 = Date.now();
+          try {
+            let resultado = null;
+            try {
+              resultado = await withLoading(
+                MENSAGENS_HARDENING.ENCERRANDO,
+                () => this.api.finalizarVendaOficial(this.consignacaoId, {
+                  emitirFiscal: false,
+                  fechar: true
+                })
+              );
+            } catch (errFinalize) {
+              await withLoading(
+                MENSAGENS_HARDENING.ENCERRANDO,
+                () => this.api.fecharPrestacao(this.consignacaoId, {})
+              );
+              resultado = { faturamento: this.faturamento };
+              this._pushLogOperacional("Encerramento via fecharPrestacao (fallback p\xF3s NFC-e)", {
+                erro: String((errFinalize == null ? void 0 : errFinalize.message) || errFinalize)
+              });
+            }
+            this.faturamento = (resultado == null ? void 0 : resultado.faturamento) || this.faturamento;
+            this.encerrado = true;
+            this.dataEncerramento = /* @__PURE__ */ new Date();
+            this.vendaOficial = (resultado == null ? void 0 : resultado.venda) || { id: vendaId || ((_a2 = this.faturamento) == null ? void 0 : _a2.vendaId) };
+            this._recalcularPainel();
+            registrarLogEncerramento({
+              consignacao: this.consignacao || {},
+              financeiro: ((_b2 = this.snapshot) == null ? void 0 : _b2.financeiro) || {},
+              faturamento: this.faturamento,
+              usuario: null
+            });
+            registrarLogOperacional("ENCERRAR_PRESTACAO", {
+              consignacaoId: this.consignacaoId,
+              vendaOficial: ((_c = this.faturamento) == null ? void 0 : _c.vendaId) || vendaId || null,
+              nfce: ((_d = this.faturamento) == null ? void 0 : _d.nfce) || null,
+              resultado: "ENCERRADA_POS_NFCE",
+              inicioMs: t0
+            });
+            notify(MENSAGENS_HARDENING.PRESTACAO_ENCERRADA || "Presta\xE7\xE3o encerrada automaticamente ap\xF3s a NFC-e.", "success");
+            this._pushLogOperacional("Presta\xE7\xE3o encerrada automaticamente ap\xF3s NFC-e", {
+              vendaId: ((_e2 = this.faturamento) == null ? void 0 : _e2.vendaId) || vendaId || null
+            });
+            const clienteId = ((_f = this.consignacao) == null ? void 0 : _f.clienteId) || this.navigationContext.clienteId;
+            if (clienteId) {
+              try {
+                this.clienteDetalhe = await buscarClientePorIdErp(clienteId);
+              } catch (_error) {
+                this.clienteDetalhe = null;
+              }
+            }
+            this.currentStep = STEP_ENCERRAMENTO;
+            this.steps = inicializarMomentos(true);
+            await this._loadData(true, { skipUi: true });
+            this._updateUI();
+          } catch (error) {
+            notify(
+              humanizarErroOperacional(error).mensagem || "NFC-e emitida, mas n\xE3o foi poss\xEDvel encerrar automaticamente. Use Encerrar.",
+              "warning"
+            );
+            registrarLogOperacional("ENCERRAR_PRESTACAO", {
+              consignacaoId: this.consignacaoId,
+              resultado: "ERRO_POS_NFCE",
+              detalhes: { message: String((error == null ? void 0 : error.message) || error) }
+            });
+          } finally {
+            this.loading.operation = false;
+            this._updateFooter();
+          }
+        }
         _abrirDanfe(vendaId) {
           if (!vendaId) return;
           const base = typeof window !== "undefined" && window.API_URL ? window.API_URL : "http://localhost:3000/api";
@@ -94404,18 +96169,20 @@ ${lines.join("\n")}
             this._updateUI();
           }
           try {
-            const [consignacao, prestacao, historico, contaCorrente] = await Promise.all([
+            const [consignacao, prestacao, historico, contaCorrente, rateioPerda] = await Promise.all([
               carregarConsignacaoCompleta(this.api, this.projectionApi, this.consignacaoId),
               this.projectionApi.obterResumoPrestacao({ consignacaoId: this.consignacaoId }).catch(() => null),
               this.projectionApi.listarMovimentacoes({ consignacaoId: this.consignacaoId }).catch(() => []),
               this.projectionApi.obterProjecaoContaCorrente({
                 consignacaoId: this.consignacaoId,
                 clienteId: this.navigationContext.clienteId || void 0
-              }).catch(() => null)
+              }).catch(() => null),
+              this.api.obterRateioPerda(this.consignacaoId).catch(() => null)
             ]);
             this.consignacao = consignacao;
             this.historico = historico;
             this.contaCorrente = contaCorrente;
+            this.rateioPerda = rateioPerda;
             this.resumoPrestacao = this._buildResumoFromData(prestacao, historico, consignacao, contaCorrente);
             limparDirtyTodos(((_a2 = this.resumoPrestacao) == null ? void 0 : _a2.itens) || []);
             this._capturarBaseline();
@@ -95023,8 +96790,8 @@ ${lines.join("\n")}
           var _a2, _b2, _c;
           if (this.currentStep !== STEP_RETORNOS || !((_b2 = (_a2 = this.resumoPrestacao) == null ? void 0 : _a2.itens) == null ? void 0 : _b2.length)) return;
           const itens = this.resumoPrestacao.itens;
-          const financeiro = ((_c = this.snapshot) == null ? void 0 : _c.financeiro) || this._syncSnapshotFinanceiro();
-          const painelPreview = buildPainelLateralPreview(this.resumoPrestacao, itens, financeiro);
+          const financeiroSsot = ((_c = this.snapshot) == null ? void 0 : _c.financeiro) || this._syncSnapshotFinanceiro();
+          const painelPreview = buildPainelLateralPreview(this.resumoPrestacao, itens, financeiroSsot);
           this.painel = painelPreview;
           this._patchPainelLateral(painelPreview);
           FecharConsignacaoView.patchResumoRapido(
@@ -95065,6 +96832,61 @@ ${lines.join("\n")}
         _updatePagamentoField(key, value) {
           this.pagamentoDraft[key] = value;
           this.pagamentoErro = null;
+        }
+        /**
+         * RC4.2 — persiste rateio inteligente de perdas.
+         */
+        async _salvarRateioPerda(payload = {}) {
+          var _a2, _b2, _c, _d;
+          if (!await this._garantirPrestacaoAberta()) return false;
+          this.loading.operation = true;
+          this._updateFooter();
+          try {
+            const resultado = await withLoading(
+              "Salvando rateio da perda\u2026",
+              () => this.api.definirRateioPerda(this.consignacaoId, {
+                tipoRateio: payload.tipoRateio,
+                valorCliente: payload.valorCliente,
+                valorEmpresa: payload.valorEmpresa,
+                campoEditado: payload.campoEditado || null,
+                motivoPerda: payload.motivoPerda,
+                observacaoPerda: payload.observacaoPerda,
+                usuarioId: getUsuarioId()
+              })
+            );
+            this.rateioPerda = {
+              ...this.rateioPerda || {},
+              rateio: (resultado == null ? void 0 : resultado.rateio) || ((_a2 = resultado == null ? void 0 : resultado.data) == null ? void 0 : _a2.rateio) || payload,
+              resumoFinanceiro: (resultado == null ? void 0 : resultado.resumoFinanceiro) || ((_b2 = resultado == null ? void 0 : resultado.data) == null ? void 0 : _b2.resumoFinanceiro) || null,
+              totais: (resultado == null ? void 0 : resultado.totais) || ((_c = resultado == null ? void 0 : resultado.data) == null ? void 0 : _c.totais) || ((_d = this.rateioPerda) == null ? void 0 : _d.totais)
+            };
+            notify("Rateio da perda salvo.", "success");
+            this._pushLogOperacional("Rateio da perda definido", {
+              tipo: payload.tipoRateio,
+              cliente: payload.valorCliente,
+              empresa: payload.valorEmpresa,
+              motivo: payload.motivoPerda
+            });
+            registrarLogOperacional("RATEIO_PERDA", {
+              consignacaoId: this.consignacaoId,
+              resultado: "OK",
+              detalhes: {
+                tipoRateio: payload.tipoRateio,
+                valorCliente: payload.valorCliente,
+                valorEmpresa: payload.valorEmpresa,
+                motivoPerda: payload.motivoPerda
+              }
+            });
+            await this._loadData(true, { skipUi: true });
+            this._updateContent();
+            return true;
+          } catch (error) {
+            notify(humanizarErroOperacional(error).mensagem, "error");
+            return false;
+          } finally {
+            this.loading.operation = false;
+            this._updateFooter();
+          }
         }
         /**
          * ÚNICA porta FE que cria movimento financeiro na Prestação (STAB-07.1).
@@ -96756,11 +98578,20 @@ ${lines.join("\n")}
             variant: cliente.statusVariant || "success"
           }));
           const actions = card.querySelector(".cds-cliente-op-card__actions");
-          actions.appendChild(Button.create({
+          const abrirBtn = Button.create({
             text: "Abrir",
             variant: "primary",
-            onClick: () => handlers.onAbrir && handlers.onAbrir(cliente)
-          }));
+            onClick: (event) => {
+              var _a2;
+              (_a2 = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _a2.call(event);
+              const id = Number(card.dataset.clienteId || cliente.clienteId);
+              if (handlers.onAbrir) {
+                handlers.onAbrir({ ...cliente, clienteId: id });
+              }
+            }
+          });
+          abrirBtn.dataset.clienteId = String(cliente.clienteId);
+          actions.appendChild(abrirBtn);
           const menuActions = [
             { label: "Editar", onClick: () => handlers.onEditar && handlers.onEditar(cliente) },
             { label: "Hist\xF3rico", onClick: () => handlers.onHistorico && handlers.onHistorico(cliente) },
@@ -97322,13 +99153,14 @@ ${lines.join("\n")}
       function groupPerfisByCliente(perfis = []) {
         const mapa = /* @__PURE__ */ new Map();
         perfis.forEach((perfil) => {
-          const clienteId = perfil.clienteId || perfil.id;
-          if (!clienteId) return;
+          const clienteId = perfil.clienteId != null ? Number(perfil.clienteId) : null;
+          if (!Number.isFinite(clienteId) || clienteId <= 0) return;
           if (!mapa.has(clienteId)) {
             const mestre = perfil.clienteMestre || (typeof perfil.cliente === "object" ? perfil.cliente : null);
+            const nome = perfil.clienteNome || (typeof perfil.cliente === "string" ? perfil.cliente : null) || (mestre == null ? void 0 : mestre.nome) || `Cliente #${clienteId}`;
             mapa.set(clienteId, {
               clienteId,
-              nome: perfil.clienteNome || perfil.cliente || `Cliente #${clienteId}`,
+              nome,
               telefone: perfil.telefone || (mestre == null ? void 0 : mestre.telefone) || "",
               cidade: extrairCidade(mestre || {}, perfil),
               documento: perfil.cpfCnpj || (mestre == null ? void 0 : mestre.documento) || (mestre == null ? void 0 : mestre.cpf_cnpj) || "",
@@ -97341,7 +99173,7 @@ ${lines.join("\n")}
           }
           const grupo = mapa.get(clienteId);
           grupo.perfis.push(perfil);
-          if ((perfil.limiteComercial ?? 0) >= (grupo.perfilPrincipal.limiteComercial ?? 0)) {
+          if ((perfil.limiteComercial ?? perfil.limite ?? 0) >= (grupo.perfilPrincipal.limiteComercial ?? grupo.perfilPrincipal.limite ?? 0)) {
             grupo.perfilPrincipal = perfil;
           }
         });
@@ -97704,12 +99536,20 @@ ${lines.join("\n")}
             return;
           }
           filtered.forEach((cliente) => {
+            const clienteId = Number(cliente.clienteId);
             host.appendChild(ClienteOperacionalCard.create(cliente, {
               formatCurrency: (v3) => this._formatCurrency(v3),
-              onAbrir: (c4) => navigate(`/clientes/${c4.clienteId}`),
-              onEditar: (c4) => navigate(`/clientes/${c4.clienteId}/editar`),
-              onHistorico: (c4) => navigate(`/clientes/${c4.clienteId}#historico`),
-              onContaCorrente: (c4) => navigate(buildRouteWithCliente360Context("/conta-corrente", c4.clienteId, { clienteNome: c4.nome })),
+              onAbrir: (c4) => {
+                const id = Number((c4 == null ? void 0 : c4.clienteId) || clienteId);
+                if (!Number.isFinite(id) || id <= 0) {
+                  notify("Cliente inv\xE1lido: ID n\xE3o encontrado.", "error");
+                  return;
+                }
+                navigate(`/clientes/${id}`);
+              },
+              onEditar: (c4) => navigate(`/clientes/${Number((c4 == null ? void 0 : c4.clienteId) || clienteId)}/editar`),
+              onHistorico: (c4) => navigate(`/clientes/${Number((c4 == null ? void 0 : c4.clienteId) || clienteId)}#historico`),
+              onContaCorrente: (c4) => navigate(buildRouteWithCliente360Context("/conta-corrente", Number((c4 == null ? void 0 : c4.clienteId) || clienteId), { clienteNome: c4.nome })),
               onDesativar: (c4) => this._desativarCliente(c4),
               onExcluir: (c4) => this._excluirCliente(c4)
             }));
@@ -97822,14 +99662,53 @@ ${lines.join("\n")}
             setTimeout(() => this._scrollTo("sec-historico"), 100);
           }
         }
-        async _resolvePerfil(id) {
-          try {
-            return await this.api.obterPerfil(id);
-          } catch {
-            const { items } = await this.api.listarPerfis({ clienteId: id });
-            if (items == null ? void 0 : items.length) return items[0];
+        /**
+         * Resolve o painel a partir de `/clientes/:id`.
+         * O `:id` é SEMPRE o clienteId do ERP (SSOT do nome/cadastro).
+         *
+         * Bug real no banco: perfil.id=3 é do Cícero, enquanto Francisco é cliente.id=3.
+         * Por isso NUNCA chamar obterPerfil(routeId).
+         */
+        async _resolvePerfil(clienteIdRota) {
+          const clienteId = Number(clienteIdRota);
+          if (!Number.isFinite(clienteId) || clienteId <= 0) {
             throw new Error("Cliente n\xE3o encontrado.");
           }
+          const clienteErp = await fetchErp(`/clientes/${clienteId}`);
+          if (!clienteErp || !clienteErp.id) {
+            throw new Error("Cliente n\xE3o encontrado.");
+          }
+          const { items } = await this.api.listarPerfis({ clienteId: Number(clienteErp.id), pageSize: 50 });
+          const perfisDoCliente = (items || []).filter((p3) => Number(p3.clienteId) === Number(clienteErp.id));
+          let perfilEscolhido = null;
+          if (perfisDoCliente.length) {
+            perfilEscolhido = perfisDoCliente.find((p3) => {
+              const tipo = String(p3.perfilTipo || p3.tipoPerfil || "").toUpperCase();
+              return tipo.includes("CONSIGN");
+            }) || perfisDoCliente[0];
+          }
+          return {
+            ...perfilEscolhido || {},
+            id: (perfilEscolhido == null ? void 0 : perfilEscolhido.id) ?? null,
+            clienteId: Number(clienteErp.id),
+            clienteNome: clienteErp.nome,
+            cliente: {
+              ...typeof (perfilEscolhido == null ? void 0 : perfilEscolhido.cliente) === "object" && perfilEscolhido.cliente ? perfilEscolhido.cliente : {},
+              id: Number(clienteErp.id),
+              nome: clienteErp.nome,
+              documento: clienteErp.cpf_cnpj || null,
+              telefone: clienteErp.telefone || null,
+              email: clienteErp.email || null,
+              cidade: clienteErp.cidade || null,
+              uf: clienteErp.uf || null
+            },
+            telefone: clienteErp.telefone || (perfilEscolhido == null ? void 0 : perfilEscolhido.telefone) || "",
+            cpfCnpj: clienteErp.cpf_cnpj || (perfilEscolhido == null ? void 0 : perfilEscolhido.cpfCnpj) || "",
+            perfilTipo: (perfilEscolhido == null ? void 0 : perfilEscolhido.perfilTipo) || null,
+            status: (perfilEscolhido == null ? void 0 : perfilEscolhido.status) || "ATIVO",
+            bloqueado: !!(perfilEscolhido == null ? void 0 : perfilEscolhido.bloqueado),
+            ativo: (perfilEscolhido == null ? void 0 : perfilEscolhido.ativo) !== false
+          };
         }
         async _loadCentralOperacoes(silent = false) {
           const host = document.getElementById("central-operacoes-host");
@@ -97855,7 +99734,7 @@ ${lines.join("\n")}
             ] = await Promise.all([
               this.api.listarPerfis({ clienteId, pageSize: 50 }).catch(() => ({ items: [] })),
               this.projectionApi.obterSituacaoCliente({ clienteId }).catch(() => ({})),
-              this.api.obterScorePerfil(perfilId).catch(() => ({})),
+              perfilId ? this.api.obterScorePerfil(perfilId).catch(() => ({})) : Promise.resolve({}),
               this.api.listarConsignacoes({ clienteId }).catch(() => ({ items: [] })),
               this.projectionApi.obterProjecaoPendencias({ clienteId }).catch(() => ({})),
               this.projectionApi.obterProjecaoContaCorrente({ clienteId }).catch(() => ({})),
@@ -97987,6 +99866,25 @@ ${lines.join("\n")}
       var EmptyState = require_EmptyState2();
       var Timeline = require_Timeline2();
       var { navigate } = require_operacional();
+      function txt(value, fallback = "-") {
+        if (value == null || value === "" || value === "-") return fallback;
+        return String(value);
+      }
+      function dedupeEventos(events = []) {
+        const seen = /* @__PURE__ */ new Set();
+        return events.filter((ev) => {
+          const key = [
+            ev.id ?? "",
+            ev.tipo ?? "",
+            ev.data ?? "",
+            ev.correlationId ?? "",
+            ev.valor ?? ""
+          ].join("|");
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+      }
       var MovimentoDrawer = class {
         constructor(page, movimento) {
           this.page = page;
@@ -98004,63 +99902,84 @@ ${lines.join("\n")}
             container.appendChild(EmptyState.create({ title: "Erro", description: error.message }));
           }
         }
+        _campo(label, value) {
+          const div = document.createElement("div");
+          const lab = document.createElement("label");
+          lab.textContent = label;
+          const val = document.createElement("div");
+          val.textContent = value;
+          div.appendChild(lab);
+          div.appendChild(val);
+          return div;
+        }
         async _render() {
-          const mov = this.movimento.raw || this.movimento;
+          var _a2, _b2, _c;
+          const row = this.movimento;
+          const mov = row.raw || row;
+          const correlationId = row.correlationId && row.correlationId !== "-" ? row.correlationId : mov.correlationId || null;
+          const consignacaoId = mov.consignacaoId ?? ((_c = (_b2 = (_a2 = row.documento) == null ? void 0 : _a2.match) == null ? void 0 : _b2.call(_a2, /#(\d+)/)) == null ? void 0 : _c[1]) ?? null;
+          const ids = Array.isArray(mov.ids) && mov.ids.length ? mov.ids : mov.id != null ? [mov.id] : [];
+          const itens = Number(mov.itensAgrupados || ids.length || 1);
+          const saldoApos = mov.saldoProjetado ?? mov.saldoApos ?? row.saldoProjetado;
           const params = {
-            consignacaoId: mov.consignacaoId,
-            clienteId: this.page.clienteId,
-            limite: 10
+            consignacaoId: consignacaoId || void 0,
+            clienteId: this.page.clienteId || void 0,
+            limite: 30
           };
-          const [timeline, historico] = await Promise.all([
-            this.page.projectionApi.listarTimeline(params).catch(() => []),
-            this.page.projectionApi.listarMovimentacoes({ ...params, limite: 5 }).catch(() => [])
-          ]);
+          const timelineRaw = await this.page.projectionApi.listarTimeline(params).catch(() => []);
+          let relacionados = Array.isArray(timelineRaw) ? timelineRaw : [];
+          if (correlationId) {
+            relacionados = relacionados.filter((ev) => String(ev.correlationId || "") === String(correlationId));
+          } else if (ids.length) {
+            const idSet = new Set(ids.map(String));
+            relacionados = relacionados.filter((ev) => idSet.has(String(ev.id)));
+          }
+          relacionados = dedupeEventos(relacionados).slice(0, 12);
           const wrap = document.createElement("div");
           wrap.className = "cds-extrato-drawer__content";
-          wrap.innerHTML = `
-      <section class="cds-extrato-drawer__section">
-        <h4>Movimenta\xE7\xE3o</h4>
-        <div class="cds-extrato-drawer__grid">
-          <div><label>Tipo</label><div>${this.movimento.tipoLabel}</div></div>
-          <div><label>Documento</label><div>${this.movimento.documento}</div></div>
-          <div><label>Data</label><div>${this.page._formatDateTime(this.movimento.data)}</div></div>
-          <div><label>Valor</label><div>${this.page._formatCurrency(mov.valor)}</div></div>
-          <div><label>Operador</label><div>${this.movimento.operador}</div></div>
-          <div><label>Origem</label><div>${this.movimento.origem}</div></div>
-          <div><label>C\xF3digo de rastreio</label><div>${this.movimento.correlationId}</div></div>
-          <div><label>Identificador da opera\xE7\xE3o</label><div>${this.movimento.requestId}</div></div>
-        </div>
-      </section>
-    `;
-          const ledger = document.createElement("section");
-          ledger.className = "cds-extrato-drawer__section";
-          ledger.innerHTML = "<h4>Registro cont\xE1bil detalhado</h4>";
-          const pre = document.createElement("pre");
-          pre.className = "cds-extrato-drawer__ledger";
-          pre.textContent = JSON.stringify(mov, null, 2);
-          ledger.appendChild(pre);
-          wrap.appendChild(ledger);
+          const section = document.createElement("section");
+          section.className = "cds-extrato-drawer__section";
+          const h4 = document.createElement("h4");
+          h4.textContent = "Movimenta\xE7\xE3o";
+          section.appendChild(h4);
+          const grid = document.createElement("div");
+          grid.className = "cds-extrato-drawer__grid";
+          [
+            ["Tipo", txt(row.tipoLabel || mov.tipo || mov.tipoMovimentacao)],
+            ["Descri\xE7\xE3o", txt(row.descricao || mov.descricao || mov.motivo)],
+            ["Documento", txt(row.documento || (consignacaoId ? `Consigna\xE7\xE3o #${consignacaoId}` : null))],
+            ["Data", this.page._formatDateTime(row.data || mov.data || mov.dataMovimentacao)],
+            ["Valor", this.page._formatCurrency(mov.valor ?? row.valor)],
+            ["Saldo ap\xF3s", saldoApos != null ? this.page._formatCurrency(saldoApos) : "-"],
+            ["Itens", String(itens)],
+            ["Operador", txt(row.operador || mov.usuarioId)],
+            ["Origem", txt(row.origem || mov.origem)],
+            ["C\xF3digo de rastreio", txt(correlationId)],
+            ["Lan\xE7amento(s)", ids.length ? ids.join(", ") : "-"]
+          ].forEach(([label, value]) => grid.appendChild(this._campo(label, value)));
+          section.appendChild(grid);
+          wrap.appendChild(section);
           const timelineSection = document.createElement("section");
           timelineSection.className = "cds-extrato-drawer__section";
           timelineSection.innerHTML = "<h4>Eventos relacionados</h4>";
           timelineSection.appendChild(Timeline.create({
-            events: timeline,
+            events: relacionados,
             emptyTitle: "Sem eventos",
-            emptyDescription: "Nenhum evento na linha do tempo"
+            emptyDescription: correlationId ? "Nenhum evento com este c\xF3digo de rastreio" : "Nenhum evento relacionado a este lan\xE7amento"
           }));
           wrap.appendChild(timelineSection);
           const actions = document.createElement("div");
           actions.className = "cds-extrato-drawer__actions";
-          if (mov.consignacaoId) {
+          if (consignacaoId) {
             actions.appendChild(Button.create({
               text: "Abrir Consigna\xE7\xE3o",
               variant: "primary",
-              onClick: () => navigate(`/consignacoes/${mov.consignacaoId}/prestacao`)
+              onClick: () => navigate(`/consignacoes/${consignacaoId}/prestacao`)
             }));
             actions.appendChild(Button.create({
               text: "Conta Corrente",
               variant: "secondary",
-              onClick: () => navigate(`/consignacoes/${mov.consignacaoId}/prestacao/conta-corrente`)
+              onClick: () => navigate(`/consignacoes/${consignacaoId}/prestacao/conta-corrente`)
             }));
           }
           if (this.page.clienteId) {
@@ -98098,7 +100017,8 @@ ${lines.join("\n")}
         ALTERACAO_LIMITE: "Altera\xE7\xE3o Limite",
         REABERTURA_PRESTACAO: "Fechamento reaberto",
         ENCERRAMENTO: "Encerramento",
-        CANCELAMENTO: "Cancelamento"
+        CANCELAMENTO: "Cancelamento",
+        PERFIL_CRIADO: "Perfil criado"
       };
       function pick(obj, path) {
         if (!obj || !path) return void 0;
@@ -98114,30 +100034,31 @@ ${lines.join("\n")}
         return null;
       }
       function buildResumoFinanceiro(contaCorrente = {}, saldos = {}, situacao = {}) {
-        const sources = [contaCorrente, saldos, situacao, contaCorrente.totais || {}];
+        const sources = [situacao, contaCorrente, contaCorrente.totais || {}, saldos];
         return {
           saldoInicial: readValue(sources, ["saldoInicial"]),
-          entradas: readValue(sources, ["entradas", "vendas", "totalEntradas"]),
+          entradas: readValue(sources, ["entradas", "vendas", "totalEntradas", "entregas"]),
           saidas: readValue(sources, ["saidas", "totalSaidas"]),
-          recebimentos: readValue(sources, ["pagamentos", "recebimentos", "valorRecebido"]),
+          recebimentos: readValue(sources, ["pagamentos", "recebimentos", "valorRecebido", "saldoRecebido"]),
           perdas: readValue(sources, ["perdas", "valorPerdido", "saldoPerdido"]),
           cortesias: readValue(sources, ["cortesias", "valorCortesia", "saldoCortesia"]),
           devolucoes: readValue(sources, ["devolucoes", "saldoDevolvido", "valorDevolvido"]),
-          saldoAtual: readValue(sources, ["saldoAtual", "saldo", "saldoEmAberto"]),
+          saldoAtual: readValue(sources, ["saldoDevedor", "saldoAtual", "saldo", "saldoEmAberto"]),
           limiteComercial: readValue(sources, ["limiteComercial", "limite"]),
           limiteUtilizado: readValue(sources, ["limiteUtilizado", "limiteConsumido"]),
-          limiteDisponivel: readValue(sources, ["limiteDisponivel"])
+          limiteDisponivel: readValue(sources, ["limiteDisponivel", "creditoDisponivel"])
         };
       }
       function mapExtratoRow(mov) {
         const tipo = mov.tipo || mov.tipoMovimentacao || "-";
+        const descricao = mov.descricao || mov.descricaoResumo || mov.motivo || mov.observacao || TIPO_LABELS[tipo] || "-";
         return {
           id: mov.id,
           data: mov.data || mov.dataMovimentacao,
-          documento: mov.documento || mov.documentoNumero || mov.consignacaoId || "-",
+          documento: mov.documento || mov.documentoNumero || (mov.consignacaoId != null ? `Consigna\xE7\xE3o #${mov.consignacaoId}` : "-"),
           tipo,
           tipoLabel: TIPO_LABELS[tipo] || tipo,
-          descricao: mov.descricao || mov.descricaoResumo || mov.observacao || "-",
+          descricao,
           entrada: mov.entrada ?? mov.valorEntrada ?? (mov.direcao === "ENTRADA" ? mov.valor : null),
           saida: mov.saida ?? mov.valorSaida ?? (mov.direcao === "SAIDA" ? mov.valor : null),
           valor: mov.valor,
@@ -98152,9 +100073,32 @@ ${lines.join("\n")}
       }
       function buildExtrato(contaCorrente = {}, historico = {}) {
         const lancamentos = contaCorrente.lancamentos || [];
+        if (lancamentos.length) {
+          return lancamentos.map(mapExtratoRow);
+        }
         const movimentacoes = Array.isArray(historico) ? historico : historico.movimentacoes || historico.registros || historico.items || [];
-        const source = lancamentos.length ? lancamentos : movimentacoes;
-        return source.map(mapExtratoRow);
+        const TIPOS_EXTRATO = /* @__PURE__ */ new Set([
+          "ENTREGA",
+          "DEVOLUCAO",
+          "VENDA_PRESTACAO",
+          "VENDA",
+          "PERDA",
+          "CORTESIA",
+          "PAGAMENTO",
+          "TRANSFERENCIA_SAIDA",
+          "TRANSFERENCIA_ENTRADA",
+          "FECHAMENTO_PRESTACAO",
+          "REABERTURA_PRESTACAO",
+          "ENCERRAMENTO",
+          "CANCELAMENTO",
+          "AJUSTE_VALOR",
+          "ESTORNO"
+        ]);
+        return movimentacoes.filter((m4) => {
+          const tipo = m4.tipo || m4.tipoMovimentacao;
+          if (m4.ledger === "PERFIL") return false;
+          return TIPOS_EXTRATO.has(tipo);
+        }).map(mapExtratoRow);
       }
       function buildIndicadores(indicadores = {}, contaCorrente = {}, saldos = {}) {
         const merged = { ...indicadores, ...saldos, ...contaCorrente };
@@ -98510,6 +100454,11 @@ ${lines.join("\n")}
         getBackButtonLabel
       } = require_cliente360Context();
       var { ensureStyles: ensureContaCorrenteStyles } = require_styles();
+      var {
+        emptyState,
+        notifySuccess,
+        notifyError
+      } = require_messages();
       var REFRESH_INTERVAL_MS = 6e4;
       var ContaCorrentePage = class _ContaCorrentePage {
         constructor(routeParams = {}, routeQuery = {}) {
@@ -98805,16 +100754,22 @@ ${lines.join("\n")}
           }
           const params = this._getApiParams();
           try {
+            const contaCorrenteParams = {
+              consignacaoId: params.consignacaoId,
+              clienteId: params.clienteId,
+              dataInicio: params.dataInicio,
+              dataFim: params.dataFim
+            };
             const requests = [
               this.projectionApi.listarMovimentacoes(params),
               this.projectionApi.obterProjecaoSaldos(params),
               this.projectionApi.obterProjecaoIndicadores(params),
               this.projectionApi.obterProjecaoDashboard({ clienteId: this.clienteId }),
               this.projectionApi.obterProjecaoInsights({ clienteId: this.clienteId, ...params }),
-              this.projectionApi.listarTimeline({ ...params, limite: 15 })
+              this.projectionApi.listarTimeline({ ...params, limite: 15 }),
+              this.projectionApi.obterProjecaoContaCorrente(contaCorrenteParams)
             ];
             if (this.consignacaoId) {
-              requests.push(this.projectionApi.obterProjecaoContaCorrente(params));
               requests.push(this.api.obterConsignacao(this.consignacaoId).catch(() => ({})));
             }
             if (this.clienteId) {
@@ -98827,15 +100782,16 @@ ${lines.join("\n")}
             const dashboard = results[3];
             const insights = results[4];
             const timeline = results[5];
-            let contaCorrente = {};
+            const contaCorrente = results[6] || {};
             let consignacao = {};
             let situacao = {};
+            let cursor = 7;
             if (this.consignacaoId) {
-              contaCorrente = results[6] || {};
-              consignacao = results[7] || {};
-              if (this.clienteId) situacao = results[8] || {};
-            } else if (this.clienteId) {
-              situacao = results[6] || {};
+              consignacao = results[cursor] || {};
+              cursor += 1;
+            }
+            if (this.clienteId) {
+              situacao = results[cursor] || {};
             }
             if (consignacao.clienteId) this.clienteId = consignacao.clienteId;
             if (consignacao.cliente) this.clienteNome = consignacao.cliente;
@@ -99040,7 +100996,7 @@ ${lines.join("\n")}
           title.textContent = "Alertas";
           host.appendChild(title);
           if (!(this.view.alertas || []).length) {
-            host.appendChild(EmptyState.create({ title: "Sem alertas", description: "Nenhum alerta financeiro" }));
+            host.appendChild(EmptyState.create(emptyState("CONTA_CORRENTE_ALERTAS")));
             return;
           }
           (this.view.alertas || []).forEach((a3) => {
@@ -99061,7 +101017,7 @@ ${lines.join("\n")}
           host.appendChild(title);
           const items = this.view.pendencias || [];
           if (!items.length) {
-            host.appendChild(EmptyState.create({ title: "Sem pend\xEAncias", description: "Nenhuma pend\xEAncia financeira" }));
+            host.appendChild(EmptyState.create(emptyState("CONTA_CORRENTE_PENDENCIAS")));
             return;
           }
           host.appendChild(Table.create({
@@ -99185,7 +101141,7 @@ ${lines.join("\n")}
             ...rows.map((r2) => r2.map((v3) => `"${String(v3 ?? "").replace(/"/g, '""')}"`).join(","))
           ].join("\n");
           this._download(csv, "extrato-conta-corrente.csv", "text/csv;charset=utf-8;");
-          notify("Planilha exportada.", "success");
+          notifySuccess("PLANILHA_EXPORTADA");
         }
         _exportExcel() {
           const headers = ["Data", "Documento", "Tipo", "Descri\xE7\xE3o", "Entrada", "Sa\xEDda", "Saldo"];
@@ -99199,7 +101155,7 @@ ${lines.join("\n")}
             r2.saldoProjetado
           ]);
           exportToXlsx(headers, rows, "extrato-conta-corrente.xlsx");
-          notify("Excel exportado.", "success");
+          notifySuccess("EXCEL_EXPORTADO");
         }
         _exportPdf() {
           const headers = ["Data", "Documento", "Tipo", "Descri\xE7\xE3o", "Entrada", "Sa\xEDda", "Saldo"];
@@ -99218,7 +101174,8 @@ ${lines.join("\n")}
             rows,
             filename: "extrato-conta-corrente.pdf"
           });
-          notify(result.ok ? "PDF exportado." : result.message || "N\xE3o foi poss\xEDvel exportar o PDF.", result.ok ? "success" : "error");
+          if (result.ok) notifySuccess("PDF_EXPORTADO");
+          else notifyError("PDF_EXPORTAR", result);
         }
         _download(content, filename, mime) {
           const blob = new Blob([content], { type: mime });
@@ -101089,6 +103046,12 @@ ${rows.join("\n")}`;
         routeWithActiveContext,
         getBackButtonLabel
       } = require_cliente360Context();
+      var {
+        ConfirmMessages,
+        emptyState,
+        notifySuccess,
+        notifyInfo
+      } = require_messages();
       var REFRESH_INTERVAL_MS = 6e4;
       function getOperadorNome() {
         try {
@@ -101388,7 +103351,7 @@ ${rows.join("\n")}`;
           section.appendChild(title);
           const items = this.filteredView.proximasAcoes || [];
           if (!items.length) {
-            section.appendChild(EmptyState.create({ title: "Tudo em dia", description: "Nenhuma a\xE7\xE3o priorit\xE1ria no momento" }));
+            section.appendChild(EmptyState.create(emptyState("PENDENCIAS")));
             return;
           }
           const list = document.createElement("div");
@@ -101536,17 +103499,23 @@ ${rows.join("\n")}`;
           else if (item.clienteId) navigate(`/clientes/${item.clienteId}`);
         }
         async _resolveAlerta(alerta) {
-          const ok = await confirmDialog({ title: "Resolver alerta", message: `Marcar "${alerta.descricao}" como resolvido?` });
+          const ok = await confirmDialog({
+            ...ConfirmMessages.RESOLVER_ALERTA,
+            message: `Marcar "${alerta.descricao}" como resolvido?`
+          });
           if (!ok) return;
           savePendenciaAction("resolved", alerta, { responsavel: getOperadorNome() });
-          notify("Alerta resolvido", "success");
+          notifySuccess("PENDENCIA_RESOLVIDA");
           this._loadData(true);
         }
         async _ignoreAlerta(alerta) {
-          const ok = await confirmDialog({ title: "Ignorar alerta", message: `Ignorar "${alerta.descricao}"?` });
+          const ok = await confirmDialog({
+            ...ConfirmMessages.IGNORAR_ALERTA,
+            message: `Ignorar "${alerta.descricao}"?`
+          });
           if (!ok) return;
           savePendenciaAction("ignored", alerta);
-          notify("Alerta ignorado", "info");
+          notifySuccess("PENDENCIA_IGNORADA");
           this._loadData(true);
         }
         async _deferAlerta(alerta) {
@@ -101555,20 +103524,20 @@ ${rows.join("\n")}`;
           const until = /* @__PURE__ */ new Date();
           until.setDate(until.getDate() + Number(dias || 1));
           savePendenciaAction("deferred", alerta, { until: until.toISOString() });
-          notify(`Alerta adiado at\xE9 ${until.toLocaleDateString("pt-BR")}`, "info");
+          notifyInfo("PENDENCIA_ADIADA", until.toLocaleDateString("pt-BR"));
           this._loadData(true);
         }
         async _delegateAlerta(alerta) {
           const para = await promptDialog({ title: "Delegar alerta", message: "Delegar para (nome do operador):", defaultValue: "" });
           if (!para) return;
           savePendenciaAction("delegated", alerta, { para });
-          notify(`Alerta delegado para ${para}`, "success");
+          notifySuccess("PENDENCIA_DELEGADA");
         }
         async _observeAlerta(alerta) {
           const obs = await promptDialog({ title: "Observa\xE7\xE3o", message: "Registrar observa\xE7\xE3o:", defaultValue: alerta.observacao || "" });
           if (obs == null) return;
           savePendenciaAction("observation", alerta, { observacao: obs });
-          notify("Observa\xE7\xE3o registrada", "success");
+          notifySuccess("OBSERVACAO_REGISTRADA");
           this._loadData(true);
         }
         _startAutoRefresh() {
@@ -102836,6 +104805,13 @@ ${rows.join("\n")}`;
         routeWithActiveContext,
         getBackButtonLabel
       } = require_cliente360Context();
+      var {
+        ConfirmMessages,
+        emptyState,
+        notifySuccess,
+        notifyWarning,
+        notifyInfo
+      } = require_messages();
       var REFRESH_INTERVAL_MS = 6e4;
       var PlaybooksPage = class _PlaybooksPage {
         constructor(routeParams = {}, routeQuery = {}) {
@@ -103078,7 +105054,7 @@ ${rows.join("\n")}`;
           s3.innerHTML = "<h2>Guias Operacionais</h2>";
           const list = this.filteredView.playbooks || [];
           if (!list.length) {
-            s3.appendChild(EmptyState.create({ title: "Nenhum guia operacional", description: "Ajuste os filtros" }));
+            s3.appendChild(EmptyState.create(emptyState("PLAYBOOKS")));
             return;
           }
           s3.appendChild(Table.create({
@@ -103205,10 +105181,13 @@ ${rows.join("\n")}`;
           }));
         }
         async _startPb(p3) {
-          const ok = await confirmDialog({ title: "Iniciar guia operacional", message: `Iniciar "${p3.nome}"? Nenhuma a\xE7\xE3o ser\xE1 executada automaticamente.` });
+          const ok = await confirmDialog({
+            ...ConfirmMessages.INICIAR_PLAYBOOK,
+            message: `Iniciar "${p3.nome}"? Nenhuma a\xE7\xE3o ser\xE1 executada automaticamente.`
+          });
           if (!ok) return;
           startPlaybook(p3, { clienteId: this.filters.clienteId });
-          notify("Guia operacional iniciado", "success");
+          notifySuccess("PLAYBOOK_INICIADO");
           await this._loadData(true);
           this._openFluxo(this.view.playbooks.find((x2) => x2.id === p3.id) || p3);
         }
@@ -103218,13 +105197,13 @@ ${rows.join("\n")}`;
         }
         async _completeStep(p3, passoId) {
           updateChecklistItem(p3.id, passoId, "CONCLUIDO");
-          notify("Passo conclu\xEDdo", "success");
+          notifySuccess("PLAYBOOK_PASSO_CONCLUIDO");
           await this._loadData(true);
           this.activePlaybook = this.view.playbooks.find((x2) => x2.id === p3.id);
           this._renderAll();
         }
         async _ignoreStep(p3, passoId) {
-          const ok = await confirmDialog({ title: "Ignorar passo", message: "Ignorar este passo?" });
+          const ok = await confirmDialog(ConfirmMessages.IGNORAR_PASSO);
           if (!ok) return;
           updateChecklistItem(p3.id, passoId, "IGNORADO");
           await this._loadData(true);
@@ -103235,7 +105214,7 @@ ${rows.join("\n")}`;
           const obs = await promptDialog({ title: "Observa\xE7\xE3o", message: "Registrar observa\xE7\xE3o:", defaultValue: p3.observacoes || "" });
           if (obs == null) return;
           saveInstance(p3.id, { observacoes: obs });
-          notify("Observa\xE7\xE3o salva", "info");
+          notifyInfo("PLAYBOOK_OBS_SALVA");
         }
         async _openDrawer(p3) {
           if (this.activeDrawer) {
@@ -103253,7 +105232,7 @@ ${rows.join("\n")}`;
         _export(format) {
           const rows = this.filteredView.playbooks || [];
           if (!rows.length) {
-            notify("Nada para exportar", "warning");
+            notifyWarning("NADA_PARA_EXPORTAR");
             return;
           }
           const header = ["C\xF3digo", "Nome", "Categoria", "Progresso", "Status"];
@@ -103266,7 +105245,7 @@ ${rows.join("\n")}`;
             a3.download = `playbooks.${format === "excel" ? "csv" : "csv"}`;
             a3.click();
           } else {
-            notify("Exporta\xE7\xE3o em PDF dispon\xEDvel em breve \u2014 use planilha", "info");
+            notifyInfo("EXPORT_PDF_EM_BREVE");
           }
         }
         _startAutoRefresh() {
@@ -103573,6 +105552,13 @@ ${rows.join("\n")}`;
         loadHistory
       } = require_workflowMappers();
       var { notify, navigate, confirmDialog, promptDialog } = require_operacional();
+      var {
+        ConfirmMessages,
+        emptyState,
+        notifySuccess,
+        notifyWarning,
+        notifyInfo
+      } = require_messages();
       var REFRESH_INTERVAL_MS = 6e4;
       var WorkflowCenterPage = class _WorkflowCenterPage {
         constructor(routeParams = {}, routeQuery = {}) {
@@ -103830,7 +105816,7 @@ ${rows.join("\n")}`;
           s3.innerHTML = "<h2>Fila Operacional</h2>";
           const list = this.filteredView.fila || [];
           if (!list.length) {
-            s3.appendChild(EmptyState.create({ title: "Fila vazia", description: "Nenhum processo no escopo atual" }));
+            s3.appendChild(EmptyState.create(emptyState("WORKFLOW_FILA")));
             return;
           }
           s3.appendChild(Table.create({
@@ -103999,7 +105985,7 @@ ${rows.join("\n")}`;
           s3.innerHTML = "<h2>Hist\xF3rico Local</h2>";
           const hist = loadHistory().slice(0, 20);
           if (!hist.length) {
-            s3.appendChild(EmptyState.create({ title: "Hist\xF3rico vazio", description: "A\xE7\xF5es locais aparecer\xE3o aqui" }));
+            s3.appendChild(EmptyState.create(emptyState("WORKFLOW_HISTORICO")));
             return;
           }
           s3.appendChild(Table.create({
@@ -104041,7 +106027,7 @@ ${rows.join("\n")}`;
             variant: "secondary",
             onClick: () => {
               assignResponsavel(workflow.id, null);
-              notify("Respons\xE1vel atualizado", "success");
+              notifySuccess("WORKFLOW_RESPONSAVEL");
               this._loadData(true);
             }
           }));
@@ -104050,7 +106036,7 @@ ${rows.join("\n")}`;
             variant: "primary",
             onClick: () => {
               updateWorkflowStatus(workflow.id, "emAndamento", "EM_ANDAMENTO");
-              notify("Status atualizado", "success");
+              notifySuccess("WORKFLOW_STATUS");
               this._loadData(true);
             }
           }));
@@ -104059,10 +106045,10 @@ ${rows.join("\n")}`;
             variant: "success",
             onClick: async () => {
               var _a2;
-              const ok = await confirmDialog("Concluir este processo?");
+              const ok = await confirmDialog(ConfirmMessages.CONCLUIR_WORKFLOW);
               if (!ok) return;
               updateWorkflowStatus(workflow.id, "concluido", "CONCLUIDO");
-              notify("Processo conclu\xEDdo", "success");
+              notifySuccess("WORKFLOW_CONCLUIDO");
               this._loadData(true);
               if ((_a2 = this.activeDrawer) == null ? void 0 : _a2.close) this.activeDrawer.close();
             }
@@ -104072,12 +106058,12 @@ ${rows.join("\n")}`;
         _export(format) {
           const rows = exportRows(this.filteredView);
           if (!rows.length) {
-            notify("Nada para exportar", "warning");
+            notifyWarning("NADA_PARA_EXPORTAR");
             return;
           }
           if (format === "csv") downloadCsv(rows);
           else if (format === "excel") downloadExcelPlaceholder(rows);
-          else notify("Exporta\xE7\xE3o PDF em breve", "info");
+          else notifyInfo("EXPORT_PDF_EM_BREVE");
         }
         _startAutoRefresh() {
           if (this.refreshTimer) clearInterval(this.refreshTimer);
@@ -104997,6 +106983,7 @@ ${rows.join("\n")}`;
       var ConsignacoesPage = require_Consignacoes();
       var NovaConsignacaoPage = require_NovaConsignacao();
       var EntregaConsignacaoPage = require_EntregaConsignacao();
+      var ComprovanteEntregaPage = require_ComprovanteEntrega();
       var PrestacaoContasPage = require_PrestacaoContas();
       var PrestacaoLocatorPage = require_PrestacaoLocator();
       var PerfilComercialPage = require_PerfilComercial();
@@ -105047,6 +107034,12 @@ ${rows.join("\n")}`;
             throw new Error("Informe o ID da consigna\xE7\xE3o para acessar a entrega.");
           }
           return EntregaConsignacaoPage.create(params.id, query);
+        },
+        ComprovanteEntrega: (params, query) => {
+          if (!params || !params.id) {
+            throw new Error("Informe o ID da consigna\xE7\xE3o para acessar o comprovante.");
+          }
+          return ComprovanteEntregaPage.create(params.id, query);
         },
         PrestacaoLocator: (_params, query) => PrestacaoLocatorPage.create({}, query),
         Prestacao: (params, query) => {
@@ -105491,10 +107484,10 @@ if (typeof MotorComercialBundle !== "undefined") { window.MotorComercial = Motor
 /*__CDS_BUILD_INFO_START__*/
 
 (function (global) {
-  var info = {"module":"motor-comercial","version":"1.0.3","sprint":"UX-10","buildTime":"2026-07-17 07:49:13","hash":"422D62C244692B107E1C060E01DF9B0DC9CD1DCA6685B34718A13404CBB1AE7C","ambiente":"development"};
+  var info = {"module":"motor-comercial","version":"1.0.3","sprint":"UX-10","buildTime":"2026-08-06 12:14:41","hash":"3A1FDD8D2C98CAA694E49B5694E86B6844870EA181156E00473976E21EC25B38","ambiente":"development"};
   global.CDS_BUILD = info;
   if (typeof console !== "undefined" && console.info) {
-    console.info("\n================================================\nCDS Sistemas\nMotor Comercial\nSprint\nUX-10\nBuild\n2026-07-17 07:49:13\nHash\n422D62C244692B107E1C060E01DF9B0DC9CD1DCA6685B34718A13404CBB1AE7C\n================================================\n");
+    console.info("\n================================================\nCDS Sistemas\nMotor Comercial\nSprint\nUX-10\nBuild\n2026-08-06 12:14:41\nHash\n3A1FDD8D2C98CAA694E49B5694E86B6844870EA181156E00473976E21EC25B38\n================================================\n");
   }
 })(typeof window !== "undefined" ? window : globalThis);
 

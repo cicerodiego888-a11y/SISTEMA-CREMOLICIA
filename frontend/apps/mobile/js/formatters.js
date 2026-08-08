@@ -102,18 +102,38 @@ export function normalizeText(value) {
  */
 export function resolveStatus(status) {
   const raw = asText(status, '');
-  const s = raw.toUpperCase();
+  const s = raw.toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
-  if (/CANCEL/.test(s)) return { key: 'cancelada', label: raw || 'Cancelada', tone: 'danger', icon: 'warning' };
+  // RCM-04.B — badges comerciais padronizados (ordem específica antes dos genéricos)
+  if (/CANCEL/.test(s)) return { key: 'cancelada', label: 'CANCELADA', tone: 'danger', icon: 'warning' };
+  if (/FINALIZ|ACERTAD|QUITAD|ENCERRAD/.test(s) && !/PREST/.test(s)) {
+    return { key: 'finalizada', label: 'FINALIZADA', tone: 'ok', icon: 'check' };
+  }
+  if (/PRESTACAO.?PEND|PRESTACAO.?ABERT|FECHAMENTO.?EM.?ABERT/.test(s)) {
+    return { key: 'prestacao_pendente', label: 'PRESTAÇÃO PENDENTE', tone: 'warn', icon: 'warning' };
+  }
+  if (/^ENTREGUE$|STATUS.?ENTREGUE/.test(s) || s === 'ENTREGUE') {
+    return { key: 'entregue', label: 'ENTREGUE', tone: 'primary', icon: 'check' };
+  }
+  if (/EM.?ENTREGA/.test(s)) {
+    return { key: 'em_entrega', label: 'EM ENTREGA', tone: 'primary', icon: 'truck' };
+  }
+  if (/PREPARAC/.test(s)) {
+    return { key: 'preparacao', label: 'PREPARAÇÃO', tone: 'primary', icon: 'box' };
+  }
+  if (/RASCUNH/.test(s)) {
+    return { key: 'rascunho', label: 'RASCUNHO', tone: 'neutral', icon: 'more' };
+  }
+
   if (/QUIT|PAGO|RECEBID|LIQUID/.test(s)) return { key: 'quitada', label: raw || 'Quitada', tone: 'ok', icon: 'check' };
-  if (/FECH|ENCERR|CONCLU|FINAL|ENTREG|OK|ATIVA.?FECH/.test(s)) {
+  if (/FECH|ENCERR|CONCLU|FINAL/.test(s)) {
     return { key: 'encerrada', label: raw || 'Encerrada', tone: 'ok', icon: 'check' };
   }
   if (/ATIVO|ATIVA|OK/.test(s)) return { key: 'ativa', label: raw || 'Ativa', tone: 'ok', icon: 'check' };
-  if (/BAIXO|CRITICO|CRÍTICO/.test(s)) {
+  if (/BAIXO|CRITICO/.test(s)) {
     return { key: 'baixo', label: raw || 'Baixo', tone: 'warn', icon: 'warning' };
   }
-  if (/PEND|ABERT|ANDAMENT|AGUARD|RASCUNH|EM_/.test(s)) {
+  if (/PEND|ABERT|ANDAMENT|AGUARD|EM_/.test(s)) {
     return { key: 'pendente', label: raw || 'Pendente', tone: 'warn', icon: 'warning' };
   }
   if (/ATRAS|VENCID|CRIT|BLOQ/.test(s)) {

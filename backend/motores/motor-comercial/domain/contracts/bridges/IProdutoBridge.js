@@ -13,7 +13,7 @@ class IProdutoBridge {
   }
 
   /** @abstract @returns {Promise<Object|null>} */
-  async buscarPorId(_produtoId) {
+  async buscarPorId(_produtoId, _opts = {}) {
     throw new Error(`${this.constructor.name} deve implementar buscarPorId()`);
   }
 

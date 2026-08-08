@@ -74,7 +74,10 @@ class ResultHttpMapper {
    */
   static mapCreated(result) {
     const response = this.map(result);
-    response._statusCode = 201;
+    // Falhas mantêm o status do DomainErrorMapper — nunca forçar 201 em erro
+    if (!this._isFailure(result) && response.success !== false) {
+      response._statusCode = 201;
+    }
     return response;
   }
 

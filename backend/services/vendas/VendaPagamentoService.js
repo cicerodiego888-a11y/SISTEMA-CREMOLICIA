@@ -11,65 +11,272 @@ const lotesService = require('../lotesService');
 const { normalizarTipoVendaItem } = require('../vendaUnidadeHelpers');
 const { separarItensDistribuidos } = require('../fiscalNaoFiscalService');
 const OrquestradorPagamento = require('../OrquestradorPagamento');
+const MidpService = require('../../motores/midp/MidpService');
 const { distribuirItemVenda, parseVendaFiscalFlag } = require('../distribuidorEstoqueVenda');
 const VendaFinanceiroService = require('./VendaFinanceiroService');
 const VendaFiscalService = require('./VendaFiscalService');
+const MotorEstoque = require('../../motores/motor-estoque');
+const mcc = require('../../motores/motor-conversao-comercial');
+const { publicarEventoPdvArMfe } = require('../../motores/motor-financeiro/adapters');
+const { obterMotor, FeatureFlag } = require('../../motores/motor-financeiro');
 
 const { agoraLocalBrasil, validarSomaPagamentosVenda } = VendaFinanceiroService;
 const { emitirFiscalSeSolicitado, responderVendaComFiscal } = VendaFiscalService;
+const {
+  aplicarDescontoProporcionalTotais,
+  montarFiscalOperacionalPagamento,
+  obterTotalFiscalFinal,
+  somarPagamentos,
+  logAuditoriaPagamentoFiscal
+} = require('./TotalFiscalFinal');
 
+/**
+ * RC4.31 — totais brutos do motor fiscal → totais líquidos de pagamento (vNF).
+ * Itens permanecem brutos; apenas o alvo MIDP/orquestrador usa o líquido.
+ */
+function resolverTotaisPagamentoComDesconto(fiscalOperacional, body = {}) {
+  const brutoFiscal = Number(fiscalOperacional.totalFiscal || 0);
+  const brutoNaoFiscal = Number(fiscalOperacional.totalNaoFiscal || 0);
+  const desconto = Number(body.desconto || 0);
+  const acrescimo = Number(body.acrescimo || body.acrescimo_total || 0);
+  const totaisLiquidos = aplicarDescontoProporcionalTotais({
+    valorFiscal: brutoFiscal,
+    valorNaoFiscal: brutoNaoFiscal,
+    desconto,
+    acrescimo
+  });
+  const valorFiscalPagamento = totaisLiquidos.valorFiscal;
+  const valorNaoFiscalPagamento = totaisLiquidos.valorNaoFiscal;
+  const totalFiscalFinal = obterTotalFiscalFinal({
+    valorProdutosFiscal: brutoFiscal,
+    descontoFiscal: totaisLiquidos.descontoFiscal,
+    acrescimos: arredondarAcrescimoFiscal(brutoFiscal, brutoNaoFiscal, acrescimo)
+  });
+  const fiscalOperacionalPagamento = montarFiscalOperacionalPagamento(
+    fiscalOperacional,
+    {
+      valorFiscal: valorFiscalPagamento,
+      valorNaoFiscal: valorNaoFiscalPagamento
+    }
+  );
+  const valorPago = somarPagamentos(body.pagamentos || []);
+
+  logAuditoriaPagamentoFiscal({
+    classe: 'VendaPagamentoService',
+    metodo: 'resolverTotaisPagamentoComDesconto',
+    valorProdutos: brutoFiscal + brutoNaoFiscal,
+    valorDesconto: desconto,
+    valorLiquido: valorFiscalPagamento + valorNaoFiscalPagamento,
+    valorFiscal: valorFiscalPagamento,
+    valorPago,
+    valorComparado: totalFiscalFinal,
+    saldoFiscal: null,
+    suficiente: null
+  });
+
+  return {
+    brutoFiscal,
+    brutoNaoFiscal,
+    totalFiscal: valorFiscalPagamento,
+    totalNaoFiscal: valorNaoFiscalPagamento,
+    totalFiscalFinal: valorFiscalPagamento,
+    fiscalOperacionalPagamento,
+    totaisLiquidos,
+    // PRESERVAR_DINHEIRO com itens brutos ignora o líquido e recria o fiscal cheio.
+    // Com desconto global, MIDP deve distribuir só pelos totais líquidos (sem itens).
+    omitirItensNoMidp: Number(desconto || 0) > 0.009
+  };
+}
+
+function arredondarAcrescimoFiscal(brutoFiscal, brutoNaoFiscal, acrescimo) {
+  const total = Number(brutoFiscal || 0) + Number(brutoNaoFiscal || 0);
+  const acres = Number(acrescimo || 0);
+  if (!(total > 0) || !(acres > 0)) return 0;
+  return Number(((acres * Number(brutoFiscal || 0)) / total).toFixed(2));
+}
+
+const pdvOperacional = mcc.pdvOperacional || new mcc.PdvVendaOperacionalService({ mcc: mcc.motor });
+
+function extrairQuantidadeBolasItem(item = {}) {
+  const n = Number(item.quantidade_bolas);
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
+}
+
+function extrairSaboresItem(item = {}) {
+  if (Array.isArray(item.sabores) && item.sabores.length) return item.sabores;
+  if (Array.isArray(item.casquinha_sabores) && item.casquinha_sabores.length) {
+    return item.casquinha_sabores;
+  }
+  return [];
+}
+
+function persistirSaboresCasquinha(vendaItemId, item, callback) {
+  const sabores = extrairSaboresItem(item);
+  if (!sabores.length) {
+    callback(null);
+    return;
+  }
+  try {
+    const svc = require('../../modules/comercial/casquinha/CasquinhaSaboresService');
+    svc.gravarSaboresDoItem(vendaItemId, sabores)
+      .then(() => callback(null))
+      .catch((err) => callback(err));
+  } catch (err) {
+    callback(err);
+  }
+}
+
+/**
+ * RCM-05.9 — persiste histórico do kit e baixa estoque dos componentes
+ * (nunca do produto kit). Se não for kit, baixa o produto normalmente.
+ */
+function persistirKitEBaixarEstoque(
+  pularBaixaEstoque,
+  vendaItemId,
+  item,
+  quantidadeFiscal,
+  quantidadeNaoFiscal,
+  callback
+) {
+  let KitVendaService;
+  try {
+    KitVendaService = require('../../modules/comercial/kits/KitVendaService');
+  } catch (_) {
+    return reduzirEstoqueDistribuidoRespeitandoPolitica(
+      pularBaixaEstoque,
+      vendaItemId,
+      item.produto_id,
+      quantidadeFiscal,
+      quantidadeNaoFiscal,
+      callback
+    );
+  }
+
+  KitVendaService.obterKitDaVendaItem(item)
+    .then(async (kit) => {
+      if (!kit) {
+        reduzirEstoqueDistribuidoRespeitandoPolitica(
+          pularBaixaEstoque,
+          vendaItemId,
+          item.produto_id,
+          quantidadeFiscal,
+          quantidadeNaoFiscal,
+          callback
+        );
+        return;
+      }
+
+      const componentes = KitVendaService.calcularBaixaEstoque(
+        kit,
+        item.quantidade,
+        item.kit_itens || item.itens_kit || null
+      );
+      await KitVendaService.gravarHistorico(vendaItemId, kit, componentes);
+
+      if (pularBaixaEstoque || !componentes.length) {
+        callback(null);
+        return;
+      }
+
+      const totalFiscalKit = Number(quantidadeFiscal || 0);
+      const totalNaoFiscalKit = Number(quantidadeNaoFiscal || 0);
+
+      let idx = 0;
+      const proximo = () => {
+        if (idx >= componentes.length) {
+          callback(null);
+          return;
+        }
+        const c = componentes[idx++];
+        const qtdComp = Number(c.quantidade || 0);
+        if (!(qtdComp > 0)) {
+          proximo();
+          return;
+        }
+        const totalQtdKit = totalFiscalKit + totalNaoFiscalKit;
+        let qFiscalComp = 0;
+        let qNaoFiscalComp = qtdComp;
+        if (totalQtdKit > 0) {
+          qFiscalComp = Number(((qtdComp * totalFiscalKit) / totalQtdKit).toFixed(6));
+          qNaoFiscalComp = Number((qtdComp - qFiscalComp).toFixed(6));
+        }
+
+        reduzirEstoqueDistribuido(
+          vendaItemId,
+          c.produto_id,
+          qFiscalComp,
+          qNaoFiscalComp,
+          (estErr) => {
+            if (estErr) return callback(estErr);
+            proximo();
+          }
+        );
+      };
+      proximo();
+    })
+    .catch((err) => callback(err));
+}
+
+
+/** MFE-05.1 — FEATURE_MFE_PDV_AR */
+function isPdvArBridgeAtivo() {
+  try {
+    return Boolean(obterMotor().featureFlags.isEnabled(FeatureFlag.FEATURE_MFE_PDV_AR));
+  } catch (_) {
+    return false;
+  }
+}
+
+/** Fire-and-forget: nunca bloqueia resposta do PDV */
+function emitirEventoPdvArMfe(operacao) {
+  Promise.resolve(publicarEventoPdvArMfe(db, operacao)).catch((err) => {
+    console.error('[MFE-05.1] emitirEventoPdvArMfe:', err?.message || err);
+  });
+}
+
+/**
+ * PDV-01 — baixa estoque via MotorEstoque.sair (quantidade já em unidade base).
+ * FEFO de lotes permanece como política oficial de consumo de validade.
+ */
 function reduzirEstoqueComFEFO(vendaItemId, produtoId, quantidade, itemFiscal, callback) {
   lotesService.produtoControlaValidade(produtoId, (err, controlaValidade) => {
     if (err) return callback(err);
 
+    const sairMotor = (loteId) => {
+      const qtd = Number(quantidade || 0);
+      if (!(qtd > 0)) return callback(null);
+
+      const fiscal = Number(itemFiscal) === 1;
+      MotorEstoque.sair(db, {
+        produtoId,
+        quantidadeBase: qtd,
+        quantidadeFiscal: fiscal ? qtd : 0,
+        quantidadeNaoFiscal: fiscal ? 0 : qtd,
+        origem: MotorEstoque.OrigemEstoque.PDV,
+        loteId: loteId || null,
+        referenciaTipo: 'venda_item',
+        referenciaId: vendaItemId,
+        motivo: `PDV_SAIDA:venda_item:${vendaItemId}`
+      }).then(() => callback(null)).catch((estErr) => {
+        const e = new Error(estErr?.message || String(estErr));
+        e.status = estErr?.status || 500;
+        e.codigo = estErr?.codigo;
+        callback(e);
+      });
+    };
+
     if (!controlaValidade) {
-      // Produto não controla validade - usar estoque consolidado normal
-      if (Number(itemFiscal) === 1) {
-        db.run(`
-          UPDATE produtos
-          SET
-            saldo_fiscal = saldo_fiscal - ?,
-            estoque_atual = (saldo_fiscal - ?) + saldo_nao_fiscal
-          WHERE id = ?
-        `, [quantidade, quantidade, produtoId], callback);
-      } else {
-        db.run(`
-          UPDATE produtos
-          SET
-            saldo_nao_fiscal = saldo_nao_fiscal - ?,
-            estoque_atual = saldo_fiscal + (saldo_nao_fiscal - ?)
-          WHERE id = ?
-        `, [quantidade, quantidade, produtoId], callback);
-      }
-      return;
+      return sairMotor(null);
     }
 
-    // Produto controla validade - usar FEFO
     lotesService.consumirLotesFEFO(produtoId, quantidade, (consumoErr, consumoLotes) => {
       if (consumoErr) return callback(consumoErr);
 
-      // Registrar quais lotes foram consumidos
       lotesService.registrarConsumoVenda(vendaItemId, consumoLotes, (registroErr) => {
         if (registroErr) return callback(registroErr);
-
-        // Atualizar estoque consolidado e saldos fiscal/não fiscal
-        if (Number(itemFiscal) === 1) {
-          db.run(`
-            UPDATE produtos
-            SET
-              saldo_fiscal = saldo_fiscal - ?,
-              estoque_atual = (saldo_fiscal - ?) + saldo_nao_fiscal
-            WHERE id = ?
-          `, [quantidade, quantidade, produtoId], callback);
-        } else {
-          db.run(`
-            UPDATE produtos
-            SET
-              saldo_nao_fiscal = saldo_nao_fiscal - ?,
-              estoque_atual = saldo_fiscal + (saldo_nao_fiscal - ?)
-            WHERE id = ?
-          `, [quantidade, quantidade, produtoId], callback);
-        }
+        const primeiro = Array.isArray(consumoLotes) ? consumoLotes[0] : null;
+        const loteId = primeiro?.lote_id ?? primeiro?.loteId ?? primeiro?.id ?? null;
+        sairMotor(loteId);
       });
     });
   });
@@ -133,6 +340,94 @@ function isOrigemConsignacao(body = {}) {
   const origem = body.origem || (body.metadata && body.metadata.origem) || '';
   return String(origem).toUpperCase() === 'CONSIGNACAO'
     || String(origem).toUpperCase() === 'CONSIGNACAO_PRESTACAO';
+}
+
+/**
+ * Origem semântica para log MIDP (não altera distribuição).
+ * Todas as origens usam o mesmo MidpService — apenas o rótulo do log muda.
+ */
+function resolverOrigemMidp(body = {}) {
+  const origemRaw = body.origem || (body.metadata && body.metadata.origem) || '';
+  const origem = String(origemRaw || '').toUpperCase().trim();
+
+  if (origem === 'CONSIGNACAO' || origem === 'CONSIGNACAO_PRESTACAO') {
+    return 'CONSIGNACAO';
+  }
+  if (origem === 'COMERCIAL' || origem === 'VENDA_COMERCIAL') {
+    return 'COMERCIAL';
+  }
+  if (origem === 'PEDIDO' || origem === 'PEDIDO_FATURADO') {
+    return 'PEDIDO';
+  }
+  if (origem === 'ORCAMENTO' || origem === 'ORCAMENTO_CONVERTIDO') {
+    return 'ORCAMENTO';
+  }
+  if (origem === 'PDV' || origem === '') {
+    return origem === 'PDV' ? 'PDV' : 'PDV';
+  }
+  return origem || 'PDV';
+}
+
+/**
+ * Único ponto de chamada à distribuição de meios (MIDP).
+ * VendaPagamentoService nunca acessa DistribuidorPagamento diretamente.
+ */
+function distribuirPagamentosMidp({
+  valorFiscal,
+  valorNaoFiscal,
+  pagamentos,
+  formaPagamentoPadrao,
+  origem,
+  fiscalOperacional,
+  itens
+}) {
+  return MidpService.distribuir({
+    valorFiscal,
+    valorNaoFiscal,
+    pagamentos: Array.isArray(pagamentos) ? pagamentos : [],
+    formaPagamentoPadrao,
+    origem: origem || 'PDV',
+    fiscalOperacional: fiscalOperacional || null,
+    itens: Array.isArray(itens) ? itens : []
+  });
+}
+
+/**
+ * Aplica ajuste de quantidades/valores fiscais decidido pelo MIDP (PRESERVAR_DINHEIRO).
+ * Não altera o total da venda — apenas move fiscal → não fiscal conforme a decisão.
+ * RCF-07: sempre retorna array NOVO (nunca a mesma referência) — senão
+ * `distribuicaoItens.length = 0` + re-push apaga os itens antes do INSERT.
+ */
+function aplicarDecisaoMidpNosItens(distribuicaoItens, decisao) {
+  const base = Array.isArray(distribuicaoItens) ? distribuicaoItens : [];
+  if (!decisao || !Array.isArray(decisao.itensAjuste) || decisao.itensAjuste.length === 0) {
+    return base.map((item) => ({ ...item }));
+  }
+  return base.map((item, index) => {
+    const adj = decisao.itensAjuste[index];
+    if (!adj) return { ...item };
+    return {
+      ...item,
+      quantidade_fiscal: Number(adj.quantidade_fiscal),
+      quantidade_nao_fiscal: Number(adj.quantidade_nao_fiscal),
+      valor_fiscal: Number(adj.valor_fiscal),
+      valor_nao_fiscal: Number(adj.valor_nao_fiscal)
+    };
+  });
+}
+
+function lerTotaisDecisaoMidp(midpResult, totalFiscal, totalNaoFiscal) {
+  const decisao = midpResult && midpResult.decisao ? midpResult.decisao : null;
+  if (!decisao) {
+    return { totalFiscal, totalNaoFiscal };
+  }
+  const efetivo = decisao.valorFiscalEfetivo != null
+    ? Number(decisao.valorFiscalEfetivo)
+    : Number(decisao.valorFiscalEfetivoProposto);
+  return {
+    totalFiscal: Number.isFinite(efetivo) ? efetivo : totalFiscal,
+    totalNaoFiscal: Number(decisao.valorNaoFiscal != null ? decisao.valorNaoFiscal : totalNaoFiscal)
+  };
 }
 
 function distribuirItemSemBaixaEstoque(item, vendaFiscal) {
@@ -297,31 +592,34 @@ function resolverListaPagamentosPersistencia(recebimentos, pagamentosVenda) {
 
 function inserirLinhasVendaPagamentos(vendaId, lista, formaFallback, totalFallback, tef) {
   if (Array.isArray(lista) && lista.length > 0) {
-    const stmtPagamentos = db.prepare(`
-      INSERT INTO venda_pagamentos (
-        venda_id, forma_pagamento, valor,
-        tef_transacao_id, tef_nsu, tef_autorizacao,
-        tef_bandeira, tef_adquirente,
-        tef_comprovante_cliente, tef_comprovante_estabelecimento
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
+    // Evita db.prepare/finalize dentro de transação (pode travar o event loop do sqlite3)
     lista.forEach((p) => {
-      stmtPagamentos.run(
-        vendaId,
-        p.forma_pagamento,
-        Number(p.valor || 0),
-        p.tef_transacao_id || p.tef?.transacao_id || null,
-        p.nsu || p.tef?.nsu || null,
-        p.autorizacao || p.tef?.autorizacao || null,
-        p.bandeira || p.tef?.bandeira || null,
-        p.adquirente || p.tef?.adquirente || null,
-        p.tef?.comprovante_cliente || null,
-        p.tef?.comprovante_estabelecimento || null
+      db.run(
+        `
+        INSERT INTO venda_pagamentos (
+          venda_id, forma_pagamento, valor,
+          tef_transacao_id, tef_nsu, tef_autorizacao,
+          tef_bandeira, tef_adquirente,
+          tef_comprovante_cliente, tef_comprovante_estabelecimento
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          vendaId,
+          p.forma_pagamento,
+          Number(p.valor || 0),
+          p.tef_transacao_id || p.tef?.transacao_id || null,
+          p.nsu || p.tef?.nsu || null,
+          p.autorizacao || p.tef?.autorizacao || null,
+          p.bandeira || p.tef?.bandeira || null,
+          p.adquirente || p.tef?.adquirente || null,
+          p.tef?.comprovante_cliente || null,
+          p.tef?.comprovante_estabelecimento || null
+        ],
+        (err) => {
+          if (err) console.error('[VENDA] Erro ao inserir venda_pagamentos:', err.message);
+        }
       );
     });
-
-    stmtPagamentos.finalize();
     return;
   }
 
@@ -345,7 +643,10 @@ function inserirLinhasVendaPagamentos(vendaId, lista, formaFallback, totalFallba
       tef?.adquirente || null,
       tef?.comprovante_cliente || null,
       tef?.comprovante_estabelecimento || null
-    ]
+    ],
+    (err) => {
+      if (err) console.error('[VENDA] Erro ao inserir venda_pagamentos (fallback):', err.message);
+    }
   );
 }
 
@@ -701,7 +1002,9 @@ db.all(`
       quantidade_fiscal: resultado.quantidadeFiscal,
       quantidade_nao_fiscal: resultado.quantidadeNaoFiscal,
       valor_fiscal: resultado.valorFiscal,
-      valor_nao_fiscal: resultado.valorNaoFiscal
+      valor_nao_fiscal: resultado.valorNaoFiscal,
+      saldo_fiscal: Number(produto.saldo_fiscal),
+      saldo_nao_fiscal: Number(produto.saldo_nao_fiscal)
     });
   }
 
@@ -735,8 +1038,11 @@ const {
   pagamentos,
   tef,
   valor_fiscal,
-  valor_nao_fiscal
+  valor_nao_fiscal,
+  canal_venda
 } = req.body;
+
+const canalVendaGravar = String(canal_venda || 'VAREJO').trim().toUpperCase() || 'VAREJO';
 
 const pularBaixaEstoque = isPoliticaEstoqueJaBaixado(req.body);
 const origemConsignacao = isOrigemConsignacao(req.body);
@@ -833,7 +1139,10 @@ db.all(`
     nome,
     saldo_fiscal,
     saldo_nao_fiscal,
-    estoque_atual
+    estoque_atual,
+    produto_fracionado,
+    vendido_por_peso,
+    unidade
   FROM produtos
   WHERE id IN (${produtoIds.map(() => '?').join(',')})
 `, produtoIds, (err, produtos) => {
@@ -860,52 +1169,83 @@ db.all(`
     return;
   }
 
-  const distribuicaoItens = [];
+  const usuarioId = req.user?.id || req.usuario?.id || req.body.usuario_id || null;
 
-  for (const item of itens) {
-
-    const produto =
-      produtoMap[item.produto_id];
-
-    if (pularBaixaEstoque) {
-      distribuicaoItens.push(distribuirItemSemBaixaEstoque(item, vendaFiscal));
-      continue;
+  // PDV-01 — MCC converte comercial → base antes de distribuir / baixar estoque
+  (async () => {
+    let itensParaDistribuir = itens;
+    if (!pularBaixaEstoque) {
+      itensParaDistribuir = [];
+      for (const item of itens) {
+        try {
+          const convertido = await pdvOperacional.processarItemVenda(db, {
+            item,
+            usuarioId
+          });
+          itensParaDistribuir.push(convertido);
+        } catch (mccErr) {
+          const status = mccErr?.status || 400;
+          return res.status(status).json({
+            error: mccErr?.message || String(mccErr),
+            codigo: mccErr?.codigo || 'PDV_MCC_CONVERSAO'
+          });
+        }
+      }
     }
 
-    const resultado =
-      distribuirItemVenda(
+    const distribuicaoItens = [];
+
+    for (const item of itensParaDistribuir) {
+      const produto = produtoMap[item.produto_id];
+
+      if (pularBaixaEstoque) {
+        const base = distribuirItemSemBaixaEstoque(item, vendaFiscal);
+        distribuicaoItens.push({
+          ...base,
+          saldo_fiscal: Number(produto.saldo_fiscal),
+          saldo_nao_fiscal: Number(produto.saldo_nao_fiscal),
+          produto_fracionado: produto.produto_fracionado,
+          vendido_por_peso: produto.vendido_por_peso,
+          unidade: produto.unidade
+        });
+        continue;
+      }
+
+      const resultado = distribuirItemVenda(
         item,
         Number(produto.saldo_fiscal || 0),
         Number(produto.saldo_nao_fiscal || 0),
         vendaFiscal
       );
 
-    if (!resultado.sucesso) {
+      if (!resultado.sucesso) {
+        return res.status(400).json({
+          error:
+            `Saldo insuficiente para ${produto.nome}. ` +
+            `Disponível: ${resultado.estoqueTotal}`
+        });
+      }
 
-      return res.status(400).json({
-        error:
-          `Saldo insuficiente para ${produto.nome}. ` +
-          `Disponível: ${resultado.estoqueTotal}`
+      distribuicaoItens.push({
+        ...item,
+        quantidade_fiscal: resultado.quantidadeFiscal,
+        quantidade_nao_fiscal: resultado.quantidadeNaoFiscal,
+        valor_fiscal: resultado.valorFiscal,
+        valor_nao_fiscal: resultado.valorNaoFiscal,
+        saldo_fiscal: Number(produto.saldo_fiscal),
+        saldo_nao_fiscal: Number(produto.saldo_nao_fiscal),
+        produto_fracionado: produto.produto_fracionado,
+        vendido_por_peso: produto.vendido_por_peso,
+        unidade: produto.unidade
       });
-
     }
 
-    distribuicaoItens.push({
-      ...item,
+    continuarCriarVendaAposDistribuicao(distribuicaoItens);
+  })().catch((fatal) => {
+    res.status(500).json({ error: fatal?.message || String(fatal) });
+  });
 
-      quantidade_fiscal:
-        resultado.quantidadeFiscal,
-
-      quantidade_nao_fiscal:
-        resultado.quantidadeNaoFiscal,
-
-      valor_fiscal:
-        resultado.valorFiscal,
-
-      valor_nao_fiscal:
-        resultado.valorNaoFiscal
-    });
-  }
+  function continuarCriarVendaAposDistribuicao(distribuicaoItens) {
 
   // Venda a prazo exige cliente
   if (forma_pagamento === 'prazo') {
@@ -949,8 +1289,14 @@ db.all(`
     const codigo = `VND-${agoraLocalBrasil().replace(/[- :]/g, '').slice(0, 14)}`;
     const data_venda = agoraLocalBrasil().slice(0, 10);
 
-    // Calcular valores fiscal e não fiscal
-    const { totalFiscal, totalNaoFiscal } = separarItensDistribuidos(distribuicaoItens);
+    // Calcular valores fiscal e não fiscal (Motor Fiscal — intervalo oficial)
+    const fiscalOperacional = separarItensDistribuidos(distribuicaoItens);
+    // RC4.31 — pagamento valida contra total líquido (desconto global)
+    const totaisPagamento = resolverTotaisPagamentoComDesconto(fiscalOperacional, req.body);
+    const totalFiscal = totaisPagamento.totalFiscal;
+    const totalNaoFiscal = totaisPagamento.totalNaoFiscal;
+    const fiscalOperacionalPagamento = totaisPagamento.fiscalOperacionalPagamento;
+    const itensMidp = totaisPagamento.omitirItensNoMidp ? [] : distribuicaoItens;
 
     // Obter configurações TEF e confirmação fiscal
     let tefHabilitado = false;
@@ -965,14 +1311,55 @@ db.all(`
     
     modoConfirmacaoFiscal = configService.getModoConfirmacaoFiscal() || 'TEF';
 
-    // Processar fluxo de pagamento usando o Orquestrador
+    const origemMidp = resolverOrigemMidp(req.body);
+    const midpResult = distribuirPagamentosMidp({
+      valorFiscal: totalFiscal,
+      valorNaoFiscal: totalNaoFiscal,
+      pagamentos: req.body.pagamentos || [],
+      formaPagamentoPadrao: formaPagamentoFinal,
+      origem: origemMidp,
+      fiscalOperacional: fiscalOperacionalPagamento,
+      itens: itensMidp
+    });
+
+    const itensFinais = aplicarDecisaoMidpNosItens(distribuicaoItens, midpResult.decisao);
+    // Propaga quantidades ajustadas para persistência / NFC-e
+    console.log('[RCF-07.1] Itens após MIDP (prazo)', {
+      venda_itens_recebidos: distribuicaoItens.length,
+      itens_apos_midp: itensFinais.length,
+      mesmaRef: itensFinais === distribuicaoItens,
+      produtos: itensFinais.map((i) => i.produto_id),
+      rc431_omitiu_itens: totaisPagamento.omitirItensNoMidp === true
+    });
+    if (!itensFinais.length && distribuicaoItens.length > 0) {
+      console.error('[RCF-07.1] ABORT Rollback: MIDP zerou itens (prazo)');
+      return res.status(500).json({
+        error: 'RCF-07: Falha ao aplicar decisão MIDP — itens da venda foram perdidos.'
+      });
+    }
+    distribuicaoItens.length = 0;
+    itensFinais.forEach((it) => distribuicaoItens.push(it));
+    console.log('[RCF-07.1] Itens prontos para persistência (prazo)', {
+      qtd: distribuicaoItens.length
+    });
+
+    // RC4.31 — com desconto, o total de pagamento é o líquido; não deixar a decisão MIDP inflar.
+    const totaisFluxo = totaisPagamento.omitirItensNoMidp
+      ? { totalFiscal, totalNaoFiscal }
+      : lerTotaisDecisaoMidp(midpResult, totalFiscal, totalNaoFiscal);
+    const totalFiscalFluxo = totaisFluxo.totalFiscal;
+    const totalNaoFiscalFluxo = totaisFluxo.totalNaoFiscal;
+
+    // Processar fluxo de pagamento usando o Orquestrador (consome apenas MidpResult)
     const resultadoPagamento = await OrquestradorPagamento.processarFluxoPagamentoVenda({
-      totalFiscal,
-      totalNaoFiscal,
+      totalFiscal: totalFiscalFluxo,
+      totalNaoFiscal: totalNaoFiscalFluxo,
       formaPagamento: formaPagamentoFinal,
       pagamentos: req.body.pagamentos || [],
       tefHabilitado,
-      modoConfirmacaoFiscal
+      modoConfirmacaoFiscal,
+      midpResult,
+      origem: origemMidp
     });
 
     if (!resultadoPagamento.sucesso) {
@@ -984,8 +1371,8 @@ db.all(`
 
     const { resultadoFiscal } = resultadoPagamento;
     const resultadoStatus = aplicarRegraStatusPagamentoVenda({
-      valorFiscal: totalFiscal,
-      valorNaoFiscal: totalNaoFiscal,
+      valorFiscal: totalFiscalFluxo,
+      valorNaoFiscal: totalNaoFiscalFluxo,
       statusPagamento: resultadoPagamento.statusPagamento,
       recebimentos: resultadoPagamento.recebimentos
     });
@@ -994,9 +1381,9 @@ db.all(`
     db.serialize(() => {
       db.run('BEGIN IMMEDIATE');
       db.run(`
-        INSERT INTO vendas (codigo, data_venda, cliente_id, total, desconto, forma_pagamento, status, caixa_sessao_id, caixa_id, terminal_id, operador_id, valor_fiscal, valor_nao_fiscal, status_pagamento, tef_transacao_id)
-          VALUES (?, ?, ?, ?, ?, ?, 'concluida', ?, ?, ?, ?, ?, ?, ?, ?)
-        `, [codigo, data_venda, cliente_id, totalNum, desconto || 0, formaPagamentoFinal, req.caixaSessaoId || null, req.caixaId, req.terminalId || null, req.operadorId, totalFiscal, totalNaoFiscal, statusPagamento, resultadoFiscal?.transacoes?.[0] || null], function(err) {
+        INSERT INTO vendas (codigo, data_venda, cliente_id, total, desconto, forma_pagamento, status, caixa_sessao_id, caixa_id, terminal_id, operador_id, valor_fiscal, valor_nao_fiscal, status_pagamento, tef_transacao_id, canal_venda)
+          VALUES (?, ?, ?, ?, ?, ?, 'concluida', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `, [codigo, data_venda, cliente_id, totalNum, desconto || 0, formaPagamentoFinal, req.caixaSessaoId || null, req.caixaId, req.terminalId || null, req.operadorId, totalFiscalFluxo, totalNaoFiscalFluxo, statusPagamento, resultadoFiscal?.transacoes?.[0] || null, canalVendaGravar], function(err) {
         if (err) {
           db.run('ROLLBACK');
           res.status(500).json({ error: err.message });
@@ -1080,24 +1467,34 @@ db.all(`
           const tipoVenda = normalizarTipoVendaItem(item);
 
           db.run(`
-            INSERT INTO vendas_itens (venda_id, produto_id, quantidade, preco_unitario, desconto_percentual, promocao_id, desconto_atacado, tipo_preco, subtotal, item_fiscal, quantidade_fiscal, quantidade_nao_fiscal, valor_fiscal, valor_nao_fiscal, tipo_venda, unidade_comercial_id, unidade_comercial, fator_conversao, codigo_barras_comercial)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `, [vendaId, item.produto_id, item.quantidade, item.preco_unitario, item.desconto_percentual || 0, item.promocao_id || null, item.desconto_atacado || 0, item.tipo_preco || 'varejo', item.subtotal, itemFiscal, quantidadeFiscal, quantidadeNaoFiscal, valorFiscal, valorNaoFiscal, tipoVenda, item.unidade_comercial_id || null, item.unidade_comercial || null, item.fator_conversao != null ? Number(item.fator_conversao) : 1, item.codigo_barras_comercial || null], (itemErr) => {
+            INSERT INTO vendas_itens (venda_id, produto_id, quantidade, preco_unitario, desconto_percentual, promocao_id, desconto_atacado, tipo_preco, subtotal, item_fiscal, quantidade_fiscal, quantidade_nao_fiscal, valor_fiscal, valor_nao_fiscal, tipo_venda, unidade_comercial_id, unidade_comercial, fator_conversao, codigo_barras_comercial, quantidade_bolas, forma_comercializacao)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `, [vendaId, item.produto_id, item.quantidade, item.preco_unitario, item.desconto_percentual || 0, item.promocao_id || null, item.desconto_atacado || 0, item.tipo_preco || 'varejo', item.subtotal, itemFiscal, quantidadeFiscal, quantidadeNaoFiscal, valorFiscal, valorNaoFiscal, tipoVenda, item.unidade_comercial_id || null, item.unidade_comercial || null, item.fator_conversao != null ? Number(item.fator_conversao) : 1, item.codigo_barras_comercial || null, extrairQuantidadeBolasItem(item), item.forma_comercializacao ? String(item.forma_comercializacao).toUpperCase() : null], function(itemErr) {
             if (itemErr) {
               db.run('ROLLBACK');
               res.status(500).json({ error: itemErr.message });
               return;
             }
 
-            // Usar FEFO para reduzir estoque (STAB-06: skip se JA_BAIXADO_CONSIGNACAO)
-            reduzirEstoqueDistribuidoRespeitandoPolitica(pularBaixaEstoque, this.lastID, item.produto_id, item.quantidade_fiscal, item.quantidade_nao_fiscal, (estErr) => {
+            // RCF-07: callback clássico — arrow function quebrava this.lastID
+            const vendaItemId = this.lastID;
+            console.log('[RCF-07.1] Item persistido (prazo)', { vendaId, vendaItemId, produto_id: item.produto_id });
+            persistirSaboresCasquinha(vendaItemId, item, (sabErr) => {
+              if (sabErr) {
+                db.run('ROLLBACK');
+                res.status(500).json({ error: sabErr.message });
+                return;
+              }
+
+            // RCM-05.9: kit → histórico + baixa componentes; senão baixa produto
+            persistirKitEBaixarEstoque(pularBaixaEstoque, vendaItemId, item, item.quantidade_fiscal, item.quantidade_nao_fiscal, (estErr) => {
               if (estErr) {
                 db.run('ROLLBACK');
                 res.status(500).json({ error: estErr.message });
                 return;
               }
               itensProcessados++;
-              if (itensProcessados === itens.length) {
+              if (itensProcessados === distribuicaoItens.length) {
                 const listaPagPersist = resolverListaPagamentosPersistencia(recebimentos, pagamentosVenda);
                 console.log('[ORIGEM-PAG] venda_pagamentos (prazo)', {
                   vendaId,
@@ -1105,6 +1502,7 @@ db.all(`
                   pagamentosBody: pagamentosVenda,
                   persistido: listaPagPersist
                 });
+                console.log('[RCF-07.1] COMMIT pronto (prazo)', { vendaId, itensPersistidos: itensProcessados });
                 inserirLinhasVendaPagamentos(
                   vendaId,
                   listaPagPersist,
@@ -1113,16 +1511,41 @@ db.all(`
                   tef
                 );
 
-                // Gerar parcelas
+                // Gerar parcelas (MFE-05.1: bridge ON → evento; OFF → INSERT legado)
                 const qtdParcelas = Number(parcelas) || 1;
                 const valorParcela = Math.round((totalNum / qtdParcelas) * 100) / 100;
                 let vencimento = moment(primeiro_vencimento, 'YYYY-MM-DD');
+                const parcelasAr = [];
                 for (let i = 1; i <= qtdParcelas; i++) {
-                  db.run(`
-                    INSERT INTO contas_receber (venda_id, cliente_id, numero_parcela, total_parcelas, valor_parcela, valor_restante, data_vencimento, status)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 'aberto')
-                  `, [vendaId, cliente_id, i, qtdParcelas, valorParcela, valorParcela, vencimento.format('YYYY-MM-DD')]);
+                  const dataVenc = vencimento.format('YYYY-MM-DD');
+                  parcelasAr.push({
+                    numero: i,
+                    totalParcelas: qtdParcelas,
+                    valor: valorParcela,
+                    saldo: valorParcela,
+                    vencimento: dataVenc
+                  });
+                  if (!isPdvArBridgeAtivo()) {
+                    db.run(`
+                      INSERT INTO contas_receber (venda_id, cliente_id, numero_parcela, total_parcelas, valor_parcela, valor_restante, data_vencimento, status)
+                      VALUES (?, ?, ?, ?, ?, ?, ?, 'aberto')
+                    `, [vendaId, cliente_id, i, qtdParcelas, valorParcela, valorParcela, dataVenc]);
+                  }
                   vencimento = vencimento.add(1, 'months');
+                }
+                if (isPdvArBridgeAtivo()) {
+                  emitirEventoPdvArMfe({
+                    tipo: 'venda_completa',
+                    eventType: 'SALE_COMPLETED',
+                    venda_id: vendaId,
+                    cliente_id,
+                    valor: totalNum,
+                    total_parcelas: qtdParcelas,
+                    data_vencimento: parcelasAr[0]?.vencimento,
+                    parcelas: parcelasAr,
+                    persistirTitulo: true,
+                    idempotencyKey: `pdv-ar:sale:${vendaId}:prazo`
+                  });
                 }
                 buscarNomeCliente((clienteErr, clienteNome, clienteCpf) => {
                   if (clienteErr) {
@@ -1133,17 +1556,21 @@ db.all(`
 
                   const inserirFinanceiroPrazo = (indice = 1, venc = moment(primeiro_vencimento, 'YYYY-MM-DD')) => {
                     if (indice > qtdParcelas) {
-                      db.run('COMMIT');
-
-                      responderVendaComFiscal(res, {
-                        vendaId,
-                        codigo,
-                        message: 'Venda a prazo registrada com sucesso',
-                        emitirFiscal: !!emitir_fiscal,
-                        valorFiscal: totalFiscal,
-                        valorNaoFiscal: totalNaoFiscal,
-                        statusPagamento: statusPagamento,
-                        pagamentosTef: pagamentosVenda
+                      db.run('COMMIT', (commitErr) => {
+                        if (commitErr) {
+                          db.run('ROLLBACK');
+                          return res.status(500).json({ error: commitErr.message });
+                        }
+                        responderVendaComFiscal(res, {
+                          vendaId,
+                          codigo,
+                          message: 'Venda a prazo registrada com sucesso',
+                          emitirFiscal: !!emitir_fiscal,
+                          valorFiscal: totalFiscal,
+                          valorNaoFiscal: totalNaoFiscal,
+                          statusPagamento: statusPagamento,
+                          pagamentosTef: pagamentosVenda
+                        });
                       });
                       return;
                     }
@@ -1181,6 +1608,7 @@ db.all(`
                 });
               }
             });
+            });
           });
         });
       });
@@ -1194,8 +1622,14 @@ const executarVenda = async () => {
   const codigo = `VND-${agoraLocalBrasil().replace(/[- :]/g, '').slice(0, 14)}`;
   const data_venda = agoraLocalBrasil().slice(0, 10);
 
-  // Calcular valores fiscal e não fiscal
-  const { totalFiscal, totalNaoFiscal } = separarItensDistribuidos(distribuicaoItens);
+  // Calcular valores fiscal e não fiscal (Motor Fiscal — intervalo oficial)
+  const fiscalOperacional = separarItensDistribuidos(distribuicaoItens);
+  // RC4.31 — pagamento valida contra total líquido (desconto global)
+  const totaisPagamento = resolverTotaisPagamentoComDesconto(fiscalOperacional, req.body);
+  const totalFiscal = totaisPagamento.totalFiscal;
+  const totalNaoFiscal = totaisPagamento.totalNaoFiscal;
+  const fiscalOperacionalPagamento = totaisPagamento.fiscalOperacionalPagamento;
+  const itensMidp = totaisPagamento.omitirItensNoMidp ? [] : distribuicaoItens;
 
   // Obter configurações TEF e confirmação fiscal
   let tefHabilitado = false;
@@ -1210,14 +1644,69 @@ const executarVenda = async () => {
   
   modoConfirmacaoFiscal = configService.getModoConfirmacaoFiscal() || 'TEF';
 
-  // Processar fluxo de pagamento usando o Orquestrador
-  const resultadoPagamento = await OrquestradorPagamento.processarFluxoPagamentoVenda({
-    totalFiscal,
-    totalNaoFiscal,
-    formaPagamento: formaPagamentoFinal,
+  const origemMidp = resolverOrigemMidp(req.body);
+  const midpResult = distribuirPagamentosMidp({
+    valorFiscal: totalFiscal,
+    valorNaoFiscal: totalNaoFiscal,
     pagamentos: req.body.pagamentos || [],
-    tefHabilitado,
-    modoConfirmacaoFiscal
+    formaPagamentoPadrao: formaPagamentoFinal,
+    origem: origemMidp,
+    fiscalOperacional: fiscalOperacionalPagamento,
+    itens: itensMidp
+  });
+
+  const itensFinais = aplicarDecisaoMidpNosItens(distribuicaoItens, midpResult.decisao);
+  console.log('[RCF-07.1] Itens após MIDP (vista)', {
+    itens_recebidos: distribuicaoItens.length,
+    itens_apos_midp: itensFinais.length,
+    mesmaRef: itensFinais === distribuicaoItens,
+    produtos: itensFinais.map((i) => i.produto_id),
+    rc431_omitiu_itens: totaisPagamento.omitirItensNoMidp === true
+  });
+  if (!itensFinais.length && distribuicaoItens.length > 0) {
+    console.error('[RCF-07.1] ABORT Rollback: MIDP zerou itens (vista)');
+    return res.status(500).json({
+      error: 'RCF-07: Falha ao aplicar decisão MIDP — itens da venda foram perdidos.'
+    });
+  }
+  distribuicaoItens.length = 0;
+  itensFinais.forEach((it) => distribuicaoItens.push(it));
+  console.log('[RCF-07.1] Itens prontos para persistência (vista)', {
+    qtd: distribuicaoItens.length
+  });
+
+  // RC4.31 — com desconto, o total de pagamento é o líquido; não deixar a decisão MIDP inflar.
+  const totaisFluxo = totaisPagamento.omitirItensNoMidp
+    ? { totalFiscal, totalNaoFiscal }
+    : lerTotaisDecisaoMidp(midpResult, totalFiscal, totalNaoFiscal);
+  const totalFiscalFluxo = totaisFluxo.totalFiscal;
+  const totalNaoFiscalFluxo = totaisFluxo.totalNaoFiscal;
+
+  // Processar fluxo de pagamento usando o Orquestrador (consome apenas MidpResult)
+  let resultadoPagamento;
+  try {
+    resultadoPagamento = await OrquestradorPagamento.processarFluxoPagamentoVenda({
+      totalFiscal: totalFiscalFluxo,
+      totalNaoFiscal: totalNaoFiscalFluxo,
+      formaPagamento: formaPagamentoFinal,
+      pagamentos: req.body.pagamentos || [],
+      tefHabilitado,
+      modoConfirmacaoFiscal,
+      midpResult,
+      origem: origemMidp
+    });
+  } catch (orchErr) {
+    console.error('[VENDA] Orquestrador falhou:', orchErr);
+    return res.status(500).json({
+      error: orchErr?.message || 'Erro no orquestrador de pagamento.'
+    });
+  }
+
+  console.log('[VENDA] Orquestrador OK', {
+    sucesso: resultadoPagamento.sucesso,
+    statusPagamento: resultadoPagamento.statusPagamento,
+    totalFiscalFluxo,
+    totalNaoFiscalFluxo
   });
 
   if (!resultadoPagamento.sucesso) {
@@ -1229,16 +1718,30 @@ const executarVenda = async () => {
 
   const { distribuicao, resultadoFiscal } = resultadoPagamento;
   const resultadoStatus = aplicarRegraStatusPagamentoVenda({
-    valorFiscal: totalFiscal,
-    valorNaoFiscal: totalNaoFiscal,
+    valorFiscal: totalFiscalFluxo,
+    valorNaoFiscal: totalNaoFiscalFluxo,
     statusPagamento: resultadoPagamento.statusPagamento,
     recebimentos: resultadoPagamento.recebimentos
   });
   const { statusPagamento, recebimentos } = resultadoStatus;
 
+  console.log('[VENDA] Persistindo venda', {
+    codigo,
+    statusPagamento,
+    itens: distribuicaoItens.length
+  });
+
   db.serialize(() => {
-    db.run('BEGIN IMMEDIATE');
-    db.run(`
+    db.run('BEGIN IMMEDIATE', (beginErr) => {
+      if (beginErr) {
+        console.error('[VENDA] BEGIN IMMEDIATE falhou:', beginErr.message);
+        return res.status(503).json({
+          error: 'Banco ocupado ao iniciar a venda. Tente novamente.',
+          detalhe: beginErr.message
+        });
+      }
+      console.log('[VENDA] BEGIN OK — inserindo venda');
+      db.run(`
       INSERT INTO vendas (
         codigo,
         data_venda,
@@ -1256,9 +1759,10 @@ const executarVenda = async () => {
         valor_fiscal,
         valor_nao_fiscal,
         status_pagamento,
-        tef_transacao_id
+        tef_transacao_id,
+        canal_venda
       )
-      VALUES (?, ?, ?, ?, ?, ?, 'concluida', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, 'concluida', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       codigo,
       data_venda,
@@ -1272,10 +1776,11 @@ const executarVenda = async () => {
       req.terminalId || null,
       emitir_fiscal ? cpfCnpjNotaLimpo || null : null,
       req.operadorId,
-      totalFiscal,
-      totalNaoFiscal,
+      totalFiscalFluxo,
+      totalNaoFiscalFluxo,
       statusPagamento,
-      resultadoFiscal?.transacoes?.[0] || null
+      resultadoFiscal?.transacoes?.[0] || null,
+      canalVendaGravar
     ], function(err) {
       if (err) {
         db.run('ROLLBACK');
@@ -1360,24 +1865,34 @@ const executarVenda = async () => {
         const tipoVenda = normalizarTipoVendaItem(item);
 
         db.run(`
-          INSERT INTO vendas_itens (venda_id, produto_id, quantidade, preco_unitario, desconto_percentual, promocao_id, desconto_atacado, tipo_preco, subtotal, item_fiscal, quantidade_fiscal, quantidade_nao_fiscal, valor_fiscal, valor_nao_fiscal, tipo_venda, unidade_comercial_id, unidade_comercial, fator_conversao, codigo_barras_comercial)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `, [vendaId, item.produto_id, item.quantidade, item.preco_unitario, item.desconto_percentual || 0, item.promocao_id || null, item.desconto_atacado || 0, item.tipo_preco || 'varejo', item.subtotal, itemFiscal, quantidadeFiscal, quantidadeNaoFiscal, valorFiscal, valorNaoFiscal, tipoVenda, item.unidade_comercial_id || null, item.unidade_comercial || null, item.fator_conversao != null ? Number(item.fator_conversao) : 1, item.codigo_barras_comercial || null], (itemErr) => {
+          INSERT INTO vendas_itens (venda_id, produto_id, quantidade, preco_unitario, desconto_percentual, promocao_id, desconto_atacado, tipo_preco, subtotal, item_fiscal, quantidade_fiscal, quantidade_nao_fiscal, valor_fiscal, valor_nao_fiscal, tipo_venda, unidade_comercial_id, unidade_comercial, fator_conversao, codigo_barras_comercial, quantidade_bolas, forma_comercializacao)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `, [vendaId, item.produto_id, item.quantidade, item.preco_unitario, item.desconto_percentual || 0, item.promocao_id || null, item.desconto_atacado || 0, item.tipo_preco || 'varejo', item.subtotal, itemFiscal, quantidadeFiscal, quantidadeNaoFiscal, valorFiscal, valorNaoFiscal, tipoVenda, item.unidade_comercial_id || null, item.unidade_comercial || null, item.fator_conversao != null ? Number(item.fator_conversao) : 1, item.codigo_barras_comercial || null, extrairQuantidadeBolasItem(item), item.forma_comercializacao ? String(item.forma_comercializacao).toUpperCase() : null], function(itemErr) {
           if (itemErr) {
             db.run('ROLLBACK');
             res.status(500).json({ error: itemErr.message });
             return;
           }
 
-          // Usar FEFO para reduzir estoque (STAB-06: skip se JA_BAIXADO_CONSIGNACAO)
-          reduzirEstoqueDistribuidoRespeitandoPolitica(pularBaixaEstoque, this.lastID, item.produto_id, item.quantidade_fiscal, item.quantidade_nao_fiscal, (estErr) => {
+          // RCF-07: callback clássico — arrow function quebrava this.lastID
+          const vendaItemId = this.lastID;
+          console.log('[RCF-07.1] Item persistido (vista)', { vendaId, vendaItemId, produto_id: item.produto_id });
+          persistirSaboresCasquinha(vendaItemId, item, (sabErr) => {
+            if (sabErr) {
+              db.run('ROLLBACK');
+              res.status(500).json({ error: sabErr.message });
+              return;
+            }
+
+          // RCM-05.9: kit → histórico + baixa componentes; senão baixa produto
+          persistirKitEBaixarEstoque(pularBaixaEstoque, vendaItemId, item, item.quantidade_fiscal, item.quantidade_nao_fiscal, (estErr) => {
             if (estErr) {
               db.run('ROLLBACK');
               res.status(500).json({ error: estErr.message });
               return;
             }
             itensProcessados++;
-            if (itensProcessados === itens.length) {
+            if (itensProcessados === distribuicaoItens.length) {
               const listaPagPersist = resolverListaPagamentosPersistencia(recebimentos, pagamentosVenda);
               console.log('[ORIGEM-PAG] venda_pagamentos (vista)', {
                 vendaId,
@@ -1386,6 +1901,12 @@ const executarVenda = async () => {
                 recebimentos,
                 pagamentosBody: pagamentosVenda,
                 persistido: listaPagPersist
+              });
+              console.log('[RCF-07.1] Itens persistidos antes do COMMIT', {
+                vendaId,
+                itensPersistidos: itensProcessados,
+                totalFiscal,
+                totalNaoFiscal
               });
               inserirLinhasVendaPagamentos(
                 vendaId,
@@ -1398,26 +1919,33 @@ const executarVenda = async () => {
               const statusFinanceiro = vendaFicaPendente ? 'pendente' : 'recebido';
               const baixadoEm = statusFinanceiro === 'recebido' ? data_venda : null;
               const finalizarResposta = () => {
-                db.run('COMMIT');
-
-                responderVendaComFiscal(res, {
-                  vendaId,
-                  codigo,
-                  message: origemConsignacao
-                    ? 'Venda oficial (consignação) registrada com sucesso'
-                    : 'Venda registrada com sucesso',
-                  emitirFiscal: !!emitir_fiscal,
-                  valorFiscal: totalFiscal,
-                  valorNaoFiscal: totalNaoFiscal,
-                  statusPagamento: statusPagamento,
-                  pagamentosTef: pagamentosVenda,
-                  integridadeComercial: origemConsignacao
-                    ? {
-                      valorVenda: totalNum,
-                      valorRecebido: valorRecebidoConsignacao,
-                      saldoEmAberto: saldoEmAbertoConsignacao
-                    }
-                    : null
+                console.log('[RCF-07.1] COMMIT', { vendaId, statusPagamento, itens: itensProcessados });
+                db.run('COMMIT', (commitErr) => {
+                  if (commitErr) {
+                    console.error('[VENDA] COMMIT falhou:', commitErr.message);
+                    db.run('ROLLBACK');
+                    return res.status(500).json({ error: commitErr.message });
+                  }
+                  responderVendaComFiscal(res, {
+                    vendaId,
+                    codigo,
+                    message: origemConsignacao
+                      ? 'Venda oficial (consignação) registrada com sucesso'
+                      : 'Venda registrada com sucesso',
+                    emitirFiscal: !!emitir_fiscal,
+                    valorFiscal: totalFiscalFluxo,
+                    valorNaoFiscal: totalNaoFiscalFluxo,
+                    statusPagamento: statusPagamento,
+                    recebimentos,
+                    pagamentosTef: pagamentosVenda,
+                    integridadeComercial: origemConsignacao
+                      ? {
+                        valorVenda: totalNum,
+                        valorRecebido: valorRecebidoConsignacao,
+                        saldoEmAberto: saldoEmAbertoConsignacao
+                      }
+                      : null
+                  });
                 });
               };
 
@@ -1427,6 +1955,28 @@ const executarVenda = async () => {
                   : (forma_pagamento === 'prazo' ? totalNum : 0);
 
                 if (saldoAR > 0.01 && cliente_id) {
+                  if (isPdvArBridgeAtivo()) {
+                    emitirEventoPdvArMfe({
+                      tipo: 'venda_completa',
+                      eventType: 'SALE_COMPLETED',
+                      venda_id: vendaId,
+                      cliente_id,
+                      valor: saldoAR,
+                      total_parcelas: 1,
+                      numero_parcela: 1,
+                      parcelas: [{
+                        numero: 1,
+                        totalParcelas: 1,
+                        valor: saldoAR,
+                        saldo: saldoAR,
+                        vencimento: moment().add(30, 'days').format('YYYY-MM-DD')
+                      }],
+                      persistirTitulo: true,
+                      idempotencyKey: `pdv-ar:sale:${vendaId}:saldo`
+                    });
+                    callback();
+                    return;
+                  }
                   db.run(`
                     INSERT INTO contas_receber (
                       venda_id, cliente_id, numero_parcela, total_parcelas, valor_parcela,
@@ -1577,8 +2127,20 @@ const executarVenda = async () => {
               });
             }
           });
+          });
         });
       });
+
+      // Sem itens: aborta — nunca finaliza venda vazia (RCF-06)
+      if (!distribuicaoItens.length) {
+        console.error('[RCF-06] distribuicaoItens vazio — ROLLBACK');
+        db.run('ROLLBACK', () => {
+          res.status(400).json({
+            error: 'RCF-06: Venda sem itens. Persistência abortada.'
+          });
+        });
+      }
+    });
     });
   });
 };
@@ -1615,7 +2177,8 @@ if (forma_pagamento === 'credito') {
 } else {
   executarVenda();
 }
-  });
+  } // continuarCriarVendaAposDistribuicao
+});
 }
 
 function consultarPagamentoNaoFiscal(req, res) {
@@ -1911,6 +2474,7 @@ module.exports = {
   filtrarRecebimentosDaVendaCorrente,
   resolverStatusPagamentoVenda,
   aplicarRegraStatusPagamentoVenda,
+  aplicarDecisaoMidpNosItens,
   normalizarPagamentosNaoFiscal,
   validarPagamentosNaoFiscal,
   obterTerminalId,

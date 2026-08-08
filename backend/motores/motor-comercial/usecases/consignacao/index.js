@@ -25,6 +25,8 @@ const ConsultarConsignacoesEmTransitoUseCase = require('./ConsultarConsignacoesE
 const AbrirPrestacaoUseCase = require('./AbrirPrestacaoUseCase');
 const RegistrarVendaPrestacaoUseCase = require('./RegistrarVendaPrestacaoUseCase');
 const RegistrarPerdaUseCase = require('./RegistrarPerdaUseCase');
+const DefinirRateioPerdaUseCase = require('./DefinirRateioPerdaUseCase');
+const ConsultarRateioPerdaUseCase = require('./ConsultarRateioPerdaUseCase');
 const RegistrarCortesiaUseCase = require('./RegistrarCortesiaUseCase');
 const RegistrarPagamentoPrestacaoUseCase = require('./RegistrarPagamentoPrestacaoUseCase');
 const FecharPrestacaoUseCase = require('./FecharPrestacaoUseCase');
@@ -58,6 +60,8 @@ module.exports = {
   AbrirPrestacaoUseCase,
   RegistrarVendaPrestacaoUseCase,
   RegistrarPerdaUseCase,
+  DefinirRateioPerdaUseCase,
+  ConsultarRateioPerdaUseCase,
   RegistrarCortesiaUseCase,
   RegistrarPagamentoPrestacaoUseCase,
   FecharPrestacaoUseCase,

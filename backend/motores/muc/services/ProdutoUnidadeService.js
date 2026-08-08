@@ -6,6 +6,7 @@ const {
   resolverBaixaEstoque,
   resolverEntradaEstoque
 } = require('../converters/ConversorUnidades');
+const ComercialPrecoResolver = require('../../../modules/comercial/preco/ComercialPrecoResolver');
 
 /**
  * Garante a unidade comercial base (fator 1) a partir do cadastro legado do produto.
@@ -25,7 +26,7 @@ async function garantirUnidadeBase(db, produto) {
     unidade,
     descricao: unidade,
     fator_conversao: 1,
-    preco: Number(produto.preco_venda || 0),
+    preco: ComercialPrecoResolver.obterPrecoVenda(produto),
     codigo_barras: String(produto.codigo_barras || '').trim() || null,
     codigo_auxiliar: String(produto.codigo || '').trim() || null,
     principal: 1,
@@ -47,7 +48,7 @@ async function garantirUnidadeBaseSeNecessario(db, produtoId) {
 
   const produto = await new Promise((resolve, reject) => {
     db.get(
-      `SELECT id, unidade, preco_venda, codigo_barras, codigo FROM produtos WHERE id = ?`,
+      `SELECT id, unidade, preco_venda, tabela_preco_id, codigo_barras, codigo FROM produtos WHERE id = ?`,
       [produtoId],
       (err, row) => (err ? reject(err) : resolve(row || null))
     );
@@ -185,7 +186,11 @@ function montarPayloadVenda({ produto, unidade, quantidadeComercial }) {
     fatorConversao: fator
   });
 
-  const preco = Number(unidade.preco != null ? unidade.preco : produto.preco_venda) || 0;
+  const preco = Number(
+    unidade.preco != null
+      ? unidade.preco
+      : ComercialPrecoResolver.obterPrecoVenda(produto)
+  ) || 0;
 
   return {
     produto_id: produto.id,

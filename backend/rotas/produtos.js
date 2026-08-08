@@ -13,6 +13,55 @@ const {
 } = require('../services/ajusteEstoqueService');
 const { sqlRankingProdutos, isModoFiscalRelatorio } = require('../services/reportFiscalHelpers');
 const Muc = require('../motores/muc');
+const Uc01 = require('../motores/unidades-comercializacao');
+const Mcc = require('../motores/motor-conversao-comercial');
+const estoqueAdjustmentOperacional = Mcc.estoqueAdjustmentOperacional;
+
+/** PDV-UC-02: anexa Formas de Venda UC-01 (não MUC) na busca PDV. */
+async function anexarUnidadesComerciaisUc01(produto) {
+  try {
+    const payload = await Uc01.listar(db, produto.id);
+    produto.unidades_comerciais = Array.isArray(payload?.items) ? payload.items : [];
+    produto._fonte_uc01 = true;
+  } catch (_) {
+    produto.unidades_comerciais = [];
+    produto._fonte_uc01 = true;
+  }
+  return produto;
+}
+
+/**
+ * RCM-8.2 — Linha de Precificação opcional; se informada, deve existir e estar ativa.
+ * Produto nunca grava tabela/canal/tipo comercial.
+ */
+function validarLinhaPrecificacaoProduto(linhaId) {
+  return new Promise((resolve, reject) => {
+    if (linhaId == null || linhaId === '' || Number(linhaId) <= 0) {
+      return resolve(null);
+    }
+    const id = Number(linhaId);
+    if (!Number.isFinite(id) || id <= 0) {
+      return reject(Object.assign(new Error('Linha de Precificação inválida'), { statusCode: 400 }));
+    }
+    db.get(
+      `SELECT id, codigo, descricao, ativo FROM linhas_comerciais WHERE id = ?`,
+      [id],
+      (err, row) => {
+        if (err) return reject(err);
+        if (!row) {
+          return reject(Object.assign(new Error('Linha de Precificação não encontrada'), { statusCode: 400 }));
+        }
+        if (!(row.ativo === 1 || row.ativo === true || row.ativo === '1')) {
+          return reject(Object.assign(
+            new Error('Linha de Precificação inativa. Ative a linha ou remova o vínculo do produto.'),
+            { statusCode: 400 }
+          ));
+        }
+        resolve(id);
+      }
+    );
+  });
+}
 
 function resolverItemFiscalCadastro(body, saldoFiscal, saldoNaoFiscal) {
   if (body.item_fiscal !== undefined && body.item_fiscal !== null) {
@@ -43,21 +92,84 @@ function exprEstoqueAlerta(modoFiscal, alias = '') {
 }
 
 const { resolverCustoUnitarioProdutoCadastro } = require('../lib/motorConversaoUnidades');
+const ComercialPrecoResolver = require('../modules/comercial/preco/ComercialPrecoResolver');
+const FormaComercializacao = require('../modules/comercial/preco/FormaComercializacao');
+const ProdutoPoliticasComerciaisService = require('../modules/comercial/politicas/ProdutoPoliticasComerciaisService');
 
-function normalizarProdutoResposta(produto, modoFiscal) {
+/** A-1 — extrai IDs de Políticas Comerciais do body (multi-select). */
+function extrairPoliticaIdsBody(body = {}) {
+  const raw =
+    body.politicas_comerciais_ids ??
+    body.politica_comercial_ids ??
+    body.politicas_comerciais ??
+    body.linhas_comerciais_ids ??
+    null;
+  if (raw == null) return null; // não informado
+  if (!Array.isArray(raw)) {
+    if (raw === '' || raw === false) return [];
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? [n] : [];
+  }
+  return raw
+    .map((v) => (typeof v === 'object' && v != null ? Number(v.id ?? v.linha_comercial_id) : Number(v)))
+    .filter((n) => Number.isFinite(n) && n > 0);
+}
+
+async function anexarPoliticasProduto(produto) {
+  if (!produto?.id) return produto;
+  try {
+    const politicas = await ProdutoPoliticasComerciaisService.listarPoliticasProduto(produto.id);
+    const ids = (politicas || []).map((p) => Number(p.id));
+    return {
+      ...produto,
+      politicas_comerciais: politicas || [],
+      politicas_comerciais_ids: ids,
+      politica_todas_habilitadas: ids.length === 0
+    };
+  } catch (_) {
+    return {
+      ...produto,
+      politicas_comerciais: [],
+      politicas_comerciais_ids: [],
+      politica_todas_habilitadas: true
+    };
+  }
+}
+
+async function normalizarProdutoResposta(produto, modoFiscal) {
   const saldoFiscal = Number(produto.saldo_fiscal ?? 0);
   const saldoNaoFiscal = Number(produto.saldo_nao_fiscal ?? 0);
   const estoqueAtual = saldoFiscal + saldoNaoFiscal;
-  const flagFracionado = Number(produto.produto_fracionado ?? produto.vendido_por_peso ?? 0) ? 1 : 0;
+  const forma = FormaComercializacao.inferirFormaComercializacao(produto);
+  const flagsForma = FormaComercializacao.flagsLegadasDaForma(forma);
+  const flagFracionado = flagsForma.produto_fracionado;
   const precoCompra = flagFracionado
     ? resolverCustoUnitarioProdutoCadastro(produto)
     : Number(produto.preco_compra || 0);
+  const precoResolvido = await ComercialPrecoResolver.resolver({ produto });
 
   const base = {
     ...produto,
     ...aplicarCamposVendaUnidadeResposta(produto),
+    forma_comercializacao: forma,
+    unidade_venda: produto.unidade_venda || null,
+    quantidade_bolas: Number(produto.quantidade_bolas || 0),
+    peso_medio_bola: Number(produto.peso_medio_bola || 0),
+    bolas_min: produto.bolas_min != null
+      ? Number(produto.bolas_min)
+      : (Number(produto.quantidade_bolas || 0) > 0 ? 1 : null),
+    bolas_max: produto.bolas_max != null
+      ? Number(produto.bolas_max)
+      : (Number(produto.quantidade_bolas || 0) > 0 ? Number(produto.quantidade_bolas) : null),
+    forma_personalizada_nome: produto.forma_personalizada_nome || null,
+    forma_personalizada_unidade: produto.forma_personalizada_unidade || null,
     produto_fracionado: flagFracionado,
+    vendido_por_peso: flagsForma.vendido_por_peso,
     preco_compra: precoCompra,
+    preco_venda: precoResolvido.preco_venda,
+    preco_origem: precoResolvido.origem,
+    preco_canal: precoResolvido.canal,
+    preco_fallback: !!precoResolvido.fallback,
     saldo_fiscal: saldoFiscal,
     saldo_nao_fiscal: saldoNaoFiscal,
     estoque_atual: estoqueAtual,
@@ -76,6 +188,13 @@ function normalizarProdutoResposta(produto, modoFiscal) {
     ...base,
     estoque_exibido: estoqueAtual
   };
+}
+
+async function normalizarProdutosResposta(lista, modoFiscal) {
+  const rows = lista || [];
+  if (!rows.length) return [];
+  await ComercialPrecoResolver.resolverLista(rows);
+  return Promise.all(rows.map((p) => normalizarProdutoResposta(p, modoFiscal)));
 }
 
 function produtosTemColuna(nomeColuna, callback) {
@@ -143,7 +262,12 @@ const CAMPOS_PRODUTO_IGNORADOS = new Set([
   'saldo_nao_fiscal',
   'estoque_exibido',
   'saldo_fiscal_inicial',
-  'saldo_nao_fiscal_inicial'
+  'saldo_nao_fiscal_inicial',
+  'politicas_comerciais',
+  'politicas_comerciais_ids',
+  'politica_comercial_ids',
+  'linhas_comerciais_ids',
+  'politica_todas_habilitadas'
 ]);
 
 function obterEstoqueTotalProduto(produto = {}) {
@@ -310,12 +434,15 @@ function buscarProdutoCompleto(produtoId, callback) {
           return callback(faixaErr);
         }
 
-        callback(null, normalizarProdutoResposta({
+        normalizarProdutoResposta({
           ...row,
           categoria: row.categoria_nome || '',
           subcategoria: row.subcategoria_nome || '',
           atacado_faixas: faixas || []
-        }, false));
+        }, false)
+          .then((norm) => anexarPoliticasProduto(norm))
+          .then((norm) => callback(null, norm))
+          .catch(callback);
       }
     );
   });
@@ -347,19 +474,26 @@ router.get('/', (req, res) => {
     WHERE 1=1
       ${filtroFiscal}
     ORDER BY p.id DESC
-  `, [], (err, rows) => {
+  `, [], async (err, rows) => {
     if (err) {
       console.error('Erro ao listar produtos:', err.message);
       return res.status(500).json({ error: err.message });
     }
 
-    const produtos = (rows || []).map((p) => normalizarProdutoResposta({
-      ...p,
-      categoria: p.categoria_nome || p.categoria || '',
-      subcategoria: p.subcategoria_nome || ''
-    }, modoFiscal));
-
-    res.json(produtos);
+    try {
+      const produtos = await normalizarProdutosResposta(
+        (rows || []).map((p) => ({
+          ...p,
+          categoria: p.categoria_nome || p.categoria || '',
+          subcategoria: p.subcategoria_nome || ''
+        })),
+        modoFiscal
+      );
+      res.json(produtos);
+    } catch (normErr) {
+      console.error('Erro ao normalizar produtos:', normErr.message);
+      res.status(500).json({ error: normErr.message });
+    }
   });
 });
 
@@ -481,20 +615,26 @@ router.get('/relatorio-estoque', (req, res) => {
 
   const params = [...paramsSubconsulta, ...paramsExists];
 
-  db.all(sql, params, (err, rows) => {
+  db.all(sql, params, async (err, rows) => {
     if (err) {
       console.error('Erro ao gerar relatório de estoque:', err.message);
       return res.status(500).json({ error: err.message });
     }
 
-    const produtos = (rows || []).map((p) => normalizarProdutoResposta({
-      ...p,
-      categoria: p.categoria_nome || p.categoria || '',
-      subcategoria: p.subcategoria_nome || p.subcategoria || '',
-      ultima_compra_data: p.ultima_compra_data || null
-    }, modoFiscal));
-
-    res.json(produtos);
+    try {
+      const produtos = await normalizarProdutosResposta(
+        (rows || []).map((p) => ({
+          ...p,
+          categoria: p.categoria_nome || p.categoria || '',
+          subcategoria: p.subcategoria_nome || p.subcategoria || '',
+          ultima_compra_data: p.ultima_compra_data || null
+        })),
+        modoFiscal
+      );
+      res.json(produtos);
+    } catch (normErr) {
+      res.status(500).json({ error: normErr.message });
+    }
   });
 });
 
@@ -626,16 +766,13 @@ router.get('/consulta-pdv/buscar', (req, res) => {
     }
 
     try {
-      const produtos = (rows || []).map((row) => normalizarProdutoResposta(row, modoFiscal));
+      const produtos = await normalizarProdutosResposta(rows || [], modoFiscal);
       for (const produto of produtos) {
-        try {
-          produto.unidades_comerciais = await Muc.listar(db, produto.id);
-        } catch (_) {
-          produto.unidades_comerciais = [];
-        }
+        await anexarUnidadesComerciaisUc01(produto);
       }
 
-      // Se o termo bate exatamente com EAN de uma unidade comercial, marca a unidade sugerida
+      // Se o termo bate exatamente com EAN de uma unidade comercial legada, marca sugestão
+      // (IDs MUC ≠ UC-01; front só aplica se o id existir na lista UC)
       const matchBarras = await Muc.resolverPorBarras(db, termo);
       if (matchBarras) {
         const alvo = produtos.find((p) => Number(p.id) === Number(matchBarras.produto_id));
@@ -647,8 +784,8 @@ router.get('/consulta-pdv/buscar', (req, res) => {
             db.get(`SELECT * FROM produtos WHERE id = ?`, [matchBarras.produto_id], (e, r) => resolve(e ? null : r));
           });
           if (produtoExtra) {
-            const normalizado = normalizarProdutoResposta(produtoExtra, modoFiscal);
-            normalizado.unidades_comerciais = await Muc.listar(db, produtoExtra.id);
+            const normalizado = await normalizarProdutoResposta(produtoExtra, modoFiscal);
+            await anexarUnidadesComerciaisUc01(normalizado);
             normalizado.unidade_comercial_sugerida_id = matchBarras.id;
             produtos.unshift(normalizado);
           }
@@ -658,7 +795,11 @@ router.get('/consulta-pdv/buscar', (req, res) => {
       res.json(produtos);
     } catch (attachErr) {
       console.error('Erro ao anexar unidades comerciais PDV:', attachErr.message);
-      res.json((rows || []).map((row) => normalizarProdutoResposta(row, modoFiscal)));
+      try {
+        res.json(await normalizarProdutosResposta(rows || [], modoFiscal));
+      } catch (_) {
+        res.json([]);
+      }
     }
   });
 });
@@ -689,6 +830,8 @@ router.get('/search', (req, res) => {
           p.codigo_barras,
           p.nome,
           p.preco_venda,
+          p.tabela_preco_id,
+      p.linha_comercial_id,
           p.fornecedor,
           p.estoque_atual,
           c.nome AS categoria_nome,
@@ -707,22 +850,32 @@ router.get('/search', (req, res) => {
         trintaDias.toISOString().slice(0, 10),
         hoje.toISOString().slice(0, 10),
         limite
-      ], (err, rows) => {
+      ], async (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
-        const items = (rows || []).map((row) => ({
-          id: row.id,
-          nome: row.nome,
-          codigo: row.codigo || '',
-          codigo_barras: row.codigo_barras || '',
-          categoria: row.categoria_nome || '',
-          marca: row.fornecedor || '',
-          fabricante: row.fornecedor || '',
-          referencia: row.codigo || String(row.id),
-          estoque: Number(row.estoque_atual || 0),
-          preco_venda: Number(row.preco_venda || 0),
-          frequente: true
-        }));
-        return res.json({ items, total: items.length, offset: 0, limite });
+        try {
+          const normalizados = await normalizarProdutosResposta(rows || [], modoFiscal);
+          const items = normalizados.map((row) => {
+            const precoOficial = Number(row.preco_venda ?? 0);
+            return {
+              id: row.id,
+              nome: row.nome,
+              codigo: row.codigo || '',
+              codigo_barras: row.codigo_barras || '',
+              categoria: row.categoria_nome || '',
+              marca: row.fornecedor || '',
+              fabricante: row.fornecedor || '',
+              referencia: row.codigo || String(row.id),
+              estoque: Number(row.estoque_atual || 0),
+              preco_venda: precoOficial,
+              preco_origem: row.preco_origem,
+              preco_canal: row.preco_canal,
+              frequente: true
+            };
+          });
+          return res.json({ items, total: items.length, offset: 0, limite });
+        } catch (normErr) {
+          return res.status(500).json({ error: normErr.message });
+        }
       });
     }
     return res.json({ items: [], total: 0, offset, limite });
@@ -757,6 +910,8 @@ router.get('/search', (req, res) => {
       p.estoque_atual,
       COALESCE(p.saldo_fiscal, 0) AS saldo_fiscal,
       COALESCE(p.saldo_nao_fiscal, 0) AS saldo_nao_fiscal,
+      COALESCE(p.eh_kit, 0) AS eh_kit,
+      p.forma_comercializacao,
       c.nome AS categoria_nome,
       s.nome AS subcategoria_nome,
       CASE
@@ -790,34 +945,48 @@ router.get('/search', (req, res) => {
     limite, offset
   ];
 
-  db.all(sql, params, (err, rows) => {
+  db.all(sql, params, async (err, rows) => {
     if (err) {
       console.error('Erro LIP /produtos/search:', err.message);
       return res.status(500).json({ error: err.message });
     }
 
-    const items = (rows || []).map((row) => {
-      const norm = normalizarProdutoResposta(row, modoFiscal);
-      return {
-        id: norm.id,
-        nome: norm.nome,
-        codigo: norm.codigo || '',
-        codigo_barras: norm.codigo_barras || '',
-        referencia: norm.codigo || String(norm.id),
-        categoria: norm.categoria || norm.categoria_nome || '',
-        subcategoria: norm.subcategoria || norm.subcategoria_nome || '',
-        marca: norm.fornecedor || '',
-        fabricante: norm.fornecedor || '',
-        estoque: Number(norm.estoque_exibido ?? norm.estoque_atual ?? 0),
-        preco_venda: Number(norm.preco_venda || 0),
-        preco_promocional: norm.preco_promocional,
-        tem_promocao: norm.tem_promocao,
-        unidade: norm.unidade || 'UN',
-        match_exato: row.match_exato
-      };
-    });
-
-    res.json({ items, total: items.length, offset, limite, hasMore: items.length === limite });
+    try {
+      const normalizados = await normalizarProdutosResposta(rows || [], modoFiscal);
+      const items = normalizados.map((norm, idx) => {
+        const row = rows[idx] || {};
+        return {
+          id: norm.id,
+          nome: norm.nome,
+          codigo: norm.codigo || '',
+          codigo_barras: norm.codigo_barras || '',
+          referencia: norm.codigo || String(norm.id),
+          categoria: norm.categoria || norm.categoria_nome || '',
+          subcategoria: norm.subcategoria || norm.subcategoria_nome || '',
+          marca: norm.fornecedor || '',
+          fabricante: norm.fornecedor || '',
+          estoque: Number(norm.estoque_exibido ?? norm.estoque_atual ?? 0),
+          preco_venda: Number(norm.preco_venda || 0),
+          preco_promocional: norm.preco_promocional,
+          tem_promocao: norm.tem_promocao,
+          unidade: norm.unidade || 'UN',
+          eh_kit: Number(row.eh_kit || 0),
+          forma_comercializacao: row.forma_comercializacao
+            ? String(row.forma_comercializacao).toUpperCase()
+            : null,
+          match_exato: row.match_exato
+        };
+      });
+      res.json({
+        items,
+        total: items.length,
+        offset,
+        limite,
+        hasMore: items.length === limite
+      });
+    } catch (normErr) {
+      res.status(500).json({ error: normErr.message });
+    }
   });
 });
 
@@ -900,21 +1069,24 @@ router.get('/vencimentos/alertas', (req, res) => {
       ${filtroFiscal}
       AND date(data_validade) <= date('now', 'localtime', '+' || COALESCE(dias_alerta_validade, ?) || ' days')
     ORDER BY date(data_validade) ASC, nome ASC
-  `, [diasPadrao, diasPadrao, diasPadrao], (err, rows) => {
+  `, [diasPadrao, diasPadrao, diasPadrao], async (err, rows) => {
     if (err) {
       console.error('Erro ao buscar vencimentos de produtos:', err.message);
       return res.status(500).json({ error: err.message });
     }
 
-    const lista = (rows || []).map((row) => normalizarProdutoResposta(row, modoFiscal));
-
-    res.json({
-      dias_padrao: diasPadrao,
-      total: lista.length,
-      vencidos: lista.filter(p => p.status_validade === 'vencido').length,
-      proximos: lista.filter(p => p.status_validade === 'proximo').length,
-      produtos: lista
-    });
+    try {
+      const lista = await normalizarProdutosResposta(rows || [], modoFiscal);
+      res.json({
+        dias_padrao: diasPadrao,
+        total: lista.length,
+        vencidos: lista.filter(p => p.status_validade === 'vencido').length,
+        proximos: lista.filter(p => p.status_validade === 'proximo').length,
+        produtos: lista
+      });
+    } catch (normErr) {
+      res.status(500).json({ error: normErr.message });
+    }
   });
 });
 
@@ -1046,6 +1218,7 @@ router.get('/promocoes', (req, res) => {
       pr.nome AS nome_produto,
       pr.codigo,
       pr.preco_venda,
+      pr.tabela_preco_id,
       CASE 
         WHEN date(p.data_fim) < date('now') THEN 'expirada'
         WHEN date(p.data_inicio) > date('now') THEN 'nao_iniciada'
@@ -1068,12 +1241,27 @@ router.get('/promocoes', (req, res) => {
 
   query += ` ORDER BY p.criado_em DESC`;
 
-  db.all(query, params, (err, rows) => {
+  db.all(query, params, async (err, rows) => {
     if (err) {
       console.error('Erro ao listar promoções:', err.message);
       return res.status(500).json({ error: err.message });
     }
-    res.json(rows || []);
+    try {
+      const lista = rows || [];
+      await Promise.all(lista.map(async (row) => {
+        if (!row.produto_id && !row.preco_venda && !row.tabela_preco_id) return;
+        const preco = await ComercialPrecoResolver.obterPrecoVendaAsync({
+          id: row.produto_id,
+          preco_venda: row.preco_venda,
+          tabela_preco_id: row.tabela_preco_id,
+          nome: row.nome_produto
+        });
+        row.preco_venda = preco;
+      }));
+      res.json(lista);
+    } catch (resolveErr) {
+      res.status(500).json({ error: resolveErr.message });
+    }
   });
 });
 
@@ -1302,13 +1490,15 @@ function revalidarSugestoesPendentes(descontoPercentual, callback) {
       p.controlar_validade,
       p.data_validade,
       p.preco_venda,
+      p.tabela_preco_id,
+      p.linha_comercial_id,
       ${SQL_ULTIMA_VENDA_PRODUTO} AS ultima_venda
     FROM promocoes_sugestoes ps
     INNER JOIN produtos p ON p.id = ps.produto_id
     WHERE ps.ativo = 1
       AND ps.aceito_em IS NULL
       AND ps.rejeitado_em IS NULL
-  `, [], (err, rows) => {
+  `, [], async (err, rows) => {
     if (err) {
       console.error('Erro ao revalidar sugestões pendentes:', err.message);
       return callback(err);
@@ -1316,6 +1506,14 @@ function revalidarSugestoesPendentes(descontoPercentual, callback) {
 
     const lista = rows || [];
     if (!lista.length) return callback(null, 0);
+
+    try {
+      for (const row of lista) {
+        row.preco_venda = await ComercialPrecoResolver.obterPrecoVendaAsync(row);
+      }
+    } catch (resolveErr) {
+      return callback(resolveErr);
+    }
 
     let indice = 0;
     let atualizadas = 0;
@@ -1502,6 +1700,8 @@ router.post('/promocoes/gerar-sugestoes', (req, res) => {
       p.controlar_validade,
       p.data_validade,
       p.preco_venda,
+      p.tabela_preco_id,
+      p.linha_comercial_id,
       ${SQL_ULTIMA_VENDA_PRODUTO} AS ultima_venda
     FROM produtos p
     WHERE
@@ -1532,10 +1732,18 @@ router.post('/promocoes/gerar-sugestoes', (req, res) => {
     const filtroAtivo = temColunaAtivo ? 'COALESCE(p.ativo, 1) = 1 AND' : '';
     query = query.replace('__FILTRO_ATIVO__', filtroAtivo);
 
-    db.all(query, params, (err, produtos) => {
+    db.all(query, params, async (err, produtos) => {
       if (err) {
         console.error('Erro ao buscar produtos para sugestão:', err.message);
         return res.status(500).json({ error: err.message });
+      }
+
+      try {
+        for (const produto of produtos || []) {
+          produto.preco_venda = await ComercialPrecoResolver.obterPrecoVendaAsync(produto);
+        }
+      } catch (resolveErr) {
+        return res.status(500).json({ error: resolveErr.message });
       }
 
       const sugestoes = [];
@@ -1595,6 +1803,8 @@ router.get('/promocoes/produtos-elegiveis', (req, res) => {
       p.controlar_validade,
       p.data_validade,
       p.preco_venda,
+      p.tabela_preco_id,
+      p.linha_comercial_id,
       ${SQL_ULTIMA_VENDA_PRODUTO} AS ultima_venda
     FROM produtos p
     WHERE
@@ -1613,10 +1823,18 @@ router.get('/promocoes/produtos-elegiveis', (req, res) => {
       temColunaAtivo ? 'COALESCE(p.ativo, 1) = 1 AND' : ''
     );
 
-    db.all(query, [], (err, produtos) => {
+    db.all(query, [], async (err, produtos) => {
       if (err) {
         console.error('Erro ao buscar produtos elegíveis:', err.message);
         return res.status(500).json({ error: err.message });
+      }
+
+      try {
+        for (const produto of produtos || []) {
+          produto.preco_venda = await ComercialPrecoResolver.obterPrecoVendaAsync(produto);
+        }
+      } catch (resolveErr) {
+        return res.status(500).json({ error: resolveErr.message });
       }
 
       const elegiveis = [];
@@ -1679,23 +1897,91 @@ router.post('/:id/recalcular-saldos', verificarPermissaoEspecifica('produtos', '
 
 function executarAjusteEstoque(req, res) {
   const { id } = req.params;
-  const {
-    ajuste_fiscal,
-    ajuste_nao_fiscal,
-    motivo,
-    lote,
-    data_fabricacao,
-    data_validade,
-    quantidade,
-    modo_fiscal
-  } = req.body;
+  const body = req.body || {};
 
-  let ajusteFiscal = Number(ajuste_fiscal ?? 0);
-  let ajusteNaoFiscal = Number(ajuste_nao_fiscal ?? 0);
+  const finalizar = (ajusteFiscal, ajusteNaoFiscal, metaConversao = null) => {
+    aplicarAjusteEstoqueProduto(db, {
+      produtoId: id,
+      ajusteFiscal,
+      ajusteNaoFiscal,
+      motivo: body.motivo,
+      usuarioId: req.user?.id,
+      usuarioNome: req.user?.username || req.user?.nome,
+      lote: body.lote,
+      dataFabricacao: body.data_fabricacao,
+      dataValidade: body.data_validade,
+      lotesService
+    }, (err, resultado) => {
+      if (err) {
+        const status = err.message.includes('não encontrado') ? 404 : 400;
+        return res.status(status).json({ error: err.message, codigo: err.codigo || null });
+      }
 
-  if (quantidade !== undefined && quantidade !== null && ajuste_fiscal === undefined && ajuste_nao_fiscal === undefined) {
-    const qtd = Number(quantidade) || 0;
-    const modoFiscalAtivo = modo_fiscal === 1 || modo_fiscal === true || modo_fiscal === '1';
+      gravarAuditoria({
+        usuario_id: req.user?.id || null,
+        usuario_nome: req.user?.username || req.user?.nome || null,
+        modulo: 'produtos',
+        acao: 'ajustar_estoque',
+        referencia_tipo: 'produto',
+        referencia_id: id,
+        detalhes: {
+          ajuste_fiscal: ajusteFiscal,
+          ajuste_nao_fiscal: ajusteNaoFiscal,
+          motivo: body.motivo,
+          unidade_origem: metaConversao?.unidadeOrigem || null,
+          quantidade_informada_fiscal: metaConversao?.quantidadeInformadaFiscal ?? null,
+          quantidade_informada_nao_fiscal: metaConversao?.quantidadeInformadaNaoFiscal ?? null,
+          conversoes: metaConversao?.conversoes || null,
+          resultado,
+          sprint: 'EST-MCC-01'
+        },
+        ip_requisicao: req.ip || null
+      }).catch(() => {});
+
+      res.json({
+        message: 'Estoque ajustado com sucesso',
+        ...resultado,
+        mcc: metaConversao && !metaConversao.legado
+          ? {
+              unidade_origem: metaConversao.unidadeOrigem,
+              unidade_base: metaConversao.unidadeBase,
+              quantidade_informada_fiscal: metaConversao.quantidadeInformadaFiscal,
+              quantidade_informada_nao_fiscal: metaConversao.quantidadeInformadaNaoFiscal,
+              quantidade_base_fiscal: ajusteFiscal,
+              quantidade_base_nao_fiscal: ajusteNaoFiscal,
+              conversoes: metaConversao.conversoes
+            }
+          : null
+      });
+    });
+  };
+
+  // EST-MCC-01: com unidade_origem → MCC converte; sem → legado (já em base)
+  const temUnidadeMcc = Boolean(
+    body.unidade_origem || body.unidadeOrigem || body.unidade_comercial
+  );
+
+  if (temUnidadeMcc) {
+    return estoqueAdjustmentOperacional.prepararDeltasBase(db, id, body)
+      .then((prep) => {
+        finalizar(prep.ajusteFiscal, prep.ajusteNaoFiscal, prep);
+      })
+      .catch((err) => {
+        const status = err.status || (err.message && err.message.includes('não encontrado') ? 404 : 400);
+        return res.status(status).json({
+          error: err.message || 'Erro na conversão MCC do ajuste.',
+          codigo: err.codigo || null
+        });
+      });
+  }
+
+  let ajusteFiscal = Number(body.ajuste_fiscal ?? 0);
+  let ajusteNaoFiscal = Number(body.ajuste_nao_fiscal ?? 0);
+
+  if (body.quantidade !== undefined && body.quantidade !== null
+    && body.ajuste_fiscal === undefined && body.ajuste_nao_fiscal === undefined) {
+    const qtd = Number(body.quantidade) || 0;
+    const modoFiscalAtivo = body.modo_fiscal === 1 || body.modo_fiscal === true || body.modo_fiscal === '1';
     if (modoFiscalAtivo) {
       ajusteFiscal = qtd;
     } else {
@@ -1703,45 +1989,28 @@ function executarAjusteEstoque(req, res) {
     }
   }
 
-  aplicarAjusteEstoqueProduto(db, {
-    produtoId: id,
-    ajusteFiscal,
-    ajusteNaoFiscal,
-    motivo,
-    usuarioId: req.user?.id,
-    usuarioNome: req.user?.username || req.user?.nome,
-    lote,
-    dataFabricacao: data_fabricacao,
-    dataValidade: data_validade,
-    lotesService
-  }, (err, resultado) => {
-    if (err) {
-      const status = err.message.includes('não encontrado') ? 404 : 400;
-      return res.status(status).json({ error: err.message });
-    }
-
-    gravarAuditoria({
-      usuario_id: req.user?.id || null,
-      usuario_nome: req.user?.username || req.user?.nome || null,
-      modulo: 'produtos',
-      acao: 'ajustar_estoque',
-      referencia_tipo: 'produto',
-      referencia_id: id,
-      detalhes: {
-        ajuste_fiscal: ajusteFiscal,
-        ajuste_nao_fiscal: ajusteNaoFiscal,
-        motivo,
-        resultado
-      },
-      ip_requisicao: req.ip || null
-    }).catch(() => {});
-
-    res.json({
-      message: 'Estoque ajustado com sucesso',
-      ...resultado
-    });
-  });
+  finalizar(ajusteFiscal, ajusteNaoFiscal, { legado: true });
 }
+
+router.get('/:id/ajuste-estoque/unidades', exigirPerfilAjusteEstoque(), async (req, res) => {
+  try {
+    const meta = await estoqueAdjustmentOperacional.obterUnidadesAjuste(db, req.params.id);
+    res.json(meta);
+  } catch (err) {
+    const status = err.status || 500;
+    res.status(status).json({ error: err.message, codigo: err.codigo || null });
+  }
+});
+
+router.post('/:id/ajuste-estoque/preview', exigirPerfilAjusteEstoque(), async (req, res) => {
+  try {
+    const preview = await estoqueAdjustmentOperacional.preview(db, req.params.id, req.body || {});
+    res.json(preview);
+  } catch (err) {
+    const status = err.status || 400;
+    res.status(status).json({ error: err.message, codigo: err.codigo || null });
+  }
+});
 
 router.get('/:id/tem-movimentacoes', exigirPerfilAjusteEstoque(), (req, res) => {
   produtoTemMovimentacoes(db, req.params.id, (err, tem) => {
@@ -1764,10 +2033,14 @@ router.get('/:id', (req, res) => {
       (SELECT preco_atacado FROM produto_atacado WHERE produto_id = p.id ORDER BY quantidade_minima ASC LIMIT 1) AS preco_atacado,
       (SELECT quantidade_minima FROM produto_atacado WHERE produto_id = p.id ORDER BY quantidade_minima ASC LIMIT 1) AS quantidade_minima_atacado,
       c.nome AS categoria_nome,
-      s.nome AS subcategoria_nome
+      s.nome AS subcategoria_nome,
+      lc.codigo AS linha_comercial_codigo,
+      lc.descricao AS linha_comercial_descricao,
+      lc.ativo AS linha_comercial_ativa
     FROM produtos p
     LEFT JOIN categorias c ON c.id = p.categoria_id
     LEFT JOIN subcategorias s ON s.id = p.subcategoria_id
+    LEFT JOIN linhas_comerciais lc ON lc.id = p.linha_comercial_id
     WHERE p.id = ?
   `, [req.params.id], (err, row) => {
     if (err) {
@@ -1791,20 +2064,20 @@ router.get('/:id', (req, res) => {
             return res.status(500).json({ error: movErr.message });
           }
 
-          const produtoBase = normalizarProdutoResposta({
+          normalizarProdutoResposta({
             ...row,
             categoria: row.categoria_nome || '',
             subcategoria: row.subcategoria_nome || '',
             atacado_faixas: faixas || [],
             tem_movimentacoes: temMovimentacoes
-          }, modoFiscal);
-
-          enriquecerProdutoComValidade(req.params.id, produtoBase, (validadeErr, produto) => {
-            if (validadeErr) {
-              return res.status(500).json({ error: validadeErr.message });
-            }
-            res.json(produto);
-          });
+          }, modoFiscal).then((produtoBase) => {
+            enriquecerProdutoComValidade(req.params.id, produtoBase, (validadeErr, produto) => {
+              if (validadeErr) {
+                return res.status(500).json({ error: validadeErr.message });
+              }
+              res.json(produto);
+            });
+          }).catch((normErr) => res.status(500).json({ error: normErr.message }));
         });
       }
     );
@@ -1812,7 +2085,7 @@ router.get('/:id', (req, res) => {
 });
 
 // Criar produto
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
   const {
     codigo, nome, categoria_id, subcategoria_id, unidade, preco_compra,
     lucro_percentual, preco_venda, estoque_atual, estoque_minimo, fornecedor,
@@ -1828,15 +2101,25 @@ router.post('/', (req, res) => {
     permite_venda_unidade,
     peso_medio_unidade,
     preco_unidade,
+    tabela_preco_id,
+    linha_comercial_id,
+    participa_atacado,
     // Campos adicionais para lote inicial
     lote_inicial,
     data_fabricacao_inicial,
     data_validade_inicial,
-    dias_alerta_validade
+    dias_alerta_validade,
+    // UC-01 — conversão física (sem fator no cadastro)
+    utiliza_conversao_fisica,
+    unidade_conversao_fisica
   } = req.body;
 
   const controlarValidade = controlar_validade ? 1 : 0;
   const flagFracionado = resolverFlagProdutoFracionado({ produto_fracionado, vendido_por_peso }) ?? 0;
+  const flagConversaoFisica = utiliza_conversao_fisica === true || utiliza_conversao_fisica === 1 || utiliza_conversao_fisica === '1' ? 1 : 0;
+  const unidadeConversaoFisica = flagConversaoFisica
+    ? String(unidade_conversao_fisica || '').trim().toUpperCase() || null
+    : null;
 
   let saldoFiscalInicial;
   let saldoNaoFiscalInicial;
@@ -1866,6 +2149,38 @@ router.post('/', (req, res) => {
   const permiteVendaUnidade = camposVendaUnidade.permite_venda_unidade ?? 0;
   const pesoMedioUnidade = camposVendaUnidade.peso_medio_unidade ?? 0;
   const precoUnidade = camposVendaUnidade.preco_unidade ?? 0;
+  // RCM-8.2 — produto não conhece Tabela (sempre null no fluxo oficial)
+  const tabelaPrecoId = null;
+
+  // A-1 — Políticas Comerciais explícitas (N:N). Categoria NÃO gera política.
+  const politicasIdsCriacao = extrairPoliticaIdsBody(req.body);
+  let linhaComercialId = null;
+  if (Array.isArray(politicasIdsCriacao) && politicasIdsCriacao.length) {
+    linhaComercialId = politicasIdsCriacao[0];
+  } else if (linha_comercial_id !== undefined && linha_comercial_id !== null && linha_comercial_id !== '') {
+    const n = Number(linha_comercial_id);
+    linhaComercialId = Number.isFinite(n) && n > 0 ? n : null;
+  }
+
+  try {
+    linhaComercialId = await validarLinhaPrecificacaoProduto(linhaComercialId);
+  } catch (linhaErr) {
+    return res.status(linhaErr.statusCode || 400).json({ error: linhaErr.message });
+  }
+
+  let formaPayload = null;
+  try {
+    if (req.body.forma_comercializacao !== undefined && req.body.forma_comercializacao !== null && req.body.forma_comercializacao !== '') {
+      formaPayload = FormaComercializacao.normalizarPayloadForma(req.body);
+    }
+  } catch (formaErr) {
+    return res.status(400).json({ error: formaErr.message });
+  }
+
+  const flagFracionadoFinal = formaPayload
+    ? formaPayload.produto_fracionado
+    : flagFracionado;
+
   console.log('[AUDIT PRODUTO POST] req.body.item_fiscal:', req.body.item_fiscal);
   console.log('[AUDIT PRODUTO POST] item_fiscal gravar INSERT:', itemFiscalGravar);
 
@@ -1880,9 +2195,10 @@ router.post('/', (req, res) => {
       vendido_por_peso, produto_fracionado, peso_total_compra, valor_total_compra, custo_por_kg,
       venda_atacado,
       saldo_fiscal, saldo_nao_fiscal, item_fiscal,
-      permite_venda_unidade, peso_medio_unidade, preco_unidade
+      permite_venda_unidade, peso_medio_unidade, preco_unidade,
+      tabela_preco_id, linha_comercial_id
     )
-    VALUES (${Array(33).fill('?').join(', ')})
+    VALUES (${Array(35).fill('?').join(', ')})
   `, [
     codigo, nome, categoria_id, subcategoria_id, unidade,
     preco_compra, lucro_percentual, preco_venda,
@@ -1890,8 +2206,8 @@ router.post('/', (req, res) => {
     ncm, cfop, csosn, origem, cest, codigo_barras,
     aliquota_icms, aliquota_pis, aliquota_cofins,
     controlarValidade,
-    flagFracionado,
-    flagFracionado,
+    flagFracionadoFinal,
+    flagFracionadoFinal,
     peso_total_compra || 0,
     valor_total_compra || 0,
     custo_por_kg || 0,
@@ -1901,7 +2217,9 @@ router.post('/', (req, res) => {
     itemFiscalGravar,
     permiteVendaUnidade,
     pesoMedioUnidade,
-    precoUnidade
+    precoUnidade,
+    Number.isFinite(tabelaPrecoId) && tabelaPrecoId > 0 ? tabelaPrecoId : null,
+    linhaComercialId
   ],
     function(err) {
       if (err) {
@@ -1911,6 +2229,57 @@ router.post('/', (req, res) => {
       }
 
       const produtoId = this.lastID;
+
+      const participaAtacadoFlag =
+        participa_atacado === 0 || participa_atacado === false || participa_atacado === '0' ? 0 : 1;
+
+      const aplicarFormaEContinuar = (next) => {
+        db.run(
+          `UPDATE produtos SET participa_atacado = ? WHERE id = ?`,
+          [participaAtacadoFlag, produtoId],
+          () => {
+            if (!formaPayload) return next();
+            db.run(
+              `
+            UPDATE produtos SET
+              forma_comercializacao = ?,
+              unidade_venda = ?,
+              quantidade_bolas = ?,
+              peso_medio_bola = ?,
+              bolas_min = ?,
+              bolas_max = ?,
+              forma_personalizada_nome = ?,
+              forma_personalizada_unidade = ?,
+              produto_fracionado = ?,
+              vendido_por_peso = ?,
+              updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+          `,
+              [
+                formaPayload.forma_comercializacao,
+                formaPayload.unidade_venda,
+                formaPayload.quantidade_bolas,
+                formaPayload.peso_medio_bola,
+                formaPayload.bolas_min,
+                formaPayload.bolas_max,
+                formaPayload.forma_personalizada_nome,
+                formaPayload.forma_personalizada_unidade,
+                formaPayload.produto_fracionado,
+                formaPayload.vendido_por_peso,
+                produtoId
+              ],
+              (formaErr) => {
+                if (formaErr) {
+                  console.error('[RCM-04.3] Falha ao gravar forma de comercialização:', formaErr.message);
+                }
+                next();
+              }
+            );
+          }
+        );
+      };
+
+      aplicarFormaEContinuar(() => {
       db.get(
         'SELECT id, nome, item_fiscal, saldo_fiscal, saldo_nao_fiscal FROM produtos WHERE id = ?',
         [produtoId],
@@ -1957,36 +2326,79 @@ router.post('/', (req, res) => {
           Muc.garantirUnidadeBase(db, {
             id: produtoId,
             unidade,
-            preco_venda,
+            preco_venda: ComercialPrecoResolver.obterPrecoVenda({ preco_venda }),
             codigo_barras,
             codigo
           }).catch((mucErr) => {
             console.error('[MUC] Falha ao criar unidade base do produto:', mucErr.message);
           });
 
-          buscarProdutoCompleto(produtoId, (err2, row) => {
-            if (err2 || !row) {
-              return res.status(500).json({ error: err2?.message || 'Erro ao buscar produto criado' });
+          db.run(
+            `
+              UPDATE produtos
+              SET utiliza_conversao_fisica = ?,
+                  unidade_conversao_fisica = ?,
+                  updated_at = CURRENT_TIMESTAMP
+              WHERE id = ?
+            `,
+            [flagConversaoFisica, unidadeConversaoFisica, produtoId],
+            (ucErr) => {
+              if (ucErr) {
+                console.error('[UC-01] Falha ao gravar flags de conversão física:', ucErr.message);
+              }
             }
+          );
 
-            res.json({
-              ...row,
-              message: 'Produto criado com sucesso'
+          const finalizarCriacao = () => {
+            buscarProdutoCompleto(produtoId, (err2, row) => {
+              if (err2 || !row) {
+                return res.status(500).json({ error: err2?.message || 'Erro ao buscar produto criado' });
+              }
+
+              res.json({
+                ...row,
+                message: 'Produto criado com sucesso'
+              });
+
+              gravarAuditoria({
+                usuario_id: req.user?.id || null,
+                usuario_nome: req.user?.username || req.user?.nome || null,
+                modulo: 'produtos',
+                acao: 'criar_produto',
+                referencia_tipo: 'produto',
+                referencia_id: produtoId,
+                detalhes: {
+                  nome,
+                  codigo,
+                  categoria_id,
+                  estoque_atual,
+                  preco_venda,
+                  controlar_validade,
+                  faixas_atacado: (atacado_faixas || []).length,
+                  politicas_comerciais_ids: Array.isArray(politicasIdsCriacao) ? politicasIdsCriacao : []
+                },
+                ip_requisicao: req.ip || null
+              }).catch((auditErr) => console.error('Erro ao gravar auditoria de criação de produto:', auditErr));
             });
+          };
 
-            gravarAuditoria({
-              usuario_id: req.user?.id || null,
-              usuario_nome: req.user?.username || req.user?.nome || null,
-              modulo: 'produtos',
-              acao: 'criar_produto',
-              referencia_tipo: 'produto',
-              referencia_id: produtoId,
-              detalhes: { nome, codigo, categoria_id, estoque_atual, preco_venda, controlar_validade, faixas_atacado: (atacado_faixas || []).length },
-              ip_requisicao: req.ip || null
-            }).catch((auditErr) => console.error('Erro ao gravar auditoria de criação de produto:', auditErr));
-          });
+          if (Array.isArray(politicasIdsCriacao)) {
+            ProdutoPoliticasComerciaisService.salvarPoliticasProduto(produtoId, politicasIdsCriacao)
+              .then(() => finalizarCriacao())
+              .catch((polErr) => {
+                console.error('[A-1] Falha ao salvar políticas do produto:', polErr.message);
+                finalizarCriacao();
+              });
+          } else if (linhaComercialId) {
+            ProdutoPoliticasComerciaisService.salvarPoliticasProduto(produtoId, [linhaComercialId])
+              .then(() => finalizarCriacao())
+              .catch(() => finalizarCriacao());
+          } else {
+            finalizarCriacao();
+          }
         });
       }
+      });
     });
 });
 
@@ -2056,7 +2468,7 @@ router.put('/:id', (req, res) => {
 
   console.log('[AUDIT PRODUTO PUT] id:', id, 'req.body.item_fiscal:', req.body.item_fiscal);
 
-  db.get('SELECT * FROM produtos WHERE id = ?', [id], (err, old) => {
+  db.get('SELECT * FROM produtos WHERE id = ?', [id], async (err, old) => {
     if (err) {
       res.status(500).json({ error: err.message });
       return;
@@ -2107,6 +2519,50 @@ router.put('/:id', (req, res) => {
 
     Object.assign(bodyUpdates, normalizarCamposVendaUnidade(bodyUpdates));
 
+    // RCM-8.2 — produto nunca persiste tabela / canal / tipo
+    bodyUpdates.tabela_preco_id = null;
+
+    if (Object.prototype.hasOwnProperty.call(bodyUpdates, 'participa_atacado')) {
+      const raw = bodyUpdates.participa_atacado;
+      bodyUpdates.participa_atacado =
+        raw === 0 || raw === false || raw === '0' ? 0 : 1;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(bodyUpdates, 'linha_comercial_id')) {
+      const raw = bodyUpdates.linha_comercial_id;
+      if (raw === '' || raw === undefined || raw === null) {
+        bodyUpdates.linha_comercial_id = null;
+      } else {
+        const n = Number(raw);
+        bodyUpdates.linha_comercial_id = Number.isFinite(n) && n > 0 ? n : null;
+      }
+    }
+
+    // A-1 — políticas N:N; categoria não força linha/política
+    const politicasIdsUpdate = extrairPoliticaIdsBody(req.body);
+    if (Array.isArray(politicasIdsUpdate)) {
+      bodyUpdates.linha_comercial_id = politicasIdsUpdate[0] || null;
+    }
+
+    try {
+      if (Object.prototype.hasOwnProperty.call(bodyUpdates, 'linha_comercial_id')) {
+        bodyUpdates.linha_comercial_id = await validarLinhaPrecificacaoProduto(
+          bodyUpdates.linha_comercial_id
+        );
+      }
+    } catch (linhaErr) {
+      return res.status(linhaErr.statusCode || 400).json({ error: linhaErr.message });
+    }
+
+    if (bodyUpdates.forma_comercializacao !== undefined && bodyUpdates.forma_comercializacao !== null && bodyUpdates.forma_comercializacao !== '') {
+      try {
+        const formaPayload = FormaComercializacao.normalizarPayloadForma(bodyUpdates);
+        Object.assign(bodyUpdates, formaPayload);
+      } catch (formaErr) {
+        return res.status(400).json({ error: formaErr.message });
+      }
+    }
+
     Object.keys(bodyUpdates).forEach(key => {
       if (!CAMPOS_PRODUTO_IGNORADOS.has(key)) {
         fields.push(`${key} = ?`);
@@ -2115,7 +2571,12 @@ router.put('/:id', (req, res) => {
     });
 
     const temSaldosIniciais = saldo_fiscal_inicial !== undefined || saldo_nao_fiscal_inicial !== undefined;
-    if (fields.length === 0 && !Array.isArray(atacado_faixas) && !temSaldosIniciais) {
+    if (
+      fields.length === 0 &&
+      !Array.isArray(atacado_faixas) &&
+      !temSaldosIniciais &&
+      !Array.isArray(politicasIdsUpdate)
+    ) {
       return res.status(400).json({ error: 'Nenhum campo válido para atualizar.' });
     }
 
@@ -2180,35 +2641,45 @@ router.put('/:id', (req, res) => {
       });
     };
 
+    const salvarPoliticasSeInformadas = (callback) => {
+      if (!Array.isArray(politicasIdsUpdate)) return callback(null);
+      ProdutoPoliticasComerciaisService.salvarPoliticasProduto(id, politicasIdsUpdate)
+        .then(() => callback(null))
+        .catch(callback);
+    };
+
     const concluirAtualizacao = (callback) => {
       salvarFaixasTemporarias((faixaErr) => {
         if (faixaErr) return callback(faixaErr);
-        aplicarSaldosIniciaisSePermitido((saldosErr) => {
-          if (saldosErr) return callback(saldosErr);
+        salvarPoliticasSeInformadas((polErr) => {
+          if (polErr) return callback(polErr);
+          aplicarSaldosIniciaisSePermitido((saldosErr) => {
+            if (saldosErr) return callback(saldosErr);
 
-          const deveSincronizarValidade =
-            controlarValidadeInformado !== undefined ||
-            dataValidadeInformada ||
-            diasAlertaInformado !== undefined;
+            const deveSincronizarValidade =
+              controlarValidadeInformado !== undefined ||
+              dataValidadeInformada ||
+              diasAlertaInformado !== undefined;
 
-          if (!deveSincronizarValidade) {
-            return callback(null);
-          }
+            if (!deveSincronizarValidade) {
+              return callback(null);
+            }
 
-          db.get('SELECT * FROM produtos WHERE id = ?', [id], (getErr, atual) => {
-            if (getErr) return callback(getErr);
-            if (!atual) return callback(new Error('Produto não encontrado após atualização.'));
+            db.get('SELECT * FROM produtos WHERE id = ?', [id], (getErr, atual) => {
+              if (getErr) return callback(getErr);
+              if (!atual) return callback(new Error('Produto não encontrado após atualização.'));
 
-            sincronizarValidadeELoteProduto(id, {
-              controlarValidade: controlarValidadeInformado !== undefined
-                ? (controlarValidadeInformado ? 1 : 0)
-                : atual.controlar_validade,
-              dataValidade: dataValidadeInformada,
-              diasAlerta: diasAlertaInformado !== undefined
-                ? diasAlertaInformado
-                : atual.dias_alerta_validade,
-              estoqueTotal: obterEstoqueTotalProduto(atual)
-            }, callback);
+              sincronizarValidadeELoteProduto(id, {
+                controlarValidade: controlarValidadeInformado !== undefined
+                  ? (controlarValidadeInformado ? 1 : 0)
+                  : atual.controlar_validade,
+                dataValidade: dataValidadeInformada,
+                diasAlerta: diasAlertaInformado !== undefined
+                  ? diasAlertaInformado
+                  : atual.dias_alerta_validade,
+                estoqueTotal: obterEstoqueTotalProduto(atual)
+              }, callback);
+            });
           });
         });
       });
@@ -2286,12 +2757,16 @@ router.get('/estoque/baixo', (req, res) => {
     WHERE ${exprEstoque} <= estoque_minimo 
       ${filtroFiscal}
     ORDER BY (${exprEstoque} / NULLIF(estoque_minimo, 0)) ASC
-  `, (err, rows) => {
+  `, async (err, rows) => {
     if (err) {
       res.status(500).json({ error: err.message });
       return;
     }
-    res.json((rows || []).map((row) => normalizarProdutoResposta(row, modoFiscal)));
+    try {
+      res.json(await normalizarProdutosResposta(rows || [], modoFiscal));
+    } catch (normErr) {
+      res.status(500).json({ error: normErr.message });
+    }
   });
 });
 
@@ -2533,5 +3008,11 @@ router.get('/muc/barras/:codigo', async (req, res) => {
 
 const mucUnidadesRoutes = require('../motores/muc/routes/unidades.routes');
 router.use('/:id/unidades', mucUnidadesRoutes);
+
+const mucConversoesRoutes = require('../motores/muc/routes/conversoes.routes');
+router.use('/:id/conversoes', mucConversoesRoutes);
+
+const ucUnidadesComercializacaoRoutes = require('../motores/unidades-comercializacao/routes/unidadesComercializacao.routes');
+router.use('/:id/unidades-comercializacao', ucUnidadesComercializacaoRoutes);
 
 module.exports = router;

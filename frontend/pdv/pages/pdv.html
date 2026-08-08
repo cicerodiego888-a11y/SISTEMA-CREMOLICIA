@@ -16,7 +16,14 @@
     </div>
 
     <div class="pdv-topo-central-label">
-      <span>SISTEMA FISCAL</span>
+      <div class="pdv-canal-gerenciador">
+        <div id="comercialStatusCardPdv" class="pdv-comercial-status-host"></div>
+        <div class="pdv-canal-seletor" role="group" aria-label="Modo do canal">
+          <button type="button" class="pdv-canal-link active" id="btnCanalAutoPdv" title="Canal automático (Varejo/Atacado)">Auto</button>
+          <span class="pdv-canal-sep" aria-hidden="true">|</span>
+          <button type="button" class="pdv-canal-link" id="btnCanalEventoPdv" title="Canal Evento (autorizado)">Evento</button>
+        </div>
+      </div>
     </div>
 
     <div class="pdv-status">
@@ -72,7 +79,7 @@
               <th class="col-un">UN</th>
               <th class="col-produto">Produto</th>
               <th class="col-unit">Unitário</th>
-              <th class="col-desc">Desc</th>
+              <th class="col-desc" title="Desconto percentual do item">Desc %</th>
               <th class="col-total">Total</th>
               <th class="col-acao"></th>
             </tr>

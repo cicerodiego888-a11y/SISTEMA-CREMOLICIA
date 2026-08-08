@@ -19,7 +19,9 @@ describe('Preparar Entrega — Workspace UX-20', () => {
     expect(el.dataset.uxSprint).toBe('UX-20');
     expect(el.dataset.sharedUiReference).toBe('preparar-entrega');
     expect(el.querySelector('.cds-workspace__footer')).toBeTruthy();
-    expect(el.querySelector('#preparar-entrega-credit-strip')).toBeTruthy();
+    expect(el.querySelector('#preparar-entrega-resumo-financeiro')).toBeTruthy();
+    expect(el.querySelector('#preparar-entrega-operacao-resumo')).toBeTruthy();
+    expect(el.querySelector('#preparar-entrega-credit-strip')).toBeNull();
     expect(el.querySelector('.cds-dashboard-layout__sidebar')).toBeNull();
   });
 });

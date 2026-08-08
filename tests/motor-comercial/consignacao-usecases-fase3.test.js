@@ -263,7 +263,9 @@ async function run() {
     assert.strictEqual(result.dados.grupoPrestacaoContas.status, 'ABERTA');
   });
 
-  await test('UC-020 RegistrarVenda — fluxo feliz e bridge', async () => {
+  await test('UC-020 RegistrarVenda — fluxo feliz (ledger + evento; sem receita espelhada)', async () => {
+    // STAB-06 / PLATFORM-02.1: efeitos financeiros oficiais ficam no núcleo criarVenda.
+    // Esta UC não enfileira FINANCEIRO_LANCAR_RECEITA (evita venda paralela).
     const consignacaoRepo = criarMockConsignacaoRepo(criarConsignacao());
     const itemRepo = criarMockItemRepo([criarItem()]);
     const perfilRepo = criarMockPerfilRepo();
@@ -283,7 +285,7 @@ async function run() {
     });
 
     assert.strictEqual(result.isOk(), true);
-    assert.strictEqual(receitaChamada, true);
+    assert.strictEqual(receitaChamada, false);
     assert.strictEqual(itemRepo.itens[0].quantidadeVendida, 3);
     assert.strictEqual(movRepo.movimentacoes.some((m) => m.tipoMovimentacao === 'VENDA_PRESTACAO'), true);
     assert.strictEqual(deps.publisher.publicados.some((e) => e.tipo === EVENTOS_DOMINIO.VENDA_PRESTACAO_REGISTRADA), true);

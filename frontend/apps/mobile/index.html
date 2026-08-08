@@ -8,22 +8,22 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="CDS Mobile">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <title>CDS Mobile RC2.4.9</title>
-  <link rel="manifest" href="/apps/mobile/manifest.webmanifest?v=2.4.9-icon2">
-  <link rel="shortcut icon" href="/favicon.ico?v=2.4.9-icon2">
-  <link rel="icon" href="/favicon.ico?v=2.4.9-icon2" sizes="any">
-  <link rel="icon" type="image/png" sizes="16x16" href="/apps/mobile/icons/favicon-16.png?v=2.4.9-icon2">
-  <link rel="icon" type="image/png" sizes="32x32" href="/apps/mobile/icons/favicon-32.png?v=2.4.9-icon2">
-  <link rel="icon" type="image/png" sizes="48x48" href="/apps/mobile/icons/icon-48.png?v=2.4.9-icon2">
-  <link rel="icon" type="image/png" sizes="96x96" href="/apps/mobile/icons/icon-96.png?v=2.4.9-icon2">
-  <link rel="icon" type="image/png" sizes="192x192" href="/apps/mobile/icons/icon-192.png?v=2.4.9-icon2">
-  <link rel="apple-touch-icon" sizes="180x180" href="/apps/mobile/icons/apple-touch-icon.png?v=2.4.9-icon2">
-  <meta name="msapplication-TileImage" content="/apps/mobile/icons/icon-192.png?v=2.4.9-icon2">
+  <title>CDS Mobile RCM-9.2.3</title>
+  <link rel="manifest" href="/apps/mobile/manifest.webmanifest?v=2.5.3-rcm923">
+  <link rel="shortcut icon" href="/favicon.ico?v=2.5.3-rcm923">
+  <link rel="icon" href="/favicon.ico?v=2.5.3-rcm923" sizes="any">
+  <link rel="icon" type="image/png" sizes="16x16" href="/apps/mobile/icons/favicon-16.png?v=2.5.3-rcm923">
+  <link rel="icon" type="image/png" sizes="32x32" href="/apps/mobile/icons/favicon-32.png?v=2.5.3-rcm923">
+  <link rel="icon" type="image/png" sizes="48x48" href="/apps/mobile/icons/icon-48.png?v=2.5.3-rcm923">
+  <link rel="icon" type="image/png" sizes="96x96" href="/apps/mobile/icons/icon-96.png?v=2.5.3-rcm923">
+  <link rel="icon" type="image/png" sizes="192x192" href="/apps/mobile/icons/icon-192.png?v=2.5.3-rcm923">
+  <link rel="apple-touch-icon" sizes="180x180" href="/apps/mobile/icons/apple-touch-icon.png?v=2.5.3-rcm923">
+  <meta name="msapplication-TileImage" content="/apps/mobile/icons/icon-192.png?v=2.5.3-rcm923">
   <meta name="msapplication-TileColor" content="#000000">
 
   <link rel="stylesheet" href="/shared/design-system/index.css">
-  <!-- CDS Mobile RC2.4.9 | build 20260717rc249fix1 | © 2026 CDS Sistemas | Lista produtos -->
-  <link rel="stylesheet" href="/apps/mobile/css/mobile.css?v=2.4.9-lista">
+  <!-- CDS Mobile RCM-9.2.3 | build 20260808rcm923 | © 2026 CDS Sistemas | Fechamento MUC -->
+  <link rel="stylesheet" href="/apps/mobile/css/mobile.css?v=2.5.3-rcm9222">
   <script>
     (function bootTheme() {
       var KEY = 'cds-ui-theme';
@@ -62,17 +62,21 @@
         <span data-icon></span>
         <span>Início</span>
       </button>
-      <button type="button" class="cds-mobile-nav-item" data-route="cadastros">
+      <button type="button" class="cds-mobile-nav-item" data-route="pdv">
         <span data-icon></span>
-        <span>Cadastros</span>
+        <span>Vender</span>
       </button>
-      <button type="button" class="cds-mobile-nav-item" data-route="comercial">
+      <button type="button" class="cds-mobile-nav-item" data-route="pdv/caixa">
         <span data-icon></span>
-        <span>Comercial</span>
+        <span>Caixa</span>
       </button>
-      <button type="button" class="cds-mobile-nav-item" data-route="financeiro">
+      <button type="button" class="cds-mobile-nav-item" data-route="pdv/vendas">
         <span data-icon></span>
-        <span>Financeiro</span>
+        <span>Vendas</span>
+      </button>
+      <button type="button" class="cds-mobile-nav-item" data-route="clientes">
+        <span data-icon></span>
+        <span>Clientes</span>
       </button>
       <button type="button" class="cds-mobile-nav-item" data-route="mais">
         <span data-icon></span>
@@ -87,24 +91,32 @@
       <img src="/apps/mobile/icons/icon-192.png" alt="" width="40" height="40"
            onerror="this.onerror=null;this.src='/shared/img/logo-cds-sistemas.png'">
       <div>
-        <strong>CDS Mobile RC2.0</strong>
+        <strong>CDS Mobile RCM-9.2</strong>
         <span id="drawer-user-name">Usuário</span>
       </div>
     </div>
     <nav class="cds-mobile-drawer__nav">
       <button type="button" data-route="dashboard"><span data-icon></span> Dashboard</button>
-      <p class="cds-drawer-group">Cadastros</p>
-      <button type="button" data-route="clientes"><span data-icon></span> Clientes</button>
-      <button type="button" data-route="fornecedores"><span data-icon></span> Fornecedores</button>
-      <button type="button" data-route="produtos"><span data-icon></span> Produtos</button>
-      <button type="button" data-route="usuarios"><span data-icon></span> Usuários</button>
       <p class="cds-drawer-group">Operação</p>
+      <button type="button" data-route="pdv"><span data-icon></span> Vender</button>
+      <button type="button" data-route="pdv/caixa"><span data-icon></span> Caixa</button>
+      <button type="button" data-route="pdv/vendas"><span data-icon></span> Vendas</button>
+      <button type="button" data-route="clientes"><span data-icon></span> Clientes</button>
+      <button type="button" data-route="produtos"><span data-icon></span> Produtos</button>
+      <p class="cds-drawer-group">Cadastros</p>
+      <button type="button" data-route="fornecedores"><span data-icon></span> Fornecedores</button>
+      <button type="button" data-route="usuarios"><span data-icon></span> Usuários</button>
+      <p class="cds-drawer-group">Módulos</p>
       <button type="button" data-route="comercial"><span data-icon></span> Comercial</button>
+      <button type="button" data-route="comercial/prestacao"><span data-icon></span> Prestação de Contas</button>
       <button type="button" data-route="estoque"><span data-icon></span> Estoque</button>
+      <button type="button" data-route="compras"><span data-icon></span> Compras</button>
+      <button type="button" data-route="central-entradas"><span data-icon></span> Central Entradas</button>
       <button type="button" data-route="financeiro"><span data-icon></span> Financeiro</button>
       <button type="button" data-route="fiscal"><span data-icon></span> Fiscal</button>
-      <button type="button" data-route="pdv"><span data-icon></span> PDV</button>
+      <button type="button" data-route="relatorios"><span data-icon></span> Relatórios</button>
       <p class="cds-drawer-group">Sistema</p>
+      <button type="button" data-route="equipamentos"><span data-icon></span> Equipamentos</button>
       <button type="button" data-route="configuracoes"><span data-icon></span> Configurações</button>
       <button type="button" data-route="perfil"><span data-icon></span> Perfil</button>
     </nav>
@@ -112,7 +124,7 @@
       <button type="button" class="cds-mobile-btn cds-mobile-btn--ghost" id="btn-logout">
         <span data-icon></span> Sair
       </button>
-      <p class="cds-mobile-muted">RC2.4.9 · Lista produtos</p>
+      <p class="cds-mobile-muted">RCM-9.2.3 · Fechamento</p>
     </div>
   </aside>
 

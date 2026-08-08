@@ -13,6 +13,7 @@ const ActionBar = require('../../../../shared/ui/ActionBar');
 const Hero = require('../../../../shared/ui/Hero');
 const EmptyState = require('../../components/base/EmptyState');
 const Loading = require('../../components/base/Loading');
+const { emptyState } = require('../../messages');
 
 class CentralTrabalhoView {
   static render(viewModel = {}, ctx = {}) {
@@ -290,10 +291,7 @@ class CentralTrabalhoView {
     section.classList.add('cds-central-ops__panel');
 
     if (!itens.length) {
-      section.appendChild(EmptyState.create({
-        title: 'Nenhuma tarefa urgente',
-        description: 'Você está em dia. Inicie uma nova entrega quando precisar.'
-      }));
+      section.appendChild(EmptyState.create(emptyState('CENTRAL_TAREFAS')));
       return section;
     }
 
@@ -331,10 +329,7 @@ class CentralTrabalhoView {
     section.classList.add('cds-central-ops__panel');
 
     if (!itens.length) {
-      section.appendChild(EmptyState.create({
-        title: 'Sem saldos pendentes',
-        description: 'Nenhum cliente aguardando recebimento na Conta Corrente.'
-      }));
+      section.appendChild(EmptyState.create(emptyState('CENTRAL_SALDOS')));
       return section;
     }
 
@@ -370,10 +365,7 @@ class CentralTrabalhoView {
     section.classList.add('cds-central-ops__panel');
 
     if (!itens.length) {
-      section.appendChild(EmptyState.create({
-        title: 'Sem entregas previstas',
-        description: 'Nenhuma entrega aguardando no momento.'
-      }));
+      section.appendChild(EmptyState.create(emptyState('CENTRAL_ENTREGAS')));
       return section;
     }
 
@@ -415,10 +407,7 @@ class CentralTrabalhoView {
     section.classList.add('cds-central-ops__panel');
 
     if (!itens.length) {
-      section.appendChild(EmptyState.create({
-        title: 'Sem operações recentes',
-        description: 'As movimentações aparecerão aqui.'
-      }));
+      section.appendChild(EmptyState.create(emptyState('CENTRAL_RECENTES')));
       return section;
     }
 

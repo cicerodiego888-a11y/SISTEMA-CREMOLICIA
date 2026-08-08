@@ -289,10 +289,14 @@ function obterEstatisticasVencimentos(callback) {
       buscarLotesVencendo(0, (err3, dadosVencidos) => {
         if (err3) return callback(err3);
 
-        // Calcular valor financeiro dos produtos vencidos
+        // Calcular valor financeiro dos produtos vencidos via ComercialPrecoResolver
         const sqlValor = `
           SELECT 
-            SUM(pl.quantidade_atual * p.preco_venda) as valor_total
+            pl.quantidade_atual,
+            p.id,
+            p.nome,
+            p.preco_venda,
+            p.tabela_preco_id
           FROM produtos_lotes pl
           INNER JOIN produtos p ON p.id = pl.produto_id
           WHERE pl.ativo = 1 
@@ -300,15 +304,26 @@ function obterEstatisticasVencimentos(callback) {
             AND date(pl.data_validade) < date('now', 'localtime')
         `;
 
-        db.get(sqlValor, [], (err4, valorRow) => {
+        db.all(sqlValor, [], async (err4, linhas) => {
           if (err4) return callback(err4);
 
-          callback(null, {
-            vencendo_30_dias: dados30.total,
-            vencendo_7_dias: dados7.total,
-            vencidos: dadosVencidos.vencidos,
-            valor_vencidos: valorRow?.valor_total || 0
-          });
+          try {
+            const ComercialPrecoResolver = require('../modules/comercial/preco/ComercialPrecoResolver');
+            let valorTotal = 0;
+            for (const linha of linhas || []) {
+              const preco = await ComercialPrecoResolver.obterPrecoVendaAsync(linha);
+              valorTotal += Number(linha.quantidade_atual || 0) * Number(preco || 0);
+            }
+
+            callback(null, {
+              vencendo_30_dias: dados30.total,
+              vencendo_7_dias: dados7.total,
+              vencidos: dadosVencidos.vencidos,
+              valor_vencidos: valorTotal
+            });
+          } catch (resolveErr) {
+            callback(resolveErr);
+          }
         });
       });
     });

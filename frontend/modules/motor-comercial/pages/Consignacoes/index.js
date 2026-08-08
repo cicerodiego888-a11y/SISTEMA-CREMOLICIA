@@ -37,6 +37,16 @@ const {
   routeWithActiveContext,
   buildRouteWithCliente360Context
 } = require('../../utils/cliente360Context');
+const {
+  ErrorMessages,
+  ConfirmMessages,
+  emptyState,
+  notifySuccess,
+  notifyError,
+  notifyWarning,
+  loadingText,
+  resolveOperationalError
+} = require('../../messages');
 
 const FAVORITES_KEY = 'motor-comercial:cockpit-filtros-favoritos';
 const REFRESH_INTERVAL_MS = 60000;
@@ -115,6 +125,7 @@ class ConsignacoesPage {
     setTimeout(() => {
       this._loadData();
       this._startAutoRefresh();
+      this._bindFocusRefresh();
     }, 0);
 
     return layout;
@@ -307,11 +318,18 @@ class ConsignacoesPage {
     actions.className = 'cds-consignacoes-filters__actions';
 
     actions.appendChild(Button.create({ text: 'Pesquisar', variant: 'primary', onClick: () => this._applyFilters() }));
-    actions.appendChild(Button.create({ text: 'Limpar', variant: 'ghost', onClick: () => this._clearFilters() }));
+    actions.appendChild(Button.create({ text: 'Limpar Filtros', variant: 'ghost', onClick: () => this._clearFilters() }));
     actions.appendChild(Button.create({ text: 'Salvar favorito', variant: 'ghost', onClick: () => this._saveFavoriteFilter() }));
     actions.appendChild(Button.create({ text: 'Carregar favorito', variant: 'ghost', onClick: () => this._loadFavoriteFilter() }));
 
     container.appendChild(actions);
+
+    const indicator = document.createElement('div');
+    indicator.id = 'cockpit-filtros-ativos';
+    indicator.className = 'cds-filtros-ativos';
+    indicator.hidden = true;
+    container.appendChild(indicator);
+
     return container;
   }
 
@@ -393,18 +411,16 @@ class ConsignacoesPage {
     container.id = 'consignacoes-content';
 
     if (this.loading) {
-      container.appendChild(Loading.create({ message: 'Carregando consignações...' }));
+      container.appendChild(Loading.create({ message: loadingText('CARREGANDO_CONSIGNACAO') }));
     } else if (this.error) {
       container.appendChild(Alert.create({
-        message: 'Erro ao carregar consignações: ' + this.error.message,
+        message: resolveOperationalError(this.error, { context: 'consignacao' })
+          || ErrorMessages.CONSIGNACAO_CARREGAR,
         variant: 'error',
         dismissible: true
       }));
     } else if (this.consignacoes.length === 0) {
-      container.appendChild(EmptyState.create({
-        title: 'Nenhuma consignação encontrada',
-        description: 'Ajuste os filtros ou crie uma nova consignação'
-      }));
+      container.appendChild(EmptyState.create(emptyState('CONSIGNACOES')));
     } else {
       container.appendChild(this._createTable());
     }
@@ -434,12 +450,12 @@ class ConsignacoesPage {
       indicador: this._createVisualIndicator(c),
       pendencias: this._createPendenciasIndicator(c),
       documento: c.documento,
-      cliente: c.cliente,
+      cliente: c.clienteNome || c.cliente,
       consignado: c.consignado,
       status: createOperationalBadge(c),
-      prestacao: c.prestacaoStatus,
-      valor: this._formatCurrency(c.valor),
-      saldo: this._formatCurrency(c.saldo),
+      prestacao: c.aguardandoEntrega ? 'Aguardando Entrega' : c.prestacaoStatus,
+      valor: this._formatCurrency(c.valor, c),
+      saldo: this._formatCurrency(c.saldo, c),
       entrega: this._formatDate(c.dataEntrega),
       ultimaMovimentacao: this._formatDate(c.ultimaMovimentacao),
       usuario: c.usuario,
@@ -552,18 +568,31 @@ class ConsignacoesPage {
       const apiParams = {};
       if (this.filters.status) apiParams.status = this.filters.status;
       const clienteFilter = String(this.filters.cliente || '').trim();
-      if (/^\d+$/.test(clienteFilter)) apiParams.clienteId = clienteFilter;
+      if (/^\d+$/.test(clienteFilter)) {
+        apiParams.clienteId = clienteFilter;
+      } else if (clienteFilter) {
+        apiParams.busca = clienteFilter;
+      }
+      const search = String(this.filters.search || '').trim();
+      if (search && !apiParams.busca) apiParams.busca = search;
+      if (this.filters.documento) apiParams.busca = this.filters.documento;
+
+      // RCM-04.B — sempre consulta o backend; invalida snapshot local
+      this.allConsignacoes = [];
+      this.consignacoes = [];
 
       const [listResult, dashboard, pendenciasPayload] = await Promise.all([
-        this.api.listarConsignacoes(apiParams),
-        this.projectionApi.obterProjecaoDashboard().catch(() => ({})),
-        this.projectionApi.obterProjecaoPendencias().catch(() => ({}))
+        this.api.listarConsignacoes({ ...apiParams, _t: Date.now() }),
+        this.projectionApi.obterProjecaoDashboard({ _t: Date.now() }).catch(() => ({})),
+        this.projectionApi.obterProjecaoPendencias({ _t: Date.now() }).catch(() => ({}))
       ]);
 
       const items = (listResult.items || []).map((item) => mapConsignacaoView(item));
       const resumoMap = {};
 
-      await Promise.all(items.slice(0, 50).map(async (item) => {
+      // Só enriquece resumo financeiro para consignações já entregues (RASCUNHO não calcula)
+      const paraResumo = items.filter((item) => String(item.status || '').toUpperCase() !== 'RASCUNHO');
+      await Promise.all(paraResumo.slice(0, 50).map(async (item) => {
         try {
           const resumo = await this.projectionApi.obterResumoPrestacao({ consignacaoId: item.id });
           resumoMap[item.id] = resumo;
@@ -579,6 +608,7 @@ class ConsignacoesPage {
       this.loading = false;
 
       this._applyClientPipeline();
+      this._updateFiltrosAtivos();
       this._createCards();
       this._updateHeaderMeta();
 
@@ -598,16 +628,34 @@ class ConsignacoesPage {
     const q = (this.filters.search || '').toLowerCase();
     if (q) {
       filtered = filtered.filter((c) => {
-        const blob = [c.documento, c.cliente, c.consignado, c.observacao, c.produtoResumo]
+        const blob = [
+          c.documento, c.cliente, c.clienteNome, c.clienteDocumento, c.clienteFantasia,
+          c.clienteTelefone, c.consignado, c.observacao, c.produtoResumo, c.id, c.clienteId
+        ]
           .map((v) => String(v || '').toLowerCase())
           .join(' ');
-        return blob.includes(q);
+        return blob.includes(q) || blob.replace(/\D/g, '').includes(q.replace(/\D/g, ''));
       });
     }
 
     if (this.filters.cliente) {
       const term = this.filters.cliente.toLowerCase();
-      filtered = filtered.filter((c) => String(c.cliente || '').toLowerCase().includes(term));
+      const termDigits = term.replace(/\D/g, '');
+      filtered = filtered.filter((c) => {
+        const nome = String(c.clienteNome || c.cliente || '').toLowerCase();
+        const fantasia = String(c.clienteFantasia || '').toLowerCase();
+        const doc = String(c.clienteDocumento || '').toLowerCase();
+        const tel = String(c.clienteTelefone || '').toLowerCase();
+        const id = String(c.clienteId || '');
+        const obs = String(c.observacao || '').toLowerCase();
+        return nome.includes(term)
+          || fantasia.includes(term)
+          || doc.includes(term)
+          || tel.includes(term)
+          || id.includes(term)
+          || obs.includes(term)
+          || (termDigits && (doc.replace(/\D/g, '').includes(termDigits) || tel.replace(/\D/g, '').includes(termDigits)));
+      });
     }
     if (this.filters.consignado) {
       const term = this.filters.consignado.toLowerCase();
@@ -615,7 +663,12 @@ class ConsignacoesPage {
     }
     if (this.filters.documento) {
       const term = this.filters.documento.toLowerCase();
-      filtered = filtered.filter((c) => String(c.documento || '').toLowerCase().includes(term));
+      filtered = filtered.filter((c) => {
+        const doc = String(c.documento || '').toLowerCase();
+        const id = String(c.id || '');
+        const cliDoc = String(c.clienteDocumento || '').toLowerCase();
+        return doc.includes(term) || id.includes(term) || cliDoc.includes(term);
+      });
     }
     if (this.filters.operador) {
       const term = this.filters.operador.toLowerCase();
@@ -649,9 +702,77 @@ class ConsignacoesPage {
     const start = (this.pagination.currentPage - 1) * this.pagination.pageSize;
     this.consignacoes = filtered.slice(start, start + this.pagination.pageSize);
 
+    this._updateFiltrosAtivos();
     this._updateContent();
     this._updatePagination();
     this._updateFooter();
+  }
+
+  _getFiltrosAtivos() {
+    const chips = [];
+    if (this.filters.status) chips.push({ label: 'Status', value: this.filters.status });
+    if (this.filters.cliente) chips.push({ label: 'Cliente', value: this.filters.cliente });
+    if (this.filters.documento) chips.push({ label: 'Documento', value: this.filters.documento });
+    if (this.filters.consignado) chips.push({ label: 'Consignado', value: this.filters.consignado });
+    if (this.filters.prestacao) chips.push({ label: 'Fechamento', value: this.filters.prestacao });
+    if (this.filters.operador) chips.push({ label: 'Operador', value: this.filters.operador });
+    if (this.filters.search) chips.push({ label: 'Busca', value: this.filters.search });
+    if (this.filters.periodoInicio || this.filters.periodoFim) {
+      const ini = this.filters.periodoInicio || '…';
+      const fim = this.filters.periodoFim || '…';
+      chips.push({ label: 'Período', value: `${ini} → ${fim}` });
+    }
+    return chips;
+  }
+
+  _updateFiltrosAtivos() {
+    const host = document.getElementById('cockpit-filtros-ativos');
+    if (!host) return;
+    const chips = this._getFiltrosAtivos();
+    if (!chips.length) {
+      host.hidden = true;
+      host.innerHTML = '';
+      return;
+    }
+    host.hidden = false;
+    host.innerHTML = '';
+    const title = document.createElement('div');
+    title.className = 'cds-filtros-ativos__title';
+    title.textContent = 'Filtros ativos:';
+    host.appendChild(title);
+    chips.forEach((chip) => {
+      const el = document.createElement('span');
+      el.className = 'cds-filtros-ativos__chip';
+      el.innerHTML = `<strong>${chip.label}:</strong> ${chip.value}`;
+      host.appendChild(el);
+    });
+    const limpar = document.createElement('button');
+    limpar.type = 'button';
+    limpar.className = 'cds-filtros-ativos__limpar';
+    limpar.textContent = 'Limpar Filtros';
+    limpar.addEventListener('click', () => this._clearFilters());
+    host.appendChild(limpar);
+  }
+
+  _bindFocusRefresh() {
+    if (this._focusRefreshBound) return;
+    this._focusRefreshBound = true;
+    this._onFocusRefresh = () => {
+      if (!document.getElementById('consignacoes-content')) return;
+      this._invalidateLocalCache();
+      this._loadData({ silent: true });
+    };
+    window.addEventListener('focus', this._onFocusRefresh);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') this._onFocusRefresh();
+    });
+  }
+
+  _invalidateLocalCache() {
+    this.allConsignacoes = [];
+    this.consignacoes = [];
+    this.dashboardData = null;
+    this.lastUpdated = null;
   }
 
   _updatePagination() {
@@ -809,6 +930,9 @@ class ConsignacoesPage {
         this.selectedId = null;
         this.activeDrawer = null;
         this.cockpitDrawer = null;
+        // RCM-04.B — retornar da edição/detalhe força nova leitura
+        this._invalidateLocalCache();
+        this._loadData({ silent: true });
       }
     });
 
@@ -910,47 +1034,47 @@ class ConsignacoesPage {
   async _openPrestacao(consignacao) {
     try {
       if (consignacao.status === 'ENTREGUE') {
-        await withLoading('Abrindo prestação...', () => this.api.abrirPrestacao(consignacao.id));
+        await withLoading(loadingText('ABRINDO_PRESTACAO'), () => this.api.abrirPrestacao(consignacao.id));
       }
       await navigate(routeWithActiveContext(`/consignacoes/${consignacao.id}/prestacao`, this.navigationContext));
     } catch (error) {
-      notify('Erro ao abrir prestação: ' + error.message, 'error');
+      notifyError('PRESTACAO_ABRIR', error);
     }
   }
 
   async _cancelConsignacao(consignacao) {
     if (consignacao.status !== 'RASCUNHO') {
-      notify('Somente rascunhos podem ser cancelados.', 'warning');
+      notifyWarning('SOMENTE_RASCUNHO');
       return;
     }
 
     const confirmed = await confirmDialog({
-      title: 'Cancelar consignação',
-      message: `Deseja cancelar a consignação ${consignacao.documento}?`,
+      ...ConfirmMessages.CANCELAR_CONSIGNACAO,
+      message: `Deseja cancelar a consignação ${consignacao.documento}?\nEsta ação não pode ser desfeita.`,
       danger: true,
       confirmLabel: 'Cancelar consignação'
     });
     if (!confirmed) return;
 
     try {
-      await withLoading('Cancelando consignação...', () => this.api.cancelarConsignacao(consignacao.id));
-      notify('Consignação cancelada com sucesso.', 'success');
+      await withLoading(loadingText('CANCELANDO_CONSIGNACAO'), () => this.api.cancelarConsignacao(consignacao.id));
+      notifySuccess('CONSIGNACAO_CANCELADA');
       await this._loadData();
     } catch (error) {
-      notify('Erro ao cancelar consignação: ' + error.message, 'error');
+      notifyError('CONSIGNACAO_CANCELAR', error);
     }
   }
 
   async _duplicateConsignacao(consignacao) {
     const confirmed = await confirmDialog({
-      title: 'Duplicar consignação',
+      ...ConfirmMessages.DUPLICAR_CONSIGNACAO,
       message: `Deseja duplicar a consignação ${consignacao.documento}?`
     });
     if (!confirmed) return;
 
     try {
       const completa = await carregarConsignacaoCompleta(this.api, this.projectionApi, consignacao.id);
-      const created = await withLoading('Duplicando consignação...', async () => {
+      const created = await withLoading(loadingText('DUPLICANDO_CONSIGNACAO'), async () => {
         const result = await this.api.criarConsignacao({
           clienteId: completa.clienteId,
           perfilComercialId: completa.perfilComercialId,
@@ -970,10 +1094,10 @@ class ConsignacoesPage {
         return nova;
       });
 
-      notify('Consignação duplicada com sucesso.', 'success');
+      notifySuccess('CONSIGNACAO_DUPLICADA');
       await navigate(`/consignacoes/${created.id}/entrega`);
     } catch (error) {
-      notify('Erro ao duplicar consignação: ' + error.message, 'error');
+      notifyError('CONSIGNACAO_DUPLICAR', error);
     }
   }
 
@@ -981,7 +1105,11 @@ class ConsignacoesPage {
     this._openDrawer(consignacao).then(() => window.print());
   }
 
-  _formatCurrency(value) {
+  _formatCurrency(value, item = null) {
+    if (item && (item.aguardandoEntrega || String(item.status || '').toUpperCase() === 'RASCUNHO')) {
+      return item.valorLabel || '—';
+    }
+    if (value == null || value === '') return '—';
     return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(Number(value) || 0);
   }
 

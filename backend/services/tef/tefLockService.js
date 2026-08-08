@@ -108,11 +108,15 @@ class TefLockService {
   _adquirirLockBanco(chave, timeoutMs) {
     return new Promise((resolve, reject) => {
       const expiracao = new Date(Date.now() + timeoutMs).toISOString();
-      
+      const timer = setTimeout(() => {
+        reject(new Error(`Timeout ao adquirir lock TEF (${timeoutMs}ms): ${chave}`));
+      }, Math.min(Number(timeoutMs) || 60000, 60000));
+
       db.run(`
         INSERT INTO tef_locks (chave, expiracao, criado_em)
         VALUES (?, ?, datetime('now'))
       `, [chave, expiracao], (err) => {
+        clearTimeout(timer);
         if (err) {
           if (err.message.includes('UNIQUE constraint')) {
             // Lock já existe

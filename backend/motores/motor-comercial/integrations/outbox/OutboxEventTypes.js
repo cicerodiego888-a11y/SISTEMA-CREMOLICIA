@@ -10,6 +10,7 @@ const OUTBOX_EVENT_TYPES = Object.freeze({
   FINANCEIRO_REGISTRAR_PERDA: 'FinanceiroRegistrarPerda',
   ESTOQUE_BAIXAR_PRODUTO: 'EstoqueBaixarProduto',
   ESTOQUE_ENTRADA_DEVOLUCAO: 'EstoqueEntradaDevolucao',
+  ESTOQUE_REGISTRAR_PERDA: 'EstoqueRegistrarPerda',
   ESTOQUE_TRANSFERENCIA: 'EstoqueTransferencia'
 });
 

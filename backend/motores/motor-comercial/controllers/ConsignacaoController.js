@@ -26,6 +26,10 @@ const {
 } = require('../http/dto');
 const ResultHttpMapper = require('../../../shared/http/mappers/ResultHttpMapper');
 const StandardResponse = require('../../../shared/http/responses/StandardResponse');
+const {
+  registrarLogOperacaoComercial,
+  extrairConsignacaoId
+} = require('../../../services/comercialOperacaoLog');
 
 function responderValidacao(res, req, validation, mensagemPadrao = 'Dados inválidos') {
   const erros = validation?.errors || [];
@@ -57,13 +61,14 @@ class ConsignacaoController {
    */
   async listar(req, res, next) {
     try {
-      const { clienteId, perfilComercialId, status } = req.query;
+      const { clienteId, perfilComercialId, status, busca, q } = req.query;
 
       const consignacaoRepository = this._container.consignacaoRepository;
       const consignacoes = await consignacaoRepository.listar({
         clienteId,
         perfilComercialId,
-        status
+        status,
+        busca: busca || q || null
       });
 
       const response = StandardResponse.success(
@@ -193,6 +198,14 @@ class ConsignacaoController {
       const result = await useCase.executar(inputData);
 
       const response = ResultHttpMapper.mapCreated(result);
+      if (!ResultHttpMapper._isFailure(result)) {
+        const id = extrairConsignacaoId(ResultHttpMapper._extractData(result));
+        await registrarLogOperacaoComercial(req, {
+          acao: 'criar_consignacao',
+          consignacaoId: id,
+          detalhes: { status: 'RASCUNHO' }
+        });
+      }
       const enriched = StandardResponse.enrich(response, req);
       return res.status(StandardResponse.getStatusCode(response)).json(enriched);
     } catch (error) {
@@ -215,6 +228,12 @@ class ConsignacaoController {
       const result = await useCase.executar(inputData);
 
       const response = ResultHttpMapper.map(result);
+      if (!ResultHttpMapper._isFailure(result)) {
+        await registrarLogOperacaoComercial(req, {
+          acao: 'atualizar_consignacao',
+          consignacaoId: id
+        });
+      }
       const enriched = StandardResponse.enrich(response, req);
       return res.status(StandardResponse.getStatusCode(response)).json(enriched);
     } catch (error) {
@@ -241,6 +260,12 @@ class ConsignacaoController {
       const result = await useCase.executar(inputData);
 
       const response = ResultHttpMapper.map(result);
+      if (!ResultHttpMapper._isFailure(result)) {
+        await registrarLogOperacaoComercial(req, {
+          acao: 'cancelar_consignacao',
+          consignacaoId: id
+        });
+      }
       const enriched = StandardResponse.enrich(response, req);
       return res.status(StandardResponse.getStatusCode(response)).json(enriched);
     } catch (error) {
@@ -373,6 +398,12 @@ class ConsignacaoController {
       const result = await useCase.executar(inputData);
 
       const response = ResultHttpMapper.map(result);
+      if (!ResultHttpMapper._isFailure(result)) {
+        await registrarLogOperacaoComercial(req, {
+          acao: 'entrega_consignacao',
+          consignacaoId: id
+        });
+      }
       const enriched = StandardResponse.enrich(response, req);
       return res.status(StandardResponse.getStatusCode(response)).json(enriched);
     } catch (error) {
@@ -476,6 +507,12 @@ class ConsignacaoController {
       const result = await useCase.executar(inputData);
 
       const response = ResultHttpMapper.map(result);
+      if (!ResultHttpMapper._isFailure(result)) {
+        await registrarLogOperacaoComercial(req, {
+          acao: 'prestacao_abrir',
+          consignacaoId: id
+        });
+      }
       const enriched = StandardResponse.enrich(response, req);
       return res.status(StandardResponse.getStatusCode(response)).json(enriched);
     } catch (error) {
@@ -532,6 +569,45 @@ class ConsignacaoController {
       const response = ResultHttpMapper.map(result);
       const enriched = StandardResponse.enrich(response, req);
       return res.status(StandardResponse.getStatusCode(response)).json(enriched);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * GET /consignacoes/:id/prestacao/rateio-perda — RC4.2
+   */
+  async consultarRateioPerda(req, res, next) {
+    try {
+      const useCase = this._container.consultarRateioPerdaUseCase;
+      const result = await useCase.executar({ consignacaoId: req.params.id });
+      const response = StandardResponse.success(result);
+      return res.status(200).json(StandardResponse.enrich(response, req));
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * PUT /consignacoes/:id/prestacao/rateio-perda — RC4.2
+   */
+  async definirRateioPerda(req, res, next) {
+    try {
+      const body = req.body || {};
+      const useCase = this._container.definirRateioPerdaUseCase;
+      const result = await useCase.executar({
+        consignacaoId: req.params.id,
+        tipoRateio: body.tipoRateio || body.tipo_rateio,
+        valorCliente: body.valorCliente ?? body.valor_cliente,
+        valorEmpresa: body.valorEmpresa ?? body.valor_empresa,
+        campoEditado: body.campoEditado || body.campo_editado || null,
+        motivoPerda: body.motivoPerda || body.motivo_perda,
+        observacaoPerda: body.observacaoPerda || body.observacao_perda,
+        usuarioId: body.usuarioId || body.usuario_id || req.usuario?.id,
+        correlationId: req.correlationId
+      });
+      const response = ResultHttpMapper.map(result);
+      return res.status(StandardResponse.getStatusCode(response)).json(StandardResponse.enrich(response, req));
     } catch (error) {
       next(error);
     }
@@ -640,6 +716,12 @@ class ConsignacaoController {
       const result = await useCase.executar(inputData);
 
       const response = ResultHttpMapper.map(result);
+      if (!ResultHttpMapper._isFailure(result)) {
+        await registrarLogOperacaoComercial(req, {
+          acao: 'prestacao_fechar',
+          consignacaoId: id
+        });
+      }
       const enriched = StandardResponse.enrich(response, req);
       return res.status(StandardResponse.getStatusCode(response)).json(enriched);
     } catch (error) {
@@ -762,6 +844,83 @@ class ConsignacaoController {
       const result = await useCase.executar(inputData);
 
       const response = ResultHttpMapper.map(result);
+      const enriched = StandardResponse.enrich(response, req);
+      return res.status(StandardResponse.getStatusCode(response)).json(enriched);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * GET /consignacoes/:id/comprovante
+   * Motor de Comprovantes — ENTREGA (padrão) ou PRESTACAO (?tipo=PRESTACAO).
+   * Independente de NFC-e; somente leitura/geração de documento.
+   */
+  async obterComprovante(req, res, next) {
+    try {
+      const { id } = req.params;
+      const tipo = String(req.query?.tipo || 'ENTREGA').toUpperCase();
+      const {
+        gerarComprovanteEntrega,
+        gerarComprovantePrestacao,
+        registrarAcaoComprovante,
+        TIPOS_COMPROVANTE
+      } = require('../../comprovantes');
+
+      const opcoes = {
+        vendedorNome: req.user?.username || req.user?.nome || null,
+        observacaoEntrega: req.query?.observacao || null,
+        observacao: req.query?.observacao || null
+      };
+
+      const comprovante = tipo === TIPOS_COMPROVANTE.PRESTACAO
+        ? await gerarComprovantePrestacao(id, opcoes)
+        : await gerarComprovanteEntrega(id, opcoes);
+
+      await registrarAcaoComprovante(req, {
+        acao: 'visualizacao',
+        consignacaoId: id,
+        comprovanteId: comprovante.id,
+        numeroComprovante: comprovante.numeroComprovante
+      });
+
+      const response = StandardResponse.success(comprovante);
+      const enriched = StandardResponse.enrich(response, req);
+      return res.status(StandardResponse.getStatusCode(response)).json(enriched);
+    } catch (error) {
+      if (error.statusCode === 404) {
+        const response = StandardResponse.notFound(error.message || 'Não encontrado');
+        const enriched = StandardResponse.enrich(response, req);
+        return res.status(404).json(enriched);
+      }
+      if (error.statusCode === 400) {
+        const response = StandardResponse.validationError(error.message || 'Dados inválidos');
+        const enriched = StandardResponse.enrich(response, req);
+        return res.status(400).json(enriched);
+      }
+      next(error);
+    }
+  }
+
+  /**
+   * POST /consignacoes/:id/comprovante/acoes
+   * Auditoria de compartilhamento (copiar, whatsapp, pdf, impressão…).
+   */
+  async registrarAcaoComprovante(req, res, next) {
+    try {
+      const { id } = req.params;
+      const { acao, comprovanteId, numeroComprovante } = req.body || {};
+      const { registrarAcaoComprovante } = require('../../comprovantes');
+
+      await registrarAcaoComprovante(req, {
+        acao,
+        consignacaoId: id,
+        comprovanteId: comprovanteId || null,
+        numeroComprovante: numeroComprovante || null,
+        detalhes: { body: req.body || {} }
+      });
+
+      const response = StandardResponse.success({ ok: true, acao });
       const enriched = StandardResponse.enrich(response, req);
       return res.status(StandardResponse.getStatusCode(response)).json(enriched);
     } catch (error) {

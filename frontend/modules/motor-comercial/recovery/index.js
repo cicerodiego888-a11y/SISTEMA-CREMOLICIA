@@ -6,9 +6,12 @@
 
 const {
   RecoveryManager,
-  RecoveryStatus,
-  RecoveryMessages
+  RecoveryStatus
 } = require('../../../shared/recovery');
+const {
+  RecoveryMessages,
+  operationalMessage: resolveCatalogMessage
+} = require('../messages');
 const { MODULE_ID, Operations } = require('./operations');
 const { registerMotorComercialRecovery, ensureRegistered } = require('./register');
 
@@ -173,8 +176,8 @@ function listPendingMotorComercial() {
   return RecoveryManager.listPending({ module: MODULE_ID });
 }
 
-function operationalMessage(error) {
-  return RecoveryMessages.toOperationalMessage(error);
+function operationalMessage(error, options) {
+  return resolveCatalogMessage(error, options);
 }
 
 module.exports = {

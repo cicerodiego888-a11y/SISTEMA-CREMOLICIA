@@ -283,9 +283,69 @@
                             </a>
                         </li>
                         <li class="nav-item">
-                            <a class="nav-link text-white" href="#" data-page="configuracoes" title="Configurações">
+                            <a class="nav-link text-white sidebar-config-toggle" href="#" data-bs-toggle="collapse" data-bs-target="#submenu-configuracoes" aria-expanded="false" aria-controls="submenu-configuracoes" title="Configurações">
                                 <i class="fas fa-cog" aria-hidden="true"></i><span class="sidebar-nav-label">Configurações</span>
+                                <i class="fas fa-chevron-down sidebar-nav-chevron" aria-hidden="true"></i>
                             </a>
+                            <div class="collapse sidebar-comercial-submenu" id="submenu-configuracoes">
+                                <ul class="nav flex-column sidebar-comercial-nav">
+                                    <li class="nav-item">
+                                        <a class="nav-link text-white-50" href="#" data-page="configuracoes" title="Geral">
+                                            <i class="fas fa-sliders-h" aria-hidden="true"></i><span class="sidebar-nav-label">Geral</span>
+                                        </a>
+                                    </li>
+                                    <li class="nav-item">
+                                        <a class="nav-link text-white-50 sidebar-config-comercial-toggle" href="#" data-bs-toggle="collapse" data-bs-target="#submenu-config-comercial" aria-expanded="false" aria-controls="submenu-config-comercial" title="Comercial">
+                                            <i class="fas fa-store" aria-hidden="true"></i><span class="sidebar-nav-label">Comercial</span>
+                                            <i class="fas fa-chevron-down sidebar-nav-chevron" aria-hidden="true"></i>
+                                        </a>
+                                        <div class="collapse sidebar-comercial-submenu" id="submenu-config-comercial">
+                                            <ul class="nav flex-column sidebar-comercial-nav">
+                                                <li class="nav-item">
+                                                    <a class="nav-link text-white-50" href="#" data-page="venda-no-atacado" data-nav-alias="configuracao-comercial" title="Configuração Comercial">
+                                                        <i class="fas fa-cog" aria-hidden="true"></i><span class="sidebar-nav-label">Configuração Comercial</span>
+                                                    </a>
+                                                </li>
+                                                <li class="nav-item">
+                                                    <a class="nav-link text-white-50" href="#" data-page="canais-venda" title="Canais de Venda">
+                                                        <i class="fas fa-exchange-alt" aria-hidden="true"></i><span class="sidebar-nav-label">Canais de Venda</span>
+                                                    </a>
+                                                </li>
+                                                <li class="nav-item">
+                                                    <a class="nav-link text-white-50" href="#" data-page="tipos-comerciais" title="Tipos Comerciais">
+                                                        <i class="fas fa-user-tag" aria-hidden="true"></i><span class="sidebar-nav-label">Tipos Comerciais</span>
+                                                    </a>
+                                                </li>
+                                                <li class="nav-item">
+                                                    <a class="nav-link text-white-50" href="#" data-page="kits-combos" title="Kits e Combos">
+                                                        <i class="fas fa-box-open" aria-hidden="true"></i><span class="sidebar-nav-label">Kits e Combos</span>
+                                                    </a>
+                                                </li>
+                                                <li class="nav-item">
+                                                    <a class="nav-link text-white-50" href="#" data-page="casquinha-sabores" title="Sabores de Casquinha">
+                                                        <i class="fas fa-ice-cream" aria-hidden="true"></i><span class="sidebar-nav-label">Sabores</span>
+                                                    </a>
+                                                </li>
+                                                <li class="nav-item">
+                                                    <a class="nav-link text-white-50" href="#" data-page="linhas-comerciais" title="Linhas de Precificação">
+                                                        <i class="fas fa-layer-group" aria-hidden="true"></i><span class="sidebar-nav-label">Linhas de Precificação</span>
+                                                    </a>
+                                                </li>
+                                                <li class="nav-item">
+                                                    <a class="nav-link text-white-50" href="#" data-page="tabelas-preco" title="Central de Precificação">
+                                                        <i class="fas fa-tags" aria-hidden="true"></i><span class="sidebar-nav-label">Central de Precificação</span>
+                                                    </a>
+                                                </li>
+                                                <li class="nav-item">
+                                                    <a class="nav-link text-white-50" href="#" data-page="diagnostico-comercial" title="Diagnóstico Comercial">
+                                                        <i class="fas fa-stethoscope" aria-hidden="true"></i><span class="sidebar-nav-label">Diagnóstico Comercial</span>
+                                                    </a>
+                                                </li>
+                                            </ul>
+                                        </div>
+                                    </li>
+                                </ul>
+                            </div>
                         </li>
                         <li class="nav-item">
                             <a class="nav-link text-white" href="#" data-page="licenca" title="Licença">
@@ -300,6 +360,15 @@
                         <li class="nav-item" id="nav-config-avancadas" data-recurso="configAvancadas">
                             <a class="nav-link text-white" href="#" data-page="configuracoes-avancadas" title="Config. Avançadas">
                                 <i class="fas fa-tools" aria-hidden="true"></i><span class="sidebar-nav-label">Config. Avançadas</span>
+                            </a>
+                        </li>
+                        <li class="sidebar-nav-separator" role="presentation"></li>
+                        <li class="sidebar-nav-group" aria-hidden="true">
+                            <span class="sidebar-nav-group__label">Ajuda</span>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link text-white" href="#" data-page="diagnostico-instancia" title="Diagnóstico da Instância">
+                                <i class="fas fa-stethoscope" aria-hidden="true"></i><span class="sidebar-nav-label">Diagnóstico da Instância</span>
                             </a>
                         </li>
                     </ul>
@@ -345,8 +414,10 @@
     <script src="/shared/js/core.js"></script>
     <script src="/shared/js/modoFiscalHelpers.js"></script>
     <script src="/shared/js/fiscalImpressao.js"></script>
+    <script src="/shared/js/comprovanteVenda.js"></script>
     <script src="/shared/js/vendasHistoricoUi.js"></script>
     <script src="/erp/js/dashboard.js"></script>
+    <script src="/erp/js/categorias.js"></script>
     <script src="/erp/js/produtos.js"></script>
     <script src="/erp/js/subcategorias.js"></script>
     <script src="/erp/js/clientes.js"></script>
@@ -368,11 +439,21 @@
     <script src="/erp/js/equipamentos.js"></script>
     <script src="/erp/js/laboratorio-equipamentos.js"></script>
     <script src="/erp/js/configuracao_tef.js"></script>
-    <script src="/erp/js/categorias.js"></script>
+    <script src="/erp/js/navegacao-config-comercial.js"></script>
+    <script src="/erp/js/canais-venda.js"></script>
+    <script src="/erp/js/tipos-comerciais.js"></script>
+    <script src="/erp/js/tabelas-preco.js"></script>
+    <script src="/erp/js/tabelas-preco-ra6.js"></script>
+    <script src="/erp/js/linhas-comerciais.js"></script>
+    <script src="/erp/js/casquinha-sabores.js"></script>
+    <script src="/erp/js/kits-combos.js"></script>
+    <script src="/erp/js/venda-no-atacado.js"></script>
+    <script src="/erp/js/diagnostico-comercial.js"></script>
     <script src="/erp/js/fiscal.js"></script>
     <script src="/erp/js/caixa.js"></script>
     <script src="/erp/js/licenca.js"></script>
     <script src="/erp/js/auditoria.js"></script>
+    <script src="/erp/js/diagnostico-instancia.js"></script>
     <script src="/modules/motor-comercial/motor-comercial.bundle.js"></script>
     <script src="/erp/js/comercial.js"></script>
     <script src="/erp/js/caixas.js"></script>

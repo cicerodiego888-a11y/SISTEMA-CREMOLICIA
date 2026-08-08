@@ -1,17 +1,26 @@
 /**
  * CDS Recovery Framework — Mensagens operacionais (nunca técnicas ao operador)
  *
+ * UX-1: mensagens específicas com próximo passo (sem genéricas opacas).
+ *
  * @module frontend/shared/recovery/RecoveryMessages
  */
 
 const MESSAGES = Object.freeze({
-  NOT_RESUMABLE: 'A operação não pode mais ser retomada.',
-  REMOVED: 'Esta operação foi removida.',
-  RECOVER_FAILED: 'Não foi possível recuperar esta operação agora.',
-  CONNECTION: 'Verifique sua conexão e tente novamente.',
-  CORRUPT: 'A operação não pode mais ser retomada.',
-  EXPIRED: 'A operação não pode mais ser retomada.',
-  AUTH_EXPIRED: 'A autorização desta operação expirou. Solicite nova liberação se necessário.'
+  NOT_RESUMABLE:
+    'Não foi possível retomar esta operação automaticamente.\n\nAbra pela Central de Consignações e continue de onde parou.',
+  REMOVED:
+    'Esta operação foi removida ou não está mais disponível.\n\nAtualize a lista na Central de Consignações.',
+  RECOVER_FAILED:
+    'Não foi possível retomar esta operação automaticamente.\n\nAbra pela Central de Consignações e continue de onde parou.',
+  CONNECTION:
+    'Verifique sua conexão e tente novamente.\n\nSe a operação já tiver sido salva, continue pela Central.',
+  CORRUPT:
+    'O rascunho local desta operação não pode ser usado.\n\nAbra a consignação pela Central — os dados oficiais estão no servidor.',
+  EXPIRED:
+    'O prazo para retomar esta operação expirou.\n\nInicie novamente ou abra pela Central de Consignações.',
+  AUTH_EXPIRED:
+    'A autorização gerencial desta operação expirou.\n\nSolicite nova liberação se ainda precisar continuar.'
 });
 
 /**
@@ -36,14 +45,22 @@ function toOperationalMessage(error) {
   if (/network|failed to fetch|offline|econnrefused|timeout|net::|socket/i.test(raw)) {
     return MESSAGES.CONNECTION;
   }
+  if (/autoriza.*expir|auth.*expir/i.test(raw)) {
+    return MESSAGES.AUTH_EXPIRED;
+  }
   if (/expir/i.test(raw)) {
     return MESSAGES.EXPIRED;
   }
   if (/não pode mais ser retomada|nao pode mais ser retomada/i.test(raw)) {
     return MESSAGES.NOT_RESUMABLE;
   }
-  if (/não foi possível recuperar|nao foi possivel recuperar/i.test(raw)) {
+  if (/não foi possível recuperar|nao foi possivel recuperar|não foi possível retomar|nao foi possivel retomar/i.test(raw)) {
     return MESSAGES.RECOVER_FAILED;
+  }
+
+  // Erros legíveis curtos passam ao operador; técnicos caem no fallback com próximo passo
+  if (raw && raw.length < 180 && !/typeerror|cannot read|undefined is not|null is not/i.test(raw)) {
+    return raw;
   }
 
   return MESSAGES.RECOVER_FAILED;

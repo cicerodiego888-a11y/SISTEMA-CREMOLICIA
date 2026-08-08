@@ -37,6 +37,10 @@ function produtoUsaConversaoUnidadesFiscal(item = {}) {
 const produtoEhFracionadoFiscal = produtoUsaConversaoUnidadesFiscal;
 
 function obterQuantidadeComercialFiscal(item = {}) {
+  // Com UC: quantidade comercial da operação; sem UC: base fiscal (legado)
+  if (item.unidade_comercial_id || item.unidade_comercial) {
+    return Number(item.quantidade ?? 0);
+  }
   return Number(item.quantidade_fiscal ?? item.quantidade ?? 0);
 }
 
@@ -55,6 +59,14 @@ function obterPrecoUnitarioComercialFiscal(item = {}) {
 
 function validarItemComercialConversaoUnidadesFiscal(item = {}) {
   const erros = [];
+  // Com UC oficial (MCC/PDV): validação de unidade fracionada do produto não se aplica
+  if (item.unidade_comercial_id || item.unidade_comercial) {
+    const qCom = Number(item.quantidade || 0);
+    if (qCom <= 0) {
+      erros.push(`❌ ${item.produto_nome || 'Produto'}: quantidade comercial inválida.`);
+    }
+    return erros;
+  }
   if (!produtoUsaConversaoUnidadesFiscal(item)) return erros;
 
   const nome = item.produto_nome || item.nome || 'Produto';

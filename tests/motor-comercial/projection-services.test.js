@@ -147,8 +147,11 @@ async function run() {
     assert.strictEqual(result.metadata.derivadoDoLedger, true);
     assert.strictEqual(result.totais.vendas, 50);
     assert.strictEqual(result.totais.pagamentos, 30);
-    assert.strictEqual(result.totais.saldoAtual, 20);
+    // SSOT CreditoComercial: AR (50-30=20) + estoque consignado (100-50-10=40) = 60
+    assert.strictEqual(result.totais.saldoAtual, 60);
+    assert.strictEqual(result.dados.saldoDevedor, 60);
     assert.strictEqual(result.dados.lancamentos.length, 5);
+    assert.ok(result.dados.lancamentos.every((l) => l.descricao && l.saldoProjetado != null));
   });
 
   await test('TimelineProjectionService — ordem cronológica', async () => {
@@ -232,7 +235,8 @@ async function run() {
     assert.strictEqual(result.dados.clienteId, 10);
     assert.ok(result.dados.perfil);
     assert.strictEqual(result.dados.limite, 10000);
-    assert.strictEqual(result.dados.saldo, 20);
+    // SSOT CreditoComercial: AR 20 + estoque consignado 40 = 60
+    assert.strictEqual(result.dados.saldo, 60);
     assert.ok(result.dados.ultimoPagamento);
     assert.strictEqual(result.dados.statusGeral, 'EM_ABERTO');
   });
@@ -252,8 +256,22 @@ async function run() {
     const result = await new ContaCorrenteProjectionService(deps).executar({ clienteId: 10 });
     assert.strictEqual(result.dados.escopo, 'CLIENTE');
     assert.strictEqual(result.dados.clienteId, 10);
-    assert.strictEqual(result.totais.saldoAtual, 20);
+    assert.strictEqual(result.totais.saldoAtual, 60);
     assert.strictEqual(result.dados.lancamentos.length, 5);
+  });
+
+  await test('ContaCorrente — agrupa ENTREGA por correlationId', async () => {
+    const movRepo = criarMockMovRepo([
+      { id: 1, consignacaoId: 1, tipoMovimentacao: 'ENTREGA', valor: 40, dataMovimentacao: '2026-06-01T10:00:00.000Z', correlationId: 'e1', motivo: 'Entrega de consignação' },
+      { id: 2, consignacaoId: 1, tipoMovimentacao: 'ENTREGA', valor: 30, dataMovimentacao: '2026-06-01T10:00:01.000Z', correlationId: 'e1', motivo: 'Entrega de consignação' },
+      { id: 3, consignacaoId: 1, tipoMovimentacao: 'VENDA_PRESTACAO', valor: 40, dataMovimentacao: '2026-06-02T10:00:00.000Z', correlationId: 'v1', motivo: 'Venda' }
+    ]);
+    const result = await new ContaCorrenteProjectionService(criarDeps(movRepo)).executar({ consignacaoId: 1 });
+    assert.strictEqual(result.dados.lancamentos.length, 2);
+    assert.strictEqual(result.dados.lancamentos[0].valor, 70);
+    assert.strictEqual(result.dados.lancamentos[0].descricao, 'Entrega de consignação (2 itens)');
+    assert.strictEqual(result.dados.lancamentos[0].saldoProjetado, 70);
+    assert.strictEqual(result.totais.saldoAtual, 70);
   });
 
   await test('ContaCorrente — validação consignacaoId ou clienteId', async () => {

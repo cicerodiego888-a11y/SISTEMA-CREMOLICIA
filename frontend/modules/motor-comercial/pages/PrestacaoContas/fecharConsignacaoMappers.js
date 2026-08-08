@@ -142,10 +142,17 @@ function calcularTotaisItens(itens = []) {
 }
 
 function calcularValorVendidoItens(itens = []) {
-  return itens.reduce(
-    (sum, item) => sum + Number(item.vendido || 0) * Number(item.preco || 0),
-    0
-  );
+  return itens.reduce((sum, item) => {
+    const qtd = Number(item.vendido || item.quantidadeVendida || 0);
+    const preco = Number(
+      item.preco
+      ?? item.precoUnitario
+      ?? item.valorUnitario
+      ?? item.precoVenda
+      ?? 0
+    );
+    return sum + qtd * preco;
+  }, 0);
 }
 
 const LINHA_RETORNO_SELECTOR = '.cds-fechar-consignacao__grade-row--retornos';
@@ -187,7 +194,7 @@ function buildPainelOperacional(itens = []) {
 
 /**
  * Painel lateral: operacional + SSOT financeiro (STAB-06.6.2).
- * Dinheiro vem exclusivamente de `financeiro` / resumo normalizado — sem Σ itens.
+ * Dinheiro oficial vem exclusivamente de `financeiro` / resumo normalizado — sem Σ itens.
  */
 function buildPainelLateral(resumo = {}, itens = [], financeiro = null) {
   const operacional = buildPainelOperacional(itens);
@@ -204,10 +211,31 @@ function buildPainelLateral(resumo = {}, itens = [], financeiro = null) {
   };
 }
 
-/** Preview só de quantidades — financeiro permanece o do snapshot (não recalcula R$). */
+/**
+ * Preview da grade: quantidades + estimativa de R$ (vendido × preço).
+ * SSOT oficial permanece no snapshot; após flush/reload o painel oficial substitui.
+ * valorRecebido continua o do servidor (só muda com pagamento registrado).
+ */
 function buildPainelLateralPreview(resumo = {}, itens = [], financeiro = null) {
-  const painel = buildPainelLateral(resumo, itens, financeiro);
-  return { ...painel, preview: true };
+  const operacional = buildPainelOperacional(itens);
+  const finSsot = financeiro || buildFinanceiroFromResumo(resumo);
+  const estimadoVenda = calcularValorVendidoItens(itens);
+  const valorVenda = Math.max(Number(finSsot.valorVenda || 0), estimadoVenda);
+  const valorRecebido = Number(finSsot.valorRecebido || 0);
+  const fin = buildFinanceiroFromResumo({
+    valorVenda,
+    valorRecebido
+  });
+  return {
+    ...operacional,
+    financeiro: fin,
+    valorVenda: fin.valorVenda,
+    valorRecebido: fin.valorRecebido,
+    saldoEmAberto: fin.saldoEmAberto,
+    situacaoFinanceira: fin.situacaoFinanceira,
+    preview: true,
+    financeiroEstimado: estimadoVenda > Number(finSsot.valorVenda || 0) + 0.01
+  };
 }
 
 function mergeItensRetornos(servidor = [], rascunho = []) {

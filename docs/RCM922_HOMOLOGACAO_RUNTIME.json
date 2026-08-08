@@ -1,0 +1,17 @@
+{
+  "base": "http://127.0.0.1:3002",
+  "lan_hint": "http://192.168.0.9:3002/apps/mobile/",
+  "terminal_id": 21,
+  "terminal_nome": "CDS Mobile RCM922",
+  "hostname": "mobile-rcm922-mskcpgid",
+  "caixa_sessao": 14,
+  "vendas": {
+    "varejo": 52,
+    "atacado": 53
+  },
+  "resolver_atacado": {
+    "canal": "ATACADO",
+    "itens_comerciais": 30,
+    "sorvete_uc": "LT"
+  }
+}

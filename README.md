@@ -42,6 +42,7 @@ O posicionamento institucional e filosófico da plataforma está formalizado em 
 - Personalização do sistema
 - Backup de dados
 - Informações da empresa
+- Políticas Comerciais (cadastro independente da Categoria — ver `ADR_A1_POLITICA_COMERCIAL.md`)
 
 ## Tecnologias Utilizadas
 

@@ -7,6 +7,14 @@ const { gravarAuditoria } = require('../services/auditoria');
 const { FILTRO_VENDA_VALIDA, getExprValorVenda } = require('../services/reportFiscalHelpers');
 const { isMultiCaixaAtivo, exigirTerminalId, obterTerminalIdDaRequisicao } = require('../utils/multiCaixa');
 const { obterCaixaTurnoId } = require('../utils/caixaSessaoHelpers');
+const { publicarEventoCaixaMfe } = require('../motores/motor-financeiro/adapters');
+
+/** MFE-04 — publica evento após sucesso legado (FEATURE_MFE_CAIXA; nunca bloqueia resposta) */
+function emitirEventoCaixaMfe(operacao) {
+  Promise.resolve(publicarEventoCaixaMfe(db, operacao)).catch((err) => {
+    console.error('[MFE-04] emitirEventoCaixaMfe:', err?.message || err);
+  });
+}
 
 function n(valor) {
   return Number(valor || 0);
@@ -413,6 +421,16 @@ function executarAberturaCaixa(req, res, { valorInicial, terminalId, caixaConfig
             ip_requisicao: req.ip || null
           }).catch((auditErr) => console.error('Erro ao gravar auditoria de abertura de caixa:', auditErr));
 
+          emitirEventoCaixaMfe({
+            tipo: 'abertura',
+            valor: valorInicial,
+            sessao_id: sessaoId,
+            caixa_id: caixaTurnoId,
+            terminal_id: terminalId || null,
+            operadorId: req.user?.id || null,
+            idempotencyKey: `caixa:abertura:${sessaoId}`
+          });
+
           res.json({
             message: 'Caixa aberto com sucesso.',
             caixa_id: caixaTurnoId,
@@ -535,6 +553,17 @@ router.post('/sangria', verificarToken, validarCaixaAberto, exigirPermissaoOuSen
                           ip_requisicao: req.ip || null
                         }).catch((auditErr) => console.error('Erro ao gravar auditoria de sangria:', auditErr));
 
+                        emitirEventoCaixaMfe({
+                          tipo: 'sangria',
+                          valor,
+                          motivo,
+                          sessao_id: sessao.id,
+                          caixa_id: caixa.id,
+                          terminal_id: terminalId,
+                          operadorId,
+                          idempotencyKey: `caixa:sangria:${sessao.id}:${valor}:${Date.now()}`
+                        });
+
                         res.json({
                           message: 'Sangria registrada com sucesso.',
                           valor,
@@ -626,6 +655,17 @@ router.post('/suprimento', verificarToken, validarCaixaAberto, exigirPermissaoOu
                       detalhes: { valor, motivo, caixa_id: caixa.id },
                       ip_requisicao: req.ip || null
                     }).catch((auditErr) => console.error('Erro ao gravar auditoria de suprimento:', auditErr));
+
+                    emitirEventoCaixaMfe({
+                      tipo: 'suprimento',
+                      valor,
+                      motivo,
+                      sessao_id: sessao.id,
+                      caixa_id: caixa.id,
+                      terminal_id: terminalId,
+                      operadorId,
+                      idempotencyKey: `caixa:suprimento:${sessao.id}:${valor}:${Date.now()}`
+                    });
 
                     res.json({
                       message: 'Suprimento registrado com sucesso.',
@@ -827,6 +867,18 @@ router.post('/fechar', verificarToken, validarCaixaAberto, (req, res) => {
                             detalhes: { valor_informado: valorInformado, diferenca, observacao, caixa_id: caixa.id },
                             ip_requisicao: req.ip || null
                           }).catch((auditErr) => console.error('Erro ao gravar auditoria de fechamento de caixa:', auditErr));
+
+                          emitirEventoCaixaMfe({
+                            tipo: 'fechamento',
+                            valor: valorInformado,
+                            sessao_id: sessao.id,
+                            caixa_id: caixa.id,
+                            terminal_id: sessao.terminal_id || terminalId,
+                            operadorId,
+                            motivo: observacao || 'Fechamento de caixa',
+                            idempotencyKey: `caixa:fechamento:${sessao.id}`,
+                            payload: { diferenca }
+                          });
 
                           res.json({
                             message: 'Caixa fechado com sucesso.',

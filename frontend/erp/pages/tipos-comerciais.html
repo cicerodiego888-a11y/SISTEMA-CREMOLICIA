@@ -1,0 +1,206 @@
+<!-- Página: Tipos Comerciais (RCM-7.1 / RCM-7.2 / RCM-7.3) -->
+<div class="container mt-4">
+  <nav aria-label="breadcrumb" class="mb-2">
+    <ol class="breadcrumb mb-0">
+      <li class="breadcrumb-item"><a href="#" onclick="loadPage('configuracoes'); return false;">Configurações</a></li>
+      <li class="breadcrumb-item">Comercial</li>
+      <li class="breadcrumb-item active" aria-current="page">Tipos Comerciais</li>
+    </ol>
+  </nav>
+
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <div>
+      <h2 class="mb-0">Tipos Comerciais</h2>
+      <small class="text-muted">Perfil comercial do Cliente · Canal → Tabela → Resolver</small>
+    </div>
+    <button class="btn btn-success" data-bs-toggle="modal" data-bs-target="#modal-tipo-comercial" onclick="limparFormularioTipoComercial()">
+      Novo Tipo
+    </button>
+  </div>
+
+  <table class="table table-bordered table-hover">
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Código</th>
+        <th>Descrição</th>
+        <th>Canal Padrão</th>
+        <th>Canais Permitidos</th>
+        <th>Ativo</th>
+        <th>Ações</th>
+      </tr>
+    </thead>
+    <tbody id="tipos-comerciais-tbody"></tbody>
+  </table>
+</div>
+
+<div class="modal fade" id="modal-tipo-comercial" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="modal-tipo-comercial-titulo">Novo Tipo Comercial</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="tipo-comercial-id">
+
+        <ul class="nav nav-tabs mb-3 flex-wrap" role="tablist" id="tipo-comercial-tabs">
+          <li class="nav-item" role="presentation">
+            <button class="nav-link active" id="tab-tipo-geral" data-bs-toggle="tab" data-bs-target="#pane-tipo-geral" type="button" role="tab">1 · Geral</button>
+          </li>
+          <li class="nav-item" role="presentation">
+            <button class="nav-link" id="tab-tipo-canais" data-bs-toggle="tab" data-bs-target="#pane-tipo-canais" type="button" role="tab">2 · Canais</button>
+          </li>
+          <li class="nav-item" role="presentation">
+            <button class="nav-link" id="tab-tipo-credito" data-bs-toggle="tab" data-bs-target="#pane-tipo-credito" type="button" role="tab">3 · Crédito</button>
+          </li>
+          <li class="nav-item" role="presentation">
+            <button class="nav-link" id="tab-tipo-condicoes" data-bs-toggle="tab" data-bs-target="#pane-tipo-condicoes" type="button" role="tab">4 · Condições</button>
+          </li>
+          <li class="nav-item" role="presentation">
+            <button class="nav-link" id="tab-tipo-descontos" data-bs-toggle="tab" data-bs-target="#pane-tipo-descontos" type="button" role="tab">5 · Descontos</button>
+          </li>
+          <li class="nav-item" role="presentation">
+            <button class="nav-link" id="tab-tipo-regras" data-bs-toggle="tab" data-bs-target="#pane-tipo-regras" type="button" role="tab">6 · Regras</button>
+          </li>
+        </ul>
+
+        <div class="tab-content">
+          <!-- 1 · Geral -->
+          <div class="tab-pane fade show active" id="pane-tipo-geral" role="tabpanel">
+            <div class="mb-3">
+              <label for="tipo-comercial-codigo" class="form-label">Código *</label>
+              <input type="text" id="tipo-comercial-codigo" class="form-control" maxlength="40" placeholder="Ex.: ATACADISTA">
+            </div>
+            <div class="mb-3">
+              <label for="tipo-comercial-descricao" class="form-label">Descrição *</label>
+              <input type="text" id="tipo-comercial-descricao" class="form-control" maxlength="120">
+            </div>
+            <div class="form-check form-switch mb-3">
+              <input class="form-check-input" type="checkbox" id="tipo-comercial-ativo" checked>
+              <label class="form-check-label" for="tipo-comercial-ativo">Ativo</label>
+            </div>
+            <div class="mb-0">
+              <label for="tipo-comercial-observacoes" class="form-label">Observações</label>
+              <textarea id="tipo-comercial-observacoes" class="form-control" rows="3" maxlength="500"></textarea>
+            </div>
+          </div>
+
+          <!-- 2 · Canais -->
+          <div class="tab-pane fade" id="pane-tipo-canais" role="tabpanel">
+            <div class="mb-3">
+              <label for="tipo-comercial-canal" class="form-label">Canal Padrão *</label>
+              <select id="tipo-comercial-canal" class="form-select"></select>
+              <small class="text-muted">Usado automaticamente na operação. Deve estar na lista de permitidos.</small>
+            </div>
+            <div class="mb-2 fw-semibold">Canais Permitidos</div>
+            <p class="text-muted small mb-2">Marque os canais que este Tipo Comercial pode utilizar.</p>
+            <div id="tipo-comercial-canais-grid" class="border rounded p-3" style="max-height: 280px; overflow:auto;">
+              <div class="text-muted">Carregando canais...</div>
+            </div>
+          </div>
+
+          <!-- 3 · Crédito (preparado — desabilitado) -->
+          <div class="tab-pane fade" id="pane-tipo-credito" role="tabpanel">
+            <div class="alert alert-secondary py-2 small mb-3" role="status">
+              Preparado para evolução futura · sem gravação nesta versão
+            </div>
+            <fieldset disabled class="tipo-comercial-prep">
+              <div class="mb-3">
+                <label class="form-label" for="tipo-prep-limite-credito">Limite de Crédito</label>
+                <input type="number" id="tipo-prep-limite-credito" class="form-control" step="0.01" min="0" placeholder="0,00">
+              </div>
+              <div class="form-check form-switch mb-2">
+                <input class="form-check-input" type="checkbox" id="tipo-prep-usar-limite">
+                <label class="form-check-label" for="tipo-prep-usar-limite">Usar Limite?</label>
+              </div>
+              <div class="form-check form-switch mb-0">
+                <input class="form-check-input" type="checkbox" id="tipo-prep-ultrapassar-limite">
+                <label class="form-check-label" for="tipo-prep-ultrapassar-limite">Cliente pode ultrapassar?</label>
+              </div>
+            </fieldset>
+          </div>
+
+          <!-- 4 · Condições (preparado — desabilitado) -->
+          <div class="tab-pane fade" id="pane-tipo-condicoes" role="tabpanel">
+            <div class="alert alert-secondary py-2 small mb-3" role="status">
+              Preparado para evolução futura · sem gravação nesta versão
+            </div>
+            <fieldset disabled class="tipo-comercial-prep">
+              <div class="mb-3">
+                <label class="form-label" for="tipo-prep-condicao-pagamento">Condição de Pagamento Padrão</label>
+                <select id="tipo-prep-condicao-pagamento" class="form-select">
+                  <option value="">—</option>
+                </select>
+              </div>
+              <div class="mb-3">
+                <label class="form-label" for="tipo-prep-tabela-financeira">Tabela Financeira</label>
+                <select id="tipo-prep-tabela-financeira" class="form-select">
+                  <option value="">—</option>
+                </select>
+              </div>
+              <div class="mb-0">
+                <label class="form-label" for="tipo-prep-dias">Dias</label>
+                <input type="number" id="tipo-prep-dias" class="form-control" min="0" step="1" placeholder="0">
+              </div>
+            </fieldset>
+          </div>
+
+          <!-- 5 · Descontos (preparado — desabilitado) -->
+          <div class="tab-pane fade" id="pane-tipo-descontos" role="tabpanel">
+            <div class="alert alert-secondary py-2 small mb-3" role="status">
+              Preparado para evolução futura · sem gravação nesta versão
+            </div>
+            <fieldset disabled class="tipo-comercial-prep">
+              <div class="mb-3">
+                <label class="form-label" for="tipo-prep-desconto-maximo">Desconto Máximo (%)</label>
+                <input type="number" id="tipo-prep-desconto-maximo" class="form-control" min="0" max="100" step="0.01" placeholder="0">
+              </div>
+              <div class="form-check form-switch mb-3">
+                <input class="form-check-input" type="checkbox" id="tipo-prep-necessita-aprovacao">
+                <label class="form-check-label" for="tipo-prep-necessita-aprovacao">Necessita Aprovação</label>
+              </div>
+              <div class="mb-0">
+                <label class="form-label" for="tipo-prep-tipo-aprovacao">Tipo de Aprovação</label>
+                <select id="tipo-prep-tipo-aprovacao" class="form-select">
+                  <option value="">—</option>
+                  <option value="SUPERVISOR">Supervisor</option>
+                  <option value="GERENTE">Gerente</option>
+                </select>
+              </div>
+            </fieldset>
+          </div>
+
+          <!-- 6 · Regras (preparado — desabilitado) -->
+          <div class="tab-pane fade" id="pane-tipo-regras" role="tabpanel">
+            <div class="alert alert-secondary py-2 small mb-3" role="status">
+              Preparado para evolução futura · sem gravação nesta versão
+            </div>
+            <fieldset disabled class="tipo-comercial-prep">
+              <div class="form-check form-switch mb-2">
+                <input class="form-check-input" type="checkbox" id="tipo-prep-permitir-consignacao">
+                <label class="form-check-label" for="tipo-prep-permitir-consignacao">Permitir Consignação</label>
+              </div>
+              <div class="form-check form-switch mb-2">
+                <input class="form-check-input" type="checkbox" id="tipo-prep-permitir-bonificacao">
+                <label class="form-check-label" for="tipo-prep-permitir-bonificacao">Permitir Bonificação</label>
+              </div>
+              <div class="form-check form-switch mb-2">
+                <input class="form-check-input" type="checkbox" id="tipo-prep-permitir-venda-negativa">
+                <label class="form-check-label" for="tipo-prep-permitir-venda-negativa">Permitir Venda Negativa</label>
+              </div>
+              <div class="form-check form-switch mb-0">
+                <input class="form-check-input" type="checkbox" id="tipo-prep-permitir-pedido-especial">
+                <label class="form-check-label" for="tipo-prep-permitir-pedido-especial">Permitir Pedido Especial</label>
+              </div>
+            </fieldset>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+        <button type="button" class="btn btn-success" id="btn-salvar-tipo-comercial">Salvar</button>
+      </div>
+    </div>
+  </div>
+</div>

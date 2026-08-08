@@ -1,0 +1,35 @@
+<div class="diagnostico-instancia-page mt-3">
+  <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+    <div>
+      <h3 class="mb-1">Diagnóstico da Instância</h3>
+      <p class="text-muted mb-0">Confirme se o ERP Desktop e o CDS Mobile estão na mesma instância do Motor Comercial.</p>
+    </div>
+    <div class="d-flex gap-2">
+      <button type="button" class="btn btn-outline-secondary btn-sm" id="diag-atualizar">Atualizar</button>
+      <button type="button" class="btn btn-primary btn-sm" id="diag-copiar">📋 Copiar Diagnóstico</button>
+    </div>
+  </div>
+
+  <div id="diag-status" class="alert alert-secondary">Carregando diagnóstico…</div>
+
+  <div class="table-responsive">
+    <table class="table table-sm table-bordered align-middle" id="diag-tabela">
+      <tbody>
+        <tr><th style="width:220px">Servidor (API)</th><td id="diag-apiUrl">—</td></tr>
+        <tr><th>Hostname</th><td id="diag-hostname">—</td></tr>
+        <tr><th>Banco utilizado</th><td id="diag-dbPath">—</td></tr>
+        <tr><th>Database Hash</th><td id="diag-databaseHash"><code>—</code></td></tr>
+        <tr><th>InstanceId</th><td id="diag-instanceId"><code>—</code></td></tr>
+        <tr><th>Versão do sistema</th><td id="diag-versaoSistema">—</td></tr>
+        <tr><th>Versão do banco</th><td id="diag-versaoBanco">—</td></tr>
+        <tr><th>Ambiente</th><td id="diag-ambiente">—</td></tr>
+        <tr><th>Process ID</th><td id="diag-processId">—</td></tr>
+        <tr><th>Uptime (s)</th><td id="diag-uptime">—</td></tr>
+        <tr><th>Started At</th><td id="diag-startedAt">—</td></tr>
+        <tr><th>Timestamp servidor</th><td id="diag-timestamp">—</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <pre id="diag-json" class="bg-light border rounded p-3 small" style="max-height:280px;overflow:auto;display:none"></pre>
+</div>

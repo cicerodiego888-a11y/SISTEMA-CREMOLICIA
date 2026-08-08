@@ -123,6 +123,10 @@
     try {
       if (String(global.location && global.location.pathname || '').indexOf('/apps/mobile') === 0) {
         headers['X-CDS-Client'] = headers['X-CDS-Client'] || 'mobile';
+      } else if (String(global.location && global.location.pathname || '').indexOf('/erp') === 0
+        || String(global.CDS_MODULE || '') === 'erp'
+        || String(global.CDS_MODULE || '') === 'comercial') {
+        headers['X-CDS-Client'] = headers['X-CDS-Client'] || 'desktop';
       }
     } catch (e3) { /* ignore */ }
     return headers;
@@ -168,9 +172,13 @@
     } catch (networkErr) {
       if (timeoutId) clearTimeout(timeoutId);
       if (networkErr && networkErr.name === 'AbortError') {
-        throw ApiError('Tempo esgotado ao consultar o servidor.', 408, null);
+        throw ApiError('Tempo esgotado. Não foi possível conectar ao servidor.', 408, null);
       }
-      throw ApiError('Falha de rede ao consultar o servidor.', 0, null);
+      var netMsg = String((networkErr && networkErr.message) || '');
+      if (/Failed to fetch|NetworkError|ERR_CONNECTION|ECONNREFUSED/i.test(netMsg)) {
+        throw ApiError('Servidor CDS não encontrado. Verifique a rede e o endereço do servidor.', 0, null);
+      }
+      throw ApiError('Não foi possível conectar ao servidor.', 0, null);
     }
     if (timeoutId) clearTimeout(timeoutId);
 
@@ -186,7 +194,7 @@
 
     if (res.status === 401 || isSessionExpiredError(res.status, body, parseErrorMessage(res, body))) {
       clearSessionAndRedirectLogin();
-      throw ApiError('Sessão expirada. Faça login novamente.', res.status === 401 ? 401 : 403, body);
+      throw ApiError('Sua sessão expirou. Entre novamente para continuar.', res.status === 401 ? 401 : 403, body);
     }
 
     if (!res.ok) {

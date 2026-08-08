@@ -29,6 +29,7 @@ const {
 } = VendaPagamentoService;
 const { devolverParcial } = VendaDevolucaoService;
 const { cancelarVendaPut, cancelarVendaPost } = VendaCancelamentoService;
+const comprovanteVendaService = require('../services/comprovanteVendaService');
 
 // Listar vendas com busca
 router.get('/', (req, res) => {
@@ -145,12 +146,25 @@ router.get('/:id', (req, res) => {
       FROM vendas_itens vi
       JOIN produtos p ON vi.produto_id = p.id
       WHERE vi.venda_id = ?
-    `, [id], (err, itens) => {
+    `, [id], async (err, itens) => {
       if (err) {
         res.status(500).json({ error: err.message });
         return;
       }
-      res.json({ ...venda, itens });
+      try {
+        const svc = require('../modules/comercial/casquinha/CasquinhaSaboresService');
+        const comSabores = [];
+        for (const it of itens || []) {
+          let sabores = [];
+          if (Number(it.quantidade_bolas || 0) > 0 || String(it.forma_comercializacao || '').toUpperCase() === 'CASQUINHA') {
+            sabores = await svc.listarSaboresDoItem(it.id);
+          }
+          comSabores.push({ ...it, sabores });
+        }
+        res.json({ ...venda, itens: comSabores });
+      } catch (_) {
+        res.json({ ...venda, itens });
+      }
     });
   });
 });
@@ -183,6 +197,40 @@ router.get('/:id/detalhes', (req, res) => {
         venda,
         itens
       });
+    });
+  });
+});
+
+/** COMPROVANTE DE VENDA (comercial) — sem dados fiscais internos / MIDP */
+router.get('/:id/comprovante', (req, res) => {
+  const vendaId = req.params.id;
+  const asHtml = String(req.query.format || '').toLowerCase() === 'html';
+
+  comprovanteVendaService.gerarComprovanteVenda(vendaId, (err, result) => {
+    if (err) {
+      const status = err.status || 500;
+      return res.status(status).json({ error: err.message });
+    }
+    if (asHtml) {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      return res.send(result.html);
+    }
+    return res.json({
+      sucesso: true,
+      venda_id: Number(vendaId),
+      html: result.html,
+      dados: {
+        cupom: result.dados.cupom,
+        total: result.dados.total,
+        itens: result.dados.itens.map((it) => ({
+          produto_nome: it.produto_nome,
+          quantidade: it.quantidade,
+          unidade: it.unidade,
+          preco_unitario: it.preco_unitario,
+          subtotal: it.subtotal
+        })),
+        pagamentos: comprovanteVendaService.consolidarPagamentos(result.dados.pagamentos)
+      }
     });
   });
 });

@@ -5,22 +5,54 @@
  * O frontend (PDV) NÃO deve tomar nenhuma decisão de fluxo de pagamento.
  * 
  * FLUXO OBRIGATÓRIO:
- * Venda → Motor Fiscal → Distribuição (valor_fiscal, valor_nao_fiscal) → 
+ * Venda → Motor Fiscal → MIDP (valor_fiscal, valor_nao_fiscal → pagamentos) → 
  * Motor Financeiro → 1º Recebimento Fiscal → Confirmação (TEF/Manual) → 
  * status = aguardando_nao_fiscal → 2º Recebimento Não Fiscal → 
  * status = quitada → NFC-e
+ *
+ * A distribuição de meios (Fiscal × Não Fiscal) é responsabilidade exclusiva do MIDP.
+ * Este orquestrador apenas consome o MidpResult.
  */
 
 const tefManager = require('./tef/TefManager');
 const tefContrato = require('./tef/tefContrato');
 const tefConfigService = require('./tef/tefConfigService');
 const tefFluxoPagamento = require('./tef/tefFluxoPagamento');
-const { distribuirPagamentos } = require('./DistribuidorPagamento');
-const configService = require('./configuracaoService');
+const MidpService = require('../motores/midp/MidpService');
+const {
+  TOLERANCIA_MONETARIA,
+  obterTotalFiscalFinal,
+  pagamentoFiscalSuficiente,
+  somarPagamentos,
+  logAuditoriaPagamentoFiscal
+} = require('./vendas/TotalFiscalFinal');
+
+/**
+ * Converte MidpResult no formato legado interno do orquestrador.
+ */
+function mapearMidpParaDistribuicao(midpResult) {
+  if (midpResult && typeof midpResult.paraDistribuicaoLegada === 'function') {
+    return midpResult.paraDistribuicaoLegada();
+  }
+
+  const pagamentosFiscal = midpResult?.pagamentosFiscal || midpResult?.recebimentosFiscal || [];
+  const pagamentosNaoFiscal = midpResult?.pagamentosNaoFiscal || midpResult?.recebimentosNaoFiscal || [];
+
+  return {
+    recebimentosFiscal: pagamentosFiscal,
+    recebimentosNaoFiscal: pagamentosNaoFiscal,
+    saldoFiscal: Number(midpResult?.saldoFiscal || 0),
+    saldoNaoFiscal: Number(midpResult?.saldoNaoFiscal || 0)
+  };
+}
 
 /**
  * Processa o fluxo completo de pagamento de uma venda
  * Esta é a entrada principal do orquestrador
+ *
+ * @param {object} params
+ * @param {import('../motores/midp/MidpResult')} [params.midpResult] — resultado do MidpService.distribuir()
+ * @param {string} [params.origem] — origem da venda (log MIDP, se midpResult omitido)
  */
 async function processarFluxoPagamentoVenda({
   totalFiscal,
@@ -28,30 +60,81 @@ async function processarFluxoPagamentoVenda({
   formaPagamento,
   pagamentos,
   tefHabilitado,
-  modoConfirmacaoFiscal
+  modoConfirmacaoFiscal,
+  midpResult,
+  origem
 }) {
   // Validações básicas
   totalFiscal = Number(totalFiscal || 0);
   totalNaoFiscal = Number(totalNaoFiscal || 0);
-  
-  // Normalizar pagamentos de entrada
-  const pagamentosEntrada = normalizarPagamentosEntrada(pagamentos, formaPagamento);
-  
-  // Distribuir pagamentos entre fiscal e não fiscal
-  const distribuicao = distribuirPagamentos(pagamentosEntrada, totalFiscal, totalNaoFiscal);
-  
-  // Validar se o pagamento fiscal é suficiente
-  if (distribuicao.saldoFiscal > 0) {
+
+  // Distribuição exclusiva via MIDP (nunca DistribuidorPagamento direto)
+  const resultadoMidp = midpResult || MidpService.distribuir({
+    valorFiscal: totalFiscal,
+    valorNaoFiscal: totalNaoFiscal,
+    pagamentos: Array.isArray(pagamentos) ? pagamentos : [],
+    formaPagamentoPadrao: formaPagamento,
+    origem: origem || 'ORQUESTRADOR'
+  });
+
+  const distribuicao = mapearMidpParaDistribuicao(resultadoMidp);
+
+  // RC4.31 — única validação de pagamento fiscal (total líquido / vNF)
+  const totalFiscalFinal = obterTotalFiscalFinal({
+    valorProdutosFiscal: totalFiscal
+  });
+  let distribuicaoEfetiva = distribuicao;
+  let resultadoMidpEfetivo = resultadoMidp;
+  let valorPagoFiscal = somarPagamentos(distribuicaoEfetiva.recebimentosFiscal);
+  let saldoFiscal = Number(distribuicaoEfetiva.saldoFiscal || 0);
+  const valorPagoInformado = somarPagamentos(pagamentos);
+
+  let suficiente = pagamentoFiscalSuficiente(valorPagoFiscal, totalFiscalFinal)
+    && saldoFiscal <= TOLERANCIA_MONETARIA;
+
+  // Rede de segurança: PRESERVAR_DINHEIRO pode ter usado itens brutos e deixado saldo,
+  // embora o pagamento informado cubra o total fiscal líquido. Redistribui só o pagamento.
+  if (!suficiente && pagamentoFiscalSuficiente(valorPagoInformado, totalFiscalFinal)) {
+    resultadoMidpEfetivo = MidpService.distribuir({
+      valorFiscal: totalFiscalFinal,
+      valorNaoFiscal: totalNaoFiscal,
+      pagamentos: Array.isArray(pagamentos) ? pagamentos : [],
+      formaPagamentoPadrao: formaPagamento,
+      origem: `${origem || 'ORQUESTRADOR'}:RC431`,
+      midpPolitica: 'LEGADO'
+    });
+    distribuicaoEfetiva = mapearMidpParaDistribuicao(resultadoMidpEfetivo);
+    valorPagoFiscal = somarPagamentos(distribuicaoEfetiva.recebimentosFiscal);
+    saldoFiscal = Number(distribuicaoEfetiva.saldoFiscal || 0);
+    suficiente = pagamentoFiscalSuficiente(valorPagoFiscal, totalFiscalFinal)
+      && saldoFiscal <= TOLERANCIA_MONETARIA;
+  }
+
+  logAuditoriaPagamentoFiscal({
+    classe: 'OrquestradorPagamento',
+    metodo: 'processarFluxoPagamentoVenda',
+    valorProdutos: totalFiscal,
+    valorDesconto: 0,
+    valorLiquido: totalFiscalFinal,
+    valorFiscal: totalFiscalFinal,
+    valorPago: valorPagoFiscal,
+    valorComparado: totalFiscalFinal,
+    saldoFiscal,
+    suficiente
+  });
+
+  if (!suficiente) {
     return {
       sucesso: false,
       erro: 'Pagamento fiscal insuficiente.',
-      distribuicao
+      distribuicao: distribuicaoEfetiva,
+      midp: resultadoMidpEfetivo
     };
   }
   
   // Processar recebimento fiscal (TEF ou Confirmação Manual)
   const resultadoFiscal = await processarRecebimentoFiscal({
-    recebimentosFiscal: distribuicao.recebimentosFiscal,
+    recebimentosFiscal: distribuicaoEfetiva.recebimentosFiscal,
     totalFiscal,
     tefHabilitado,
     modoConfirmacaoFiscal,
@@ -63,15 +146,30 @@ async function processarFluxoPagamentoVenda({
       sucesso: false,
       erro: resultadoFiscal.erro,
       tef: resultadoFiscal.tef,
-      distribuicao
+      distribuicao: distribuicaoEfetiva,
+      midp: resultadoMidpEfetivo
     };
   }
   
   // Determinar status do pagamento (somente recebimentos confirmados, nunca o plano do distribuidor)
-  const recebimentosNaoFiscalConfirmados =
-    totalFiscal > 0 && totalNaoFiscal > 0
-      ? []
-      : (distribuicao.recebimentosNaoFiscal || []);
+  // Venda mista: se o MIDP já cobriu o não fiscal (saldoNaoFiscal ≈ 0) com os meios
+  // informados (ex.: PIX único R$10 → fiscal 5 + NF 5), confirma as duas etapas de uma vez.
+  // Caso contrário, mantém 2ª etapa (aguardando_nao_fiscal).
+  const saldoNf = Number(distribuicaoEfetiva.saldoNaoFiscal || 0);
+  const nfJaCobertoPeloMidp =
+    totalFiscal > 0
+    && totalNaoFiscal > 0
+    && saldoNf <= 0.01
+    && Array.isArray(distribuicaoEfetiva.recebimentosNaoFiscal)
+    && distribuicaoEfetiva.recebimentosNaoFiscal.length > 0;
+
+  const recebimentosNaoFiscalConfirmados = nfJaCobertoPeloMidp
+    ? (distribuicaoEfetiva.recebimentosNaoFiscal || [])
+    : (
+      totalFiscal > 0 && totalNaoFiscal > 0
+        ? []
+        : (distribuicaoEfetiva.recebimentosNaoFiscal || [])
+    );
 
   const statusPagamento = determinarStatusPagamento({
     totalFiscal,
@@ -80,9 +178,16 @@ async function processarFluxoPagamentoVenda({
     recebimentosNaoFiscalConfirmados
   });
 
+  console.log('[ORQUESTRADOR] statusPagamento=', statusPagamento, {
+    totalFiscal,
+    totalNaoFiscal,
+    saldoNf,
+    nfJaCobertoPeloMidp
+  });
+
   // Montar recebimentos para gravar
   const recebimentosParaGravar = montarRecebimentosParaGravar({
-    distribuicao,
+    distribuicao: distribuicaoEfetiva,
     statusPagamento,
     totalFiscal,
     totalNaoFiscal,
@@ -93,10 +198,21 @@ async function processarFluxoPagamentoVenda({
     sucesso: true,
     statusPagamento,
     recebimentos: recebimentosParaGravar,
-    distribuicao,
+    distribuicao: distribuicaoEfetiva,
+    midp: resultadoMidpEfetivo,
     resultadoFiscal,
     proximaAcao: determinarProximaAcao(statusPagamento, totalNaoFiscal)
   };
+}
+
+function comTimeout(promise, ms, mensagem) {
+  let timer;
+  return Promise.race([
+    Promise.resolve(promise).finally(() => clearTimeout(timer)),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(mensagem)), ms);
+    })
+  ]);
 }
 
 /**
@@ -113,31 +229,48 @@ async function processarRecebimentoFiscal({
   if (totalFiscal <= 0 || !recebimentosFiscal || recebimentosFiscal.length === 0) {
     return { sucesso: true, tipo: 'sem_fiscal' };
   }
+
+  console.log('[ORQUESTRADOR] processarRecebimentoFiscal', {
+    totalFiscal,
+    formaPagamento,
+    tefHabilitado,
+    modoConfirmacaoFiscal,
+    qtdRecebimentos: recebimentosFiscal.length,
+    jaTemTef: recebimentosFiscal.some((r) => !!r.tef_transacao_id)
+  });
   
   // Determinar se deve usar TEF ou confirmação manual
   const deveUsarTef = await deveUsarTEFParaFiscal({
     tefHabilitado,
     modoConfirmacaoFiscal,
     formaPagamento,
-    totalFiscal
+    totalFiscal,
+    recebimentosFiscal
   });
+
+  console.log('[ORQUESTRADOR] deveUsarTef=', deveUsarTef);
   
   if (deveUsarTef) {
     return await processarTEFFiscal(recebimentosFiscal);
-  } else {
-    return await processarConfirmacaoManualFiscal(recebimentosFiscal);
   }
+  return await processarConfirmacaoManualFiscal(recebimentosFiscal);
 }
 
 /**
  * Processa TEF para recebimentos fiscais
  */
 async function processarTEFFiscal(recebimentosFiscal) {
-  const tefConfig = await tefConfigService.obterConfiguracao();
+  const tefConfig = await comTimeout(
+    tefConfigService.obterConfiguracao(),
+    10000,
+    'Timeout ao obter configuração TEF'
+  );
   const tefOn = tefFluxoPagamento.parseTefHabilitado(tefConfig.tefHabilitado);
   
   if (!tefOn) {
-    return { sucesso: false, erro: 'TEF desabilitado no sistema.' };
+    // TEF desligado: não bloqueia a venda — confirma fiscal manualmente
+    console.log('[ORQUESTRADOR] TEF desabilitado — confirmação manual do fiscal');
+    return processarConfirmacaoManualFiscal(recebimentosFiscal);
   }
   
   // Filtrar apenas recebimentos que exigem TEF
@@ -146,14 +279,24 @@ async function processarTEFFiscal(recebimentosFiscal) {
   );
   
   if (recebimentosTEF.length === 0) {
-    // Não há TEF, considerar como confirmado manualmente
     return { sucesso: true, tipo: 'manual', recebimentos: recebimentosFiscal };
+  }
+
+  // PDV já autorizou no pinpad — não reautorizar (evita travar a venda)
+  const pendentes = recebimentosTEF.filter((r) => !r.tef_transacao_id);
+  if (pendentes.length === 0) {
+    console.log('[ORQUESTRADOR] TEF já autorizado no PDV — pulando nova autorização');
+    return {
+      sucesso: true,
+      tipo: 'tef_ja_autorizado',
+      transacoes: recebimentosTEF.map((r) => r.tef_transacao_id).filter(Boolean),
+      recebimentos: recebimentosFiscal
+    };
   }
   
   const transacoesAutorizadas = [];
   
   for (const recebimento of recebimentosTEF) {
-    // Se já tem transação TEF, apenas valida
     if (recebimento.tef_transacao_id) {
       transacoesAutorizadas.push(recebimento.tef_transacao_id);
       continue;
@@ -161,15 +304,24 @@ async function processarTEFFiscal(recebimentosFiscal) {
     
     try {
       const tipoTef = tefFluxoPagamento.normalizarTipoTef(recebimento.forma_pagamento);
-      const retornoTEF = await tefManager.autorizar({
-        venda_id: null,
+      console.log('[ORQUESTRADOR] Autorizando TEF', {
+        forma: recebimento.forma_pagamento,
         tipo: tipoTef,
-        valor: recebimento.valor,
-        parcelas: 1
+        valor: recebimento.valor
       });
+
+      const retornoTEF = await comTimeout(
+        tefManager.autorizar({
+          venda_id: null,
+          tipo: tipoTef,
+          valor: recebimento.valor,
+          parcelas: 1
+        }),
+        Number(process.env.TEF_TIMEOUT_MS) || 35000,
+        'Timeout na autorização TEF — venda não efetivada. Verifique pinpad/TEF ou use confirmação manual.'
+      );
       
       if (!tefContrato.estaAprovado(retornoTEF)) {
-        // Cancelar transações anteriores
         for (const transacaoId of transacoesAutorizadas) {
           try {
             await tefManager.cancelar(transacaoId, 'Pagamento fiscal não aprovado');
@@ -192,7 +344,6 @@ async function processarTEFFiscal(recebimentosFiscal) {
       }
     } catch (error) {
       console.error('Erro ao autorizar pagamento TEF fiscal:', error);
-      // Cancelar transações anteriores
       for (const transacaoId of transacoesAutorizadas) {
         try {
           await tefManager.cancelar(transacaoId, 'Erro no pagamento fiscal');
@@ -236,7 +387,8 @@ async function deveUsarTEFParaFiscal({
   tefHabilitado,
   modoConfirmacaoFiscal,
   formaPagamento,
-  totalFiscal
+  totalFiscal,
+  recebimentosFiscal
 }) {
   if (totalFiscal <= 0) return false;
   
@@ -245,10 +397,34 @@ async function deveUsarTEFParaFiscal({
   
   const modoManual = String(modoConfirmacaoFiscal || 'TEF').toUpperCase() === 'MANUAL';
   if (modoManual) return false;
+
+  // Já autorizado no PDV → ainda "usa TEF", mas processarTEFFiscal só valida/pula
+  const recebimentos = Array.isArray(recebimentosFiscal) ? recebimentosFiscal : [];
+  if (recebimentos.some((r) => r.tef_transacao_id)) {
+    return true;
+  }
   
-  // Verificar se a forma de pagamento exige TEF
   const formaNormalizada = tefFluxoPagamento.normalizarFormaPagamentoTEF(formaPagamento);
-  return tefFluxoPagamento.formaPagamentoUsaTEF(formaNormalizada);
+  if (!tefFluxoPagamento.formaPagamentoUsaTEF(formaNormalizada)) {
+    return false;
+  }
+
+  // PIX sem operação PIX TEF habilitada → não trava pinpad; confirma fiscal direto
+  if (formaNormalizada === 'pix' || formaNormalizada === 'pix_tef') {
+    try {
+      const cfg = await tefConfigService.obterConfiguracao();
+      const pixTefOn = tefFluxoPagamento.parseTefHabilitado(cfg.pix);
+      if (!pixTefOn) {
+        console.log('[ORQUESTRADOR] PIX sem operação PIX TEF — confirmação manual');
+        return false;
+      }
+    } catch (error) {
+      console.error('[ORQUESTRADOR] Falha ao ler operação PIX TEF:', error.message);
+      return false;
+    }
+  }
+
+  return true;
 }
 
 /**
@@ -318,12 +494,11 @@ function montarRecebimentosParaGravar({
 }) {
   const { recebimentosFiscal, recebimentosNaoFiscal } = distribuicao;
   const vendaMista = Number(totalFiscal || 0) > 0 && Number(totalNaoFiscal || 0) > 0;
-  const somenteFiscal =
-    statusPagamento === 'aguardando_nao_fiscal'
-    || vendaMista;
+  // Só grava fiscal na 1ª etapa enquanto aguarda NF; se já quitada, grava os dois.
+  const somenteFiscal = statusPagamento === 'aguardando_nao_fiscal';
 
   if (somenteFiscal) {
-    return recebimentosFiscal.map((recebimento) => ({
+    return (recebimentosFiscal || []).map((recebimento) => ({
       ...recebimento,
       tipo_recebimento: 'fiscal',
       status: 'aprovado'
@@ -331,12 +506,12 @@ function montarRecebimentosParaGravar({
   }
 
   return [
-    ...recebimentosFiscal.map((recebimento) => ({
+    ...(recebimentosFiscal || []).map((recebimento) => ({
       ...recebimento,
       tipo_recebimento: recebimento.tipo_recebimento || 'fiscal',
       status: 'aprovado'
     })),
-    ...recebimentosNaoFiscal.map((recebimento) => ({
+    ...(recebimentosNaoFiscal || []).map((recebimento) => ({
       ...recebimento,
       tipo_recebimento: 'nao_fiscal',
       status: 'aprovado'
@@ -361,27 +536,6 @@ function determinarProximaAcao(statusPagamento, totalNaoFiscal) {
   }
   
   return 'aguardando';
-}
-
-/**
- * Normaliza os pagamentos de entrada
- */
-function normalizarPagamentosEntrada(pagamentos, formaPagamentoPadrao) {
-  if (!Array.isArray(pagamentos) || pagamentos.length === 0) {
-    // Se não informou pagamentos, cria um com a forma padrão
-    return [{
-      forma_pagamento: formaPagamentoPadrao || 'dinheiro',
-      valor: 0 // Será ajustado pelo distribuidor
-    }];
-  }
-  
-  return pagamentos.map(p => ({
-    forma_pagamento: p.forma_pagamento || formaPagamentoPadrao || 'dinheiro',
-    valor: Number(p.valor || 0),
-    tef_transacao_id: p.tef_transacao_id || null,
-    nsu: p.nsu || null,
-    autorizacao: p.autorizacao || null
-  }));
 }
 
 /**

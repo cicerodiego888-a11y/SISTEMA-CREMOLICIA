@@ -19,8 +19,8 @@ class ProdutoBridgeAdapter extends IProdutoBridge {
   }
 
   /** @inheritdoc */
-  async buscarPorId(produtoId) {
-    return this._platform.buscarPorId(produtoId);
+  async buscarPorId(produtoId, opts = {}) {
+    return this._platform.buscarPorId(produtoId, opts);
   }
 
   /** @inheritdoc */

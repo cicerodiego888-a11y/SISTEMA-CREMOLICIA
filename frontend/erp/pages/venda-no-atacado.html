@@ -1,0 +1,70 @@
+<!-- Página: Venda no Atacado — Configuração Comercial (RCM-04.5) -->
+<div class="container mt-4" style="max-width: 720px;">
+  <nav aria-label="breadcrumb" class="mb-2">
+    <ol class="breadcrumb mb-0">
+      <li class="breadcrumb-item"><a href="#" onclick="loadPage('configuracoes'); return false;">Configurações</a></li>
+      <li class="breadcrumb-item">Comercial</li>
+      <li class="breadcrumb-item active" aria-current="page">Configuração Comercial</li>
+    </ol>
+  </nav>
+
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <div>
+      <h2 class="mb-0">Configuração Comercial</h2>
+      <small class="text-muted">Venda no Atacado — seleção automática de canal</small>
+    </div>
+    <button type="button" class="btn btn-success" id="btn-salvar-venda-atacado">
+      Salvar
+    </button>
+  </div>
+
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <h5 class="text-center text-muted mb-4">──────────────── Venda no Atacado ────────────────</h5>
+
+      <div class="form-check mb-4">
+        <input class="form-check-input" type="checkbox" id="cfg-atacado-habilitado">
+        <label class="form-check-label fw-semibold" for="cfg-atacado-habilitado">
+          Habilitar Venda no Atacado
+        </label>
+      </div>
+
+      <div class="mb-3">
+        <label for="cfg-canal-atacado" class="form-label">Canal de Venda</label>
+        <select id="cfg-canal-atacado" class="form-select"></select>
+      </div>
+
+      <fieldset class="mb-3">
+        <legend class="form-label fs-6 mb-2">Tipo de Contagem</legend>
+        <div class="form-check">
+          <input class="form-check-input" type="radio" name="cfg-tipo-contagem" id="cfg-tipo-total" value="TOTAL_VENDA" checked>
+          <label class="form-check-label" for="cfg-tipo-total">Quantidade Total da Venda</label>
+        </div>
+        <div class="form-check">
+          <input class="form-check-input" type="radio" name="cfg-tipo-contagem" id="cfg-tipo-produto" value="POR_PRODUTO">
+          <label class="form-check-label" for="cfg-tipo-produto">Quantidade por Produto</label>
+        </div>
+      </fieldset>
+
+      <div class="mb-3">
+        <label for="cfg-quantidade-minima" class="form-label">Quantidade Mínima</label>
+        <input type="number" id="cfg-quantidade-minima" class="form-control" min="0.01" step="1" value="30" style="max-width: 160px;">
+      </div>
+
+      <div class="form-check mb-2">
+        <input class="form-check-input" type="checkbox" id="cfg-permitir-produtos" checked>
+        <label class="form-check-label" for="cfg-permitir-produtos">Permitir produtos diferentes</label>
+      </div>
+
+      <div class="form-check mb-0">
+        <input class="form-check-input" type="checkbox" id="cfg-permitir-categorias" checked>
+        <label class="form-check-label" for="cfg-permitir-categorias">Permitir categorias diferentes</label>
+      </div>
+    </div>
+  </div>
+
+  <p class="text-muted small mt-3 mb-0">
+    Com a venda no atacado desabilitada, o sistema utiliza sempre o canal <strong>VAREJO</strong>
+    (comportamento compatível com clientes existentes).
+  </p>
+</div>

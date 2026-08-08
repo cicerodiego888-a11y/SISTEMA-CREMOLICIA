@@ -12,6 +12,7 @@ const ROUTE_PAGE_KEY = {
   usuarios: 'usuarios',
   estoque: 'estoque',
   compras: 'compras',
+  'central-entradas': 'fiscal',
   comercial: 'comercial-consignacao-lista',
   financeiro: 'financeiro',
   fiscal: 'fiscal',
@@ -20,6 +21,8 @@ const ROUTE_PAGE_KEY = {
   pdv: 'pdv',
   perfil: null,
   configuracoes: null,
+  equipamentos: null,
+  relatorios: null,
   mais: null
 };
 
@@ -149,7 +152,7 @@ export function canDoAction(action) {
 }
 
 export function listAllowedNavRoutes() {
-  return ['dashboard', 'cadastros', 'comercial', 'financeiro', 'mais'].filter(canAccessRoute);
+  return ['dashboard', 'pdv', 'pdv/caixa', 'pdv/vendas', 'clientes', 'mais'].filter(canAccessRoute);
 }
 
 export function firstAllowedRoute() {

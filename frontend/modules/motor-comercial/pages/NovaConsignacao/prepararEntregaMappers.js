@@ -204,7 +204,10 @@ function buildPainelResumo(itens = [], clienteProfile = {}, painelBase = null) {
 
 function simularInclusaoProduto(itens = [], clienteProfile = {}, produto = {}, quantidade = 1) {
   const qtd = Math.max(1, Number(quantidade) || 1);
-  const preco = Number(produto.preco ?? produto.preco_venda ?? 0);
+  // Preço já resolvido pela API / resolverPrecosVenda (RCM-04.6) — sem leitura direta de legado
+  const preco = Number(
+    produto.preco ?? produto.precoVenda ?? produto.preco_unitario ?? 0
+  );
   const valorInclusao = qtd * preco;
   const painelAtual = buildPainelResumo(itens, clienteProfile);
 
@@ -278,6 +281,31 @@ function buildValidacoesConferencia(data = {}, clienteProfile = {}, options = {}
   return avisos;
 }
 
+function formatOrigemPreco(origem, fallback = false) {
+  if (fallback) return 'Preço de Segurança';
+  const o = String(origem || '').toLowerCase();
+  if (!o) return '—';
+  if (o.includes('seguranca') || o.includes('segurança') || o.includes('fallback') || o.includes('safety')) {
+    return 'Preço de Segurança';
+  }
+  if (o.includes('tabela')) return 'Tabela';
+  if (o.includes('linha')) return 'Linha de Precificação';
+  if (o.includes('produto')) return 'Produto';
+  return String(origem);
+}
+
+function rotuloLinhaItem(item = {}) {
+  return item.linhaComercialDescricao
+    || item.linhaComercialCodigo
+    || (item.linhaComercialId != null ? `#${item.linhaComercialId}` : '—');
+}
+
+function rotuloTabelaItem(item = {}, fallbackTabela = null) {
+  return item.tabelaPrecoNome
+    || fallbackTabela
+    || (item.tabelaPrecoId != null ? `#${item.tabelaPrecoId}` : '—');
+}
+
 function buildClienteResumo(clienteProfile = {}) {
   const profile = clienteProfile && typeof clienteProfile === 'object' ? clienteProfile : {};
   return [
@@ -285,11 +313,13 @@ function buildClienteResumo(clienteProfile = {}) {
     { label: 'Telefone', value: profile.telefone || '—' },
     { label: 'Cidade', value: profile.cidade || '—' },
     {
+      label: 'Tipo Comercial',
+      value: profile.tipoComercialDescricao || profile.tipoComercialCodigo || '—'
+    },
+    {
       label: 'Capacidades',
       value: (profile.capacidades || []).join(', ') || '—'
-    },
-    { label: 'Saldo Atual', value: formatCurrency(profile.saldo), highlight: true },
-    { label: 'Limite', value: formatCurrency(profile.limiteDisponivel ?? profile.limiteComercial) }
+    }
   ];
 }
 
@@ -299,9 +329,7 @@ function buildConferenciaResumo(data = {}, clienteProfile = {}, painel = {}) {
     { label: 'Documento', value: data.documentoNumero || data.documentoPreview || '—' },
     { label: 'Itens', value: String(painel.quantidadeItens || 0) },
     { label: 'Quantidade Total', value: String(painel.quantidadeTotal || 0) },
-    { label: 'Valor', value: formatCurrency(painel.valorTotal), highlight: true },
-    { label: 'Limite Disponível', value: formatCurrency(painel.limiteDisponivel) },
-    { label: 'Saldo após a Entrega', value: formatCurrency(painel.saldoAposEntrega) }
+    { label: 'Valor desta Entrega', value: formatCurrency(painel.valorTotal), highlight: true }
   ];
 }
 
@@ -344,6 +372,9 @@ module.exports = {
   buildConferenciaResumo,
   formatCurrency,
   formatDate,
+  formatOrigemPreco,
+  rotuloLinhaItem,
+  rotuloTabelaItem,
   inicializarSteps,
   stepIndexFromKey
 };

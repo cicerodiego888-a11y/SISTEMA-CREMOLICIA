@@ -55,6 +55,16 @@ const {
   completeOperacoesEntrega,
   operationalMessage
 } = require('../../recovery');
+const {
+  ErrorMessages,
+  ConfirmMessages,
+  emptyState,
+  notifySuccess,
+  notifyError,
+  notifyWarning,
+  notifyRecovery,
+  loadingText
+} = require('../../messages');
 
 class EntregaConsignacaoPage {
   constructor(consignacaoId, routeQuery = {}) {
@@ -198,13 +208,13 @@ class EntregaConsignacaoPage {
     container.id = 'entrega-content';
 
     if (this.loading.consignacao || this.loading.prestacao) {
-      container.appendChild(Loading.create({ message: 'Carregando dados da consignação...' }));
+      container.appendChild(Loading.create({ message: loadingText('CARREGANDO_CONSIGNACAO') }));
       return container;
     }
 
     if (this.error) {
       container.appendChild(Alert.create({
-        message: this.error.message || operationalMessage(this.error),
+        message: this.error.message || operationalMessage(this.error, { context: 'entrega' }),
         variant: 'error',
         dismissible: true
       }));
@@ -212,10 +222,7 @@ class EntregaConsignacaoPage {
     }
 
     if (!this.consignacao) {
-      container.appendChild(EmptyState.create({
-        title: 'Consignação não encontrada',
-        description: 'A consignação solicitada não existe ou foi removida'
-      }));
+      container.appendChild(EmptyState.create(emptyState('PRESTACAO_NAO_ENCONTRADA')));
       return container;
     }
 
@@ -588,11 +595,14 @@ class EntregaConsignacaoPage {
     try {
       ensureRegistered();
       const helpers = { api: this.api, projectionApi: this.projectionApi };
-      const recovered = await resumeEntrega(this.consignacaoId, helpers);
 
-      if (recovered?.error && !recovered.state?.checkpoint?.itens?.length) {
-        // Mantém checkpoint; informa operador sem mensagem técnica
-        notify(recovered.error.operationalMessage || operationalMessage(recovered.error), 'warning');
+      // Recovery é best-effort (auth/checkpoint). Consignação recém-criada
+      // deve abrir pela API — não bloquear nem alarmar se não houver operação retomável.
+      let recovered = null;
+      try {
+        recovered = await resumeEntrega(this.consignacaoId, helpers);
+      } catch (_resumeError) {
+        recovered = null;
       }
 
       const auth = loadAuthorization(Operations.ENTREGA, this.consignacaoId)
@@ -612,6 +622,18 @@ class EntregaConsignacaoPage {
       this.consignacao = consignacao;
       this.resumoPrestacao = resumo;
 
+      // Só avisa recovery se a API também não trouxe itens e o checkpoint está vazio
+      if (
+        recovered?.error
+        && !(consignacao?.itens?.length)
+        && !recovered.state?.checkpoint?.itens?.length
+      ) {
+        notifyRecovery(
+          recovered.error.operationalMessage
+          || operationalMessage(recovered.error, { context: 'entrega' })
+        );
+      }
+
       saveEntrega(this.consignacaoId, {
         itens: (consignacao.itens || []).map((item) => ({ ...item })),
         statusConsignacao: consignacao.status,
@@ -626,8 +648,8 @@ class EntregaConsignacaoPage {
       this.loading.consignacao = false;
       this.loading.prestacao = false;
       this.error = {
-        message: operationalMessage(error),
-        technical: String(error && error.message || error)
+        message: operationalMessage(error, { context: 'entrega' }) || ErrorMessages.ENTREGA_CARREGAR,
+        technical: String(error && error.message || error || '')
       };
       this._updateContent();
     }
@@ -755,21 +777,18 @@ class EntregaConsignacaoPage {
    */
   async _handleDelivery() {
     if (!this._canDeliver()) {
-      notify('Não é possível realizar a entrega. Verifique o checklist.', 'warning');
+      notifyWarning('ENTREGA_CHECKLIST');
       return;
     }
 
-    const confirmed = await confirmDialog({
-      title: 'Confirmar entrega',
-      message: 'Deseja confirmar a entrega desta consignação?'
-    });
+    const confirmed = await confirmDialog(ConfirmMessages.CONFIRMAR_ENTREGA);
     if (!confirmed) return;
 
     this.loading.delivering = true;
     this._updateFooter();
 
     try {
-      await withLoading('Registrando entrega...', () => this.api.entregarConsignacao(this.consignacaoId, {
+      await withLoading(loadingText('REGISTRANDO_ENTREGA'), () => this.api.entregarConsignacao(this.consignacaoId, {
         observacao: 'Entrega confirmada via ERP',
         usuarioId: getUsuarioId(),
         liberacaoGerencial: this.liberacaoLimiteSessao || null,
@@ -779,21 +798,22 @@ class EntregaConsignacaoPage {
       completeOperacoesEntrega(this.consignacaoId);
       this.loading.delivering = false;
       this._updateFooter();
+      notifySuccess('ENTREGA_REGISTRADA');
       await this._showSuccessDialog();
     } catch (error) {
       this.loading.delivering = false;
       this._updateFooter();
 
       // Pós-commit (outbox/eventos) pode falhar depois do domínio já gravar ENTREGUE.
-      // Nesse caso a API responde erro, mas a consignação já foi entregue — segue o fluxo de sucesso.
       const jaEntregue = await this._verificarEntregaJaPersistida();
       if (jaEntregue) {
         completeOperacoesEntrega(this.consignacaoId);
+        notifyRecovery('ENTREGA_OK_EVENTOS_FALHOU');
         await this._showSuccessDialog();
         return;
       }
 
-      notify(this._getFriendlyErrorMessage(error), 'error');
+      notifyError('ENTREGA_REGISTRAR', error);
     }
   }
 
@@ -817,44 +837,17 @@ class EntregaConsignacaoPage {
   }
 
   async _showSuccessDialog() {
-    const escolhaTermo = await exibirDialogoTermoEntrega({
-      title: 'Entrega realizada com sucesso',
-      message: 'Deseja imprimir o Termo de Entrega?'
-    });
-    await processarEscolhaTermo(escolhaTermo, this.api, this.projectionApi, this.consignacaoId, {
-      empresa: this.consignacao?.empresa,
-      filial: this.consignacao?.filial
-    });
-
-    const choice = await choiceDialog({
-      title: 'Entrega realizada',
-      message: 'Entrega realizada com sucesso! O que deseja fazer agora?',
-      choices: [
-        { label: 'Fechar Atendimento', value: 'prestacao', variant: 'primary' },
-        { label: 'Voltar à Central', value: 'central', variant: 'secondary' }
-      ]
-    });
-
-    if (choice === 'prestacao') {
-      try {
-        await this.api.abrirPrestacao(this.consignacaoId);
-      } catch (_error) {
-        // prestação pode já estar aberta
-      }
-      await navigate(routeWithActiveContext(
-        `/consignacoes/${this.consignacaoId}/prestacao`,
-        this.navigationContext
-      ));
-      return;
-    }
-
-    await navigate(resolveBackPath(this.navigationContext, '/consignacoes'));
+    // RCM-04.4 — abre Resumo Inteligente (Motor de Comprovantes)
+    await navigate(routeWithActiveContext(
+      `/consignacoes/${this.consignacaoId}/comprovante`,
+      this.navigationContext
+    ));
   }
 
   async _handleCancel() {
     const backLabel = this.navigationContext.locked ? 'a Central do Cliente' : 'a Central de Consignações';
     const confirmed = await confirmDialog({
-      title: 'Cancelar entrega',
+      ...ConfirmMessages.CANCELAR_ENTREGA,
       message: `Deseja cancelar a entrega e voltar para ${backLabel}?`
     });
     if (confirmed) {
@@ -867,16 +860,7 @@ class EntregaConsignacaoPage {
    * @private
    */
   _getFriendlyErrorMessage(error) {
-    const errorMessages = {
-      'Perfil bloqueado': 'O perfil do cliente está bloqueado. Entre em contato com o administrador.',
-      'Limite insuficiente': 'O limite comercial do cliente é insuficiente para esta operação.',
-      'Cliente bloqueado': 'O cliente está bloqueado. Não é possível realizar a entrega.',
-      'Consignação inválida': 'A consignação não está em um estado válido para entrega.',
-      'Falha na integração': 'Ocorreu um erro na integração. Tente novamente.'
-    };
-
-    if (errorMessages[error.message]) return errorMessages[error.message];
-    return operationalMessage(error);
+    return operationalMessage(error, { context: 'entrega' }) || ErrorMessages.ENTREGA_REGISTRAR;
   }
 
   /**

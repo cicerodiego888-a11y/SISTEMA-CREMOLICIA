@@ -26,9 +26,10 @@ const MENSAGENS_HARDENING = Object.freeze({
   ERRO_REDE:
     '⚠ Não foi possível conectar. Verifique a internet e tente novamente.',
   ERRO_GENERICO:
-    '⚠ Não foi possível concluir a operação. Tente novamente ou contate o suporte.',
+    '⚠ Não foi possível concluir a operação.\nTente novamente ou contate o suporte.',
   STATUS_VAZIO: '—',
-  CAMPO_AUSENTE: '—'
+  CAMPO_AUSENTE: '—',
+  OPERACAO_EM_ANDAMENTO: 'Operação em andamento...'
 });
 
 const PLACEHOLDER_RE = /^(Produto|Cliente|Item)\s*#/i;
@@ -96,7 +97,7 @@ function humanizarErroOperacional(error, contexto = '') {
 
   if (contexto === 'pagamento' && /SALDO|PAGAMENTO/i.test(upper)) {
     return {
-      mensagem: '⚠ Não foi possível registrar o pagamento. Confira o valor e o saldo em aberto.',
+      mensagem: '⚠ Não foi possível registrar o pagamento.\nConfira o valor e o saldo em aberto.',
       retryable: false,
       tipo: 'PAGAMENTO',
       acaoSugerida: null
@@ -146,7 +147,7 @@ function motivoBotaoDesabilitado(acao, ctx = {}) {
   if (loading || emitindo) {
     if (acao === 'emitir') return MENSAGENS_HARDENING.EMITINDO_NFCE;
     if (acao === 'encerrar') return MENSAGENS_HARDENING.ENCERRANDO;
-    return 'Aguarde a operação em andamento.';
+    return MENSAGENS_HARDENING.OPERACAO_EM_ANDAMENTO;
   }
   if (salvando) return MENSAGENS_HARDENING.SALVANDO_ALTERACOES;
   if (dirty && (acao === 'emitir' || acao === 'encerrar' || acao === 'continuar')) {

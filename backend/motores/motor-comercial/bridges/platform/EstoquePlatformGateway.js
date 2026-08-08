@@ -1,108 +1,133 @@
 /**
- * EstoquePlatformGateway — Integração real via ajusteEstoqueService CDS.
- *
- * Sprint O-13
+ * EstoquePlatformGateway — COM-01: MCC → quantidadeBase → MotorEstoque
  *
  * @module motores/motor-comercial/bridges/platform/EstoquePlatformGateway
  */
 
-const { promisify } = require('util');
 const { dbGet } = require('./dbHelpers');
-const { aplicarAjusteEstoqueProduto } = require('../../../../services/ajusteEstoqueService');
-const lotesService = require('../../../../services/lotesService');
-
-const aplicarAjusteAsync = promisify(aplicarAjusteEstoqueProduto);
+const mcc = require('../../../motor-conversao-comercial');
 
 class EstoquePlatformGateway {
   /**
    * @param {Object} deps
    * @param {Object} deps.db
+   * @param {Object} [deps.comercialOperacional]
    */
   constructor(deps = {}) {
     this._db = deps.db;
+    this._comercial = deps.comercialOperacional
+      || mcc.comercialOperacional
+      || new mcc.ComercialOperacionalService({ mcc: mcc.motor });
   }
 
   /**
+   * Saída física da consignação (ENTREGA).
    * @param {Object} dados
-   * @returns {Promise<Object>}
    */
   async registrarSaida(dados) {
-    const { produtoId, quantidade, consignacaoId, correlationId, usuarioId, usuarioNome } = dados;
+    const {
+      produtoId,
+      quantidade,
+      unidadeOrigem,
+      unidadeComercial,
+      loteId,
+      consignacaoId,
+      correlationId,
+      usuarioId
+    } = dados;
+
     const qtd = Number(quantidade);
     if (!produtoId || qtd <= 0) {
       throw new Error('produtoId e quantidade são obrigatórios para saída de estoque');
     }
 
-    const produto = await dbGet(this._db, 'SELECT item_fiscal FROM produtos WHERE id = ?', [produtoId]);
-    if (!produto) throw new Error('Produto não encontrado');
-
-    const ajusteFiscal = produto.item_fiscal ? -qtd : 0;
-    const ajusteNaoFiscal = produto.item_fiscal ? 0 : -qtd;
-
-    await aplicarAjusteAsync(this._db, {
+    const resultado = await this._comercial.baixarEstoqueEntrega(this._db, {
       produtoId,
-      ajusteFiscal,
-      ajusteNaoFiscal,
-      motivo: `CONSIGNACAO_SAIDA:${consignacaoId}`,
-      usuarioId: usuarioId ?? null,
-      usuarioNome: usuarioNome ?? 'Motor Comercial',
-      lotesService
+      quantidade: qtd,
+      unidadeOrigem: unidadeOrigem || unidadeComercial || null,
+      loteId: loteId || null,
+      consignacaoId,
+      usuarioId
     });
 
     return {
       produtoId,
-      quantidade: qtd,
+      quantidade: resultado.quantidadeBase,
+      quantidadeComercial: qtd,
+      quantidadeBase: resultado.quantidadeBase,
       tipo: 'SAIDA',
       motivo: 'CONSIGNACAO',
       consignacaoId,
       correlationId,
-      origem: 'platform:ajusteEstoqueService'
+      loteId: resultado.loteId ?? null,
+      mcc: resultado.mcc,
+      origem: 'COM-01:MotorEstoque.sair'
     };
   }
 
   /**
+   * Entrada física por devolução.
    * @param {Object} dados
-   * @returns {Promise<Object>}
    */
   async registrarEntrada(dados) {
-    const { produtoId, quantidade, consignacaoId, correlationId, usuarioId, usuarioNome } = dados;
+    const {
+      produtoId,
+      quantidade,
+      unidadeOrigem,
+      unidadeComercial,
+      loteId,
+      consignacaoId,
+      correlationId,
+      usuarioId
+    } = dados;
+
     const qtd = Number(quantidade);
     if (!produtoId || qtd <= 0) {
       throw new Error('produtoId e quantidade são obrigatórios para entrada de estoque');
     }
 
-    const produto = await dbGet(this._db, 'SELECT item_fiscal FROM produtos WHERE id = ?', [produtoId]);
-    if (!produto) throw new Error('Produto não encontrado');
-
-    const ajusteFiscal = produto.item_fiscal ? qtd : 0;
-    const ajusteNaoFiscal = produto.item_fiscal ? 0 : qtd;
-
-    await aplicarAjusteAsync(this._db, {
+    const resultado = await this._comercial.entrarEstoqueDevolucao(this._db, {
       produtoId,
-      ajusteFiscal,
-      ajusteNaoFiscal,
-      motivo: `CONSIGNACAO_DEVOLUCAO:${consignacaoId}`,
-      usuarioId: usuarioId ?? null,
-      usuarioNome: usuarioNome ?? 'Motor Comercial',
-      lotesService
+      quantidade: qtd,
+      unidadeOrigem: unidadeOrigem || unidadeComercial || null,
+      loteId: loteId || null,
+      consignacaoId,
+      usuarioId
     });
 
     return {
       produtoId,
-      quantidade: qtd,
+      quantidade: resultado.quantidadeBase,
+      quantidadeComercial: qtd,
+      quantidadeBase: resultado.quantidadeBase,
       tipo: 'ENTRADA',
       motivo: 'DEVOLUCAO',
       consignacaoId,
       correlationId,
-      origem: 'platform:ajusteEstoqueService'
+      mcc: resultado.mcc,
+      origem: 'COM-01:MotorEstoque.entrar'
     };
   }
 
   /**
-   * Transferência entre consignações não altera estoque físico (já baixado na entrega).
+   * Perda: MCC + política JA_BAIXADO_ENTREGA (estoque já saiu na entrega).
    * @param {Object} dados
-   * @returns {Promise<Object>}
    */
+  async registrarPerda(dados) {
+    const qtd = Number(dados.quantidade);
+    if (!dados.produtoId || qtd <= 0) {
+      throw new Error('produtoId e quantidade são obrigatórios para perda');
+    }
+    return this._comercial.registrarPerda(this._db, {
+      produtoId: dados.produtoId,
+      quantidade: qtd,
+      unidadeOrigem: dados.unidadeOrigem || dados.unidadeComercial || null,
+      consignacaoId: dados.consignacaoId,
+      usuarioId: dados.usuarioId,
+      forcarAjusteFisico: Boolean(dados.forcarAjusteFisico)
+    });
+  }
+
   async registrarTransferencia(dados) {
     return {
       consignacaoOrigemId: dados.consignacaoOrigemId,
@@ -115,10 +140,6 @@ class EstoquePlatformGateway {
     };
   }
 
-  /**
-   * @param {string|number} produtoId
-   * @returns {Promise<Object>}
-   */
   async consultarSaldo(produtoId) {
     const row = await dbGet(this._db, `
       SELECT id, estoque_atual, saldo_fiscal, saldo_nao_fiscal

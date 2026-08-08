@@ -6,11 +6,13 @@ const net = require('net');
 const os = require('os');
 const { tratarFalhaConexaoRemota, aplicarRecuperacaoModoLocal } = require('./electron-rede-recuperacao');
 const { iniciarConexaoClienteRemoto, confirmarModoLocalEmergencia } = require('./electron-rede-cliente');
+const { precisaSetupInicialPdv, abrirTelaSetupPdv } = require('./electron-pdv-setup');
 const {
   definirSessaoClienteRemoto,
   obterSessaoClienteRemoto,
   estaEmSessaoClienteRemoto
 } = require('./electron-sessao-rede');
+const { auditarRuntimeImpressao } = require('./backend/services/fiscal/ComprovanteRuntimeAuditoria');
 
 process.env.DB_DIR = process.env.DB_DIR || path.join(
   process.env.PROGRAMDATA || 'C:\\ProgramData',
@@ -347,7 +349,15 @@ function registrarHandlersIpc() {
         printOptions.deviceName = deviceName;
       }
 
-      cupomWindow.webContents.print(printOptions, () => {
+      cupomWindow.webContents.print(printOptions, async () => {
+        const htmlPrint = await capturarHtmlRuntime(cupomWindow, htmlFinal);
+        await registrarAuditoriaRuntime({
+          htmlOriginal: html,
+          htmlRuntime: htmlFinal,
+          htmlPrint,
+          options
+        });
+
         impressaoConcluida = true;
         if (typeof callback === 'function') {
           callback();
@@ -395,6 +405,14 @@ function registrarHandlersIpc() {
 
     cupomWindow.webContents.once('did-finish-load', async () => {
       await cupomWindow.webContents.executeJavaScript(`new Promise(r => setTimeout(r, 800));`);
+      const htmlRuntime = await capturarHtmlRuntime(cupomWindow, htmlFinal);
+      await registrarAuditoriaRuntime({
+        htmlOriginal: html,
+        htmlRuntime,
+        htmlPrint: htmlRuntime,
+        options
+      });
+
       conteudoPronto = true;
 
       if (silent) {
@@ -427,10 +445,19 @@ function registrarHandlersIpc() {
     });
     await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
     await new Promise(resolve => setTimeout(resolve, 500));
+    const htmlRuntime = await capturarHtmlRuntime(printWindow, html);
     const printOptions = { silent: true, printBackground: true };
     if (deviceName) printOptions.deviceName = deviceName;
     return new Promise((resolve, reject) => {
-      printWindow.webContents.print(printOptions, (success, errorType) => {
+      printWindow.webContents.print(printOptions, async (success, errorType) => {
+        const htmlPrint = await capturarHtmlRuntime(printWindow, htmlRuntime);
+        await registrarAuditoriaRuntime({
+          htmlOriginal: html,
+          htmlRuntime,
+          htmlPrint,
+          options: { audit: {} }
+        });
+
         if (!printWindow.isDestroyed()) printWindow.close();
         if (success) resolve({ sucesso: true });
         else reject(new Error(`Falha na impressão: ${errorType}`));
@@ -454,6 +481,36 @@ function injetarHostnameEstacao(webContents) {
   const hostname = os.hostname();
   const script = `(function(){try{var h=${JSON.stringify(hostname)};sessionStorage.setItem('cds_estacao_hostname',h);window.__CDS_ESTACAO_HOSTNAME__=h;}catch(e){}})();`;
   webContents.executeJavaScript(script, true).catch(() => {});
+}
+
+async function capturarHtmlRuntime(window, fallbackHtml = '') {
+  if (!window || window.isDestroyed()) return fallbackHtml;
+  try {
+    return await window.webContents.executeJavaScript('document.documentElement.outerHTML');
+  } catch (error) {
+    console.warn('[RCF-10.2] Não foi possível capturar o HTML runtime:', error && error.message ? error.message : error);
+    return fallbackHtml;
+  }
+}
+
+async function registrarAuditoriaRuntime({ htmlOriginal, htmlRuntime, htmlPrint, options = {} }) {
+  try {
+    const audit = await auditarRuntimeImpressao({
+      vendaId: options && options.audit ? options.audit.vendaId : null,
+      notaId: options && options.audit ? options.audit.notaId : null,
+      title: options && options.audit ? options.audit.title : 'Comprovante Comercial',
+      loadedUrl: options && options.audit ? options.audit.loadedUrl : 'electron:data-url',
+      html: htmlOriginal,
+      htmlRuntime,
+      htmlPrint
+    });
+
+    console.log('[RCF-10.2] Auditoria runtime registrada:', JSON.stringify(audit));
+    return audit;
+  } catch (error) {
+    console.error('[RCF-10.2] Falha ao registrar auditoria runtime:', error && error.message ? error.message : error);
+    return null;
+  }
 }
 
 function criarMainWindow(tituloJanela, opcoes = {}) {
@@ -626,16 +683,39 @@ function iniciarAplicacaoElectron(options = {}) {
       process.env.FISCAL_DIR = fiscalDir;
       const configServidor = carregarConfiguracaoServidor(appModuloAtual);
 
-      if (configServidor.modo === 'cliente') {
-        console.log(`Modo CLIENTE ativado. Servidor: http://${configServidor.ipServidor}:${configServidor.porta}`);
-        iniciarConexaoClienteRemoto({
-          configServidor,
+      const conectarComoCliente = (cfg) => {
+        console.log(`Modo CLIENTE ativado. Servidor: http://${cfg.ipServidor}:${cfg.porta}`);
+        return iniciarConexaoClienteRemoto({
+          configServidor: cfg,
           modulo: appModuloAtual,
-          abrirJanelaRemota: (urlBase) => createWindowRemote(urlBase, tituloJanela, configServidor),
+          abrirJanelaRemota: (urlBase) => createWindowRemote(urlBase, tituloJanela, cfg),
           iniciarServidorLocal: () => iniciarBackendLocal(tituloJanela),
           encerrarApp: () => app.quit()
-        }).catch((error) => {
+        });
+      };
+
+      if (configServidor.modo === 'cliente') {
+        conectarComoCliente(configServidor).catch((error) => {
           dialog.showErrorBox('Erro ao conectar no servidor', error.message || String(error));
+          app.quit();
+        });
+        return;
+      }
+
+      if (modulo === 'pdv' && precisaSetupInicialPdv(configServidor)) {
+        console.log('[PDV-SETUP] Primeira inicialização: solicitando IP do servidor principal.');
+        abrirTelaSetupPdv({
+          tituloJanela,
+          onConectado: (cfg) => conectarComoCliente(cfg).catch((error) => {
+            dialog.showErrorBox('Erro ao conectar no servidor', error.message || String(error));
+            app.quit();
+          }),
+          onLocal: () => iniciarBackendLocal(tituloJanela).catch((error) => {
+            dialog.showErrorBox('Erro ao iniciar servidor local', `${error.message}\n\nDB_DIR: ${process.env.DB_DIR}`);
+            app.quit();
+          })
+        }).catch((error) => {
+          dialog.showErrorBox('Erro ao abrir configuração do PDV', error.message || String(error));
           app.quit();
         });
         return;

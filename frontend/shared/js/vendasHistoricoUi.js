@@ -89,6 +89,12 @@ function montarHtmlAcoesHistoricoVenda(venda, opcoes = {}) {
                     : 'Reimprimir cupom não fiscal'}
             </button>
         </li>
+        ${tipoCupom === 'fiscal' ? `
+        <li>
+            <button type="button" class="dropdown-item py-2" onclick="abrirXmlNfceHistorico(${id})">
+                <i class="fas fa-file-code fa-fw me-2 text-muted"></i>Abrir XML${escapeHtmlHistoricoVenda(nfceNumero)}
+            </button>
+        </li>` : ''}
     ` : '';
 
     const blocoOperacional = !cancelada ? `

@@ -12,12 +12,72 @@ function normalizarTexto(texto) {
     .toLowerCase();
 }
 
+const SELECT_CLIENTE = `
+  SELECT
+    c.*,
+    tc.codigo AS tipo_comercial_codigo,
+    tc.descricao AS tipo_comercial_descricao,
+    tc.canal_padrao AS tipo_comercial_canal
+  FROM clientes c
+  LEFT JOIN tipos_comerciais tc ON tc.id = c.tipo_comercial_id
+`;
+
+function enriquecerEndereco(row) {
+  if (!row) return row;
+  row.cep = row.cep || '';
+  row.rua = row.rua || '';
+  row.numero = row.numero || '';
+  row.bairro = row.bairro || '';
+  row.cidade = row.cidade || '';
+  row.uf = row.uf || '';
+  return row;
+}
+
+function obterTipoComercialIdPadrao(cb) {
+  db.get(
+    `SELECT id FROM tipos_comerciais WHERE UPPER(codigo) = 'CONSUMIDOR_FINAL' LIMIT 1`,
+    [],
+    (err, row) => {
+      if (err) return cb(err);
+      cb(null, row?.id || null);
+    }
+  );
+}
+
+function resolverTipoComercialId(body, cb) {
+  const raw = body.tipo_comercial_id ?? body.tipoComercialId ?? null;
+  if (raw != null && raw !== '') {
+    const id = Number(raw);
+    if (!Number.isFinite(id) || id <= 0) {
+      return cb(Object.assign(new Error('Tipo Comercial inválido'), { statusCode: 400 }));
+    }
+    return db.get(
+      `SELECT id FROM tipos_comerciais WHERE id = ? AND ativo = 1`,
+      [id],
+      (err, row) => {
+        if (err) return cb(err);
+        if (!row) {
+          return cb(Object.assign(new Error('Tipo Comercial não encontrado ou inativo'), { statusCode: 400 }));
+        }
+        cb(null, row.id);
+      }
+    );
+  }
+  obterTipoComercialIdPadrao(cb);
+}
+
 // Listar todos os clientes
 router.get('/', (req, res) => {
-  db.all('SELECT * FROM clientes ORDER BY nome', (err, rows) => {
+  db.all(`${SELECT_CLIENTE} ORDER BY c.nome`, (err, rows) => {
     if (err) {
-      res.status(500).json({ error: err.message });
-      return;
+      // Compat: tabela tipos_comerciais ainda não migrada
+      if (/no such table/i.test(err.message || '')) {
+        return db.all('SELECT * FROM clientes ORDER BY nome', (err2, rows2) => {
+          if (err2) return res.status(500).json({ error: err2.message });
+          res.json(rows2);
+        });
+      }
+      return res.status(500).json({ error: err.message });
     }
     res.json(rows);
   });
@@ -33,7 +93,7 @@ router.get('/buscar', autenticarToken, (req, res) => {
   const termoNormalizado = normalizarTexto(termo);
   const termoNumeros = termo.replace(/\D/g, '');
   const sql = `
-    SELECT id, nome, cpf_cnpj, telefone
+    SELECT id, nome, cpf_cnpj, telefone, tipo_comercial_id
     FROM clientes
     ORDER BY nome ASC
   `;
@@ -76,33 +136,27 @@ router.get('/:id/vendas', (req, res) => {
 // Buscar cliente por ID
 router.get('/:id', (req, res) => {
   const { id } = req.params;
-  db.get('SELECT * FROM clientes WHERE id = ?', [id], (err, row) => {
+  db.get(`${SELECT_CLIENTE} WHERE c.id = ?`, [id], (err, row) => {
     if (err) {
-      res.status(500).json({ error: err.message });
-      return;
+      if (/no such table/i.test(err.message || '')) {
+        return db.get('SELECT * FROM clientes WHERE id = ?', [id], (err2, row2) => {
+          if (err2) return res.status(500).json({ error: err2.message });
+          res.json(enriquecerEndereco(row2));
+        });
+      }
+      return res.status(500).json({ error: err.message });
     }
-    // Garante que todos os campos de endereço existam (evita undefined)
-    if (row) {
-      row.cep = row.cep || '';
-      row.rua = row.rua || '';
-      row.numero = row.numero || '';
-      row.bairro = row.bairro || '';
-      row.cidade = row.cidade || '';
-      row.uf = row.uf || '';
-    }
-    res.json(row);
+    res.json(enriquecerEndereco(row));
   });
 });
 
 // Criar cliente
 router.post('/', (req, res) => {
-  const { nome, cpf_cnpj, telefone, email, cep, rua, numero, bairro, cidade, uf, limite_credito } = req.body;
-  // Validação básica
+  const { nome } = req.body;
   if (!nome) {
     return res.status(400).json({ error: 'O campo nome é obrigatório.' });
   }
 
-  // Validação de CPF/CNPJ duplicado
   const cpfCnpjLimpo = String(req.body.cpf_cnpj || '').replace(/\D/g, '');
 
   if (cpfCnpjLimpo) {
@@ -133,32 +187,49 @@ router.post('/', (req, res) => {
 function inserirCliente(req, res) {
   const { nome, cpf_cnpj, telefone, email, cep, rua, numero, bairro, cidade, uf, limite_credito } = req.body;
 
-  // Garante que limite_credito seja número
   let limiteCreditoNum = parseFloat(limite_credito);
   if (isNaN(limiteCreditoNum)) limiteCreditoNum = 0;
-  db.run(`
-    INSERT INTO clientes (nome, cpf_cnpj, telefone, email, cep, rua, numero, bairro, cidade, uf, limite_credito, credito_atual)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-  `, [nome, cpf_cnpj, telefone, email, cep, rua, numero, bairro, cidade, uf, limiteCreditoNum],
-    function(err) {
-      if (err) {
-        res.status(500).json({ error: 'Erro ao criar cliente: ' + err.message });
-        return;
-      }
-      // auditoria de criação de cliente
-      gravarAuditoria({
-        usuario_id: req.user?.id || null,
-        usuario_nome: req.user?.nome || req.user?.username || null,
-        modulo: 'clientes',
-        acao: 'criar_cliente',
-        referencia_tipo: 'cliente',
-        referencia_id: this.lastID,
-        detalhes: { nome },
-        ip_requisicao: req.ip || null
-      }).catch((auditErr) => console.error('Erro ao gravar auditoria de cliente:', auditErr));
 
-      res.json({ id: this.lastID, message: 'Cliente criado com sucesso' });
-    });
+  resolverTipoComercialId(req.body, (errTipo, tipoId) => {
+    if (errTipo) {
+      return res.status(errTipo.statusCode || 500).json({ error: errTipo.message });
+    }
+    if (!tipoId) {
+      return res.status(400).json({ error: 'Tipo Comercial é obrigatório.' });
+    }
+
+    db.run(`
+      INSERT INTO clientes (nome, cpf_cnpj, telefone, email, cep, rua, numero, bairro, cidade, uf, limite_credito, credito_atual, tipo_comercial_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+    `, [nome, cpf_cnpj, telefone, email, cep, rua, numero, bairro, cidade, uf, limiteCreditoNum, tipoId],
+      function onInsert(err) {
+        if (err) {
+          if (/no such column/i.test(err.message || '')) {
+            return db.run(`
+              INSERT INTO clientes (nome, cpf_cnpj, telefone, email, cep, rua, numero, bairro, cidade, uf, limite_credito, credito_atual)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+            `, [nome, cpf_cnpj, telefone, email, cep, rua, numero, bairro, cidade, uf, limiteCreditoNum],
+              function onInsertLegacy(err2) {
+                if (err2) return res.status(500).json({ error: 'Erro ao criar cliente: ' + err2.message });
+                res.json({ id: this.lastID, message: 'Cliente criado com sucesso' });
+              });
+          }
+          return res.status(500).json({ error: 'Erro ao criar cliente: ' + err.message });
+        }
+        gravarAuditoria({
+          usuario_id: req.user?.id || null,
+          usuario_nome: req.user?.nome || req.user?.username || null,
+          modulo: 'clientes',
+          acao: 'criar_cliente',
+          referencia_tipo: 'cliente',
+          referencia_id: this.lastID,
+          detalhes: { nome, tipo_comercial_id: tipoId },
+          ip_requisicao: req.ip || null
+        }).catch((auditErr) => console.error('Erro ao gravar auditoria de cliente:', auditErr));
+
+        res.json({ id: this.lastID, message: 'Cliente criado com sucesso' });
+      });
+  });
 }
 
 // Atualizar cliente
@@ -170,29 +241,51 @@ router.put('/:id', (req, res) => {
   }
   let limiteCreditoNum = parseFloat(limite_credito);
   if (isNaN(limiteCreditoNum)) limiteCreditoNum = 0;
-  db.run(`
-    UPDATE clientes 
-    SET nome = ?, cpf_cnpj = ?, telefone = ?, email = ?, cep = ?, rua = ?, numero = ?, bairro = ?, cidade = ?, uf = ?, limite_credito = ?
-    WHERE id = ?
-  `, [nome, cpf_cnpj, telefone, email, cep, rua, numero, bairro, cidade, uf, limiteCreditoNum, id],
-    function(err) {
-      if (err) {
-        res.status(500).json({ error: 'Erro ao atualizar cliente: ' + err.message });
-        return;
-      }
-      gravarAuditoria({
-        usuario_id: req.user?.id || null,
-        usuario_nome: req.user?.nome || req.user?.username || null,
-        modulo: 'clientes',
-        acao: 'atualizar_cliente',
-        referencia_tipo: 'cliente',
-        referencia_id: id,
-        detalhes: { antes: null, depois: req.body },
-        ip_requisicao: req.ip || null
-      }).catch((auditErr) => console.error('Erro ao gravar auditoria de atualização de cliente:', auditErr));
 
-      res.json({ message: 'Cliente atualizado com sucesso' });
-    });
+  resolverTipoComercialId(req.body, (errTipo, tipoId) => {
+    if (errTipo) {
+      return res.status(errTipo.statusCode || 500).json({ error: errTipo.message });
+    }
+    if (!tipoId) {
+      return res.status(400).json({ error: 'Tipo Comercial é obrigatório.' });
+    }
+
+    db.run(`
+      UPDATE clientes
+      SET nome = ?, cpf_cnpj = ?, telefone = ?, email = ?, cep = ?, rua = ?, numero = ?,
+          bairro = ?, cidade = ?, uf = ?, limite_credito = ?, tipo_comercial_id = ?
+      WHERE id = ?
+    `, [nome, cpf_cnpj, telefone, email, cep, rua, numero, bairro, cidade, uf, limiteCreditoNum, tipoId, id],
+      function onUpdate(err) {
+        if (err) {
+          if (/no such column/i.test(err.message || '')) {
+            return db.run(`
+              UPDATE clientes
+              SET nome = ?, cpf_cnpj = ?, telefone = ?, email = ?, cep = ?, rua = ?, numero = ?,
+                  bairro = ?, cidade = ?, uf = ?, limite_credito = ?
+              WHERE id = ?
+            `, [nome, cpf_cnpj, telefone, email, cep, rua, numero, bairro, cidade, uf, limiteCreditoNum, id],
+              function onUpdateLegacy(err2) {
+                if (err2) return res.status(500).json({ error: 'Erro ao atualizar cliente: ' + err2.message });
+                res.json({ message: 'Cliente atualizado com sucesso' });
+              });
+          }
+          return res.status(500).json({ error: 'Erro ao atualizar cliente: ' + err.message });
+        }
+        gravarAuditoria({
+          usuario_id: req.user?.id || null,
+          usuario_nome: req.user?.nome || req.user?.username || null,
+          modulo: 'clientes',
+          acao: 'atualizar_cliente',
+          referencia_tipo: 'cliente',
+          referencia_id: id,
+          detalhes: { depois: req.body },
+          ip_requisicao: req.ip || null
+        }).catch((auditErr) => console.error('Erro ao gravar auditoria de atualização de cliente:', auditErr));
+
+        res.json({ message: 'Cliente atualizado com sucesso' });
+      });
+  });
 });
 
 // Deletar cliente
@@ -213,9 +306,9 @@ router.delete('/:id', (req, res) => {
         });
       }
 
-      db.run('DELETE FROM clientes WHERE id = ?', [id], function (err) {
-        if (err) {
-          return res.status(500).json({ error: err.message });
+      db.run('DELETE FROM clientes WHERE id = ?', [id], function onDelete(errDel) {
+        if (errDel) {
+          return res.status(500).json({ error: errDel.message });
         }
 
         gravarAuditoria({

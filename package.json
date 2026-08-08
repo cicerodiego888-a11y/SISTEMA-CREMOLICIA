@@ -11,10 +11,38 @@
     "start:recuperar": "node scripts/criar-flag-modo-local.js && .\\node_modules\\.bin\\electron.cmd .",
     "start:pdv": ".\\node_modules\\.bin\\electron.cmd electron-pdv.js",
     "start:erp": ".\\node_modules\\.bin\\electron.cmd electron-erp.js",
-    "build": "node scripts/prebuild-electron.js && electron-builder",
-    "build:erp": "electron-builder --config electron-builder-erp.json",
-    "build:pdv": "electron-builder --config electron-builder-pdv.json",
-    "build:all": "node scripts/prebuild-electron.js && electron-builder --config electron-builder-erp.json && electron-builder --config electron-builder-pdv.json",
+    "build": "node scripts/prebuild-electron.js && node scripts/electron-builder-unsigned.js",
+    "build:erp": "node scripts/electron-builder-unsigned.js --config electron-builder-erp.json",
+    "build:pdv": "node scripts/electron-builder-unsigned.js --config electron-builder-pdv.json",
+    "build:all": "node scripts/prebuild-electron.js && node scripts/electron-builder-unsigned.js --config electron-builder-erp.json && node scripts/electron-builder-unsigned.js --config electron-builder-pdv.json",
+    "build:signed": "node scripts/prebuild-electron.js && electron-builder",
+    "build:erp:signed": "electron-builder --config electron-builder-erp.json",
+    "build:pdv:signed": "electron-builder --config electron-builder-pdv.json",
+    "test:rcf07": "node backend/services/fiscal/tests/rcf07_1-suite.test.js",
+    "test:rcf072": "node backend/services/fiscal/tests/rcf07_2-homologacao-venda.js",
+    "test:mcc02": "node backend/motores/motor-conversao-comercial/tests/mcc02.test.js",
+    "test:mcc021": "node backend/motores/motor-conversao-comercial/tests/mcc021.test.js",
+    "test:mci01": "node backend/motores/motor-conversao-comercial/tests/mci01.test.js",
+    "test:mcc03": "node backend/motores/motor-conversao-comercial/tests/mcc03.test.js",
+    "test:mcc04": "node backend/motores/motor-estoque/tests/mcc04.test.js",
+    "test:est-mcc01": "node backend/motores/motor-conversao-comercial/tests/est-mcc01.test.js",
+    "test:pdv01": "node backend/motores/motor-conversao-comercial/tests/pdv01.test.js",
+    "test:pdv-uc02": "node tests/pdv/pdv-uc02.test.js",
+    "test:com01": "node backend/motores/motor-conversao-comercial/tests/com01.test.js",
+    "test:fis01": "node backend/motores/motor-conversao-comercial/tests/fis01.test.js",
+    "test:mfe01": "node backend/motores/motor-financeiro/tests/mfe01.test.js",
+    "test:mfe02": "node backend/motores/motor-financeiro/tests/mfe02.test.js",
+    "test:mfe03": "node backend/motores/motor-financeiro/tests/mfe03.test.js",
+    "test:mfe03modelo": "node backend/motores/motor-financeiro/tests/mfe03-modelo.test.js",
+    "test:mfe04": "node backend/motores/motor-financeiro/tests/mfe04.test.js",
+    "test:mfe05": "node backend/motores/motor-financeiro/tests/mfe05.test.js",
+    "test:mfe051": "node backend/motores/motor-financeiro/tests/mfe051.test.js",
+    "test:mfe052": "node backend/motores/motor-financeiro/tests/mfe052.test.js",
+    "test:mfe06": "node backend/motores/motor-financeiro/tests/mfe06.test.js",
+    "test:mfe07": "node backend/motores/motor-financeiro/tests/mfe07.test.js",
+    "test:mfe": "npm run test:mfe01 && npm run test:mfe02 && npm run test:mfe03 && npm run test:mfe03modelo && npm run test:mfe04 && npm run test:mfe05 && npm run test:mfe051 && npm run test:mfe052 && npm run test:mfe06 && npm run test:mfe07",
+    "test:mcc-hom": "node backend/motores/motor-conversao-comercial/tests/mcc-homologacao.test.js",
+    "test:mcc:all": "npm run test:mcc && npm run test:mcc02 && npm run test:mcc021 && npm run test:mci01 && npm run test:mcc03 && npm run test:mcc04 && npm run test:est-mcc01 && npm run test:pdv01 && npm run test:com01 && npm run test:fis01 && npm run test:mcc-hom",
     "test:conversao-unidades": "node tests/motor-conversao-unidades/motor-conversao-unidades.test.js",
     "test:bootstrap": "node tests/bootstrap/database-bootstrap-instalacao-limpa.test.js",
     "test:fracionado": "npm run test:conversao-unidades",
@@ -126,7 +154,8 @@
     "esbuild": "^0.25.0",
     "jest": "^30.4.2",
     "jest-environment-jsdom": "^30.4.1",
-    "nodemon": "^3.0.1"
+    "nodemon": "^3.0.1",
+    "rcedit": "^4.0.1"
   },
   "build": {
     "appId": "com.cdssistemas.cds",
@@ -155,12 +184,12 @@
       "**/node_modules/sqlite3/**",
       "**/node_modules/usb/**"
     ],
+    "afterPack": "./scripts/afterPack-set-icon.js",
     "win": {
       "target": "nsis",
       "icon": "assets/icon.ico",
-      "signtoolOptions": {
-        "publisherName": "CDS Sistemas"
-      }
+      "sign": null,
+      "signAndEditExecutable": false
     },
     "nsis": {
       "oneClick": false,
@@ -168,6 +197,9 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "CDS Sistemas",
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "installerHeaderIcon": "assets/icon.ico",
       "artifactName": "CDS-Sistemas-Setup-${version}.${ext}",
       "uninstallDisplayName": "CDS Sistemas"
     }

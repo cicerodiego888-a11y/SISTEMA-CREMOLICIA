@@ -114,13 +114,17 @@ describe('RFC-03 Recovery Enterprise', () => {
     expect(loadAuthorization(Operations.ENTREGA, entityId)).toBeNull();
   });
 
-  test('P0-03 mensagens operacionais — sem texto técnico', () => {
-    expect(RecoveryMessages.toOperationalMessage(new Error('Consignação não encontrada')))
-      .toBe('Esta operação foi removida.');
-    expect(RecoveryMessages.toOperationalMessage(new Error('Network Error')))
-      .toBe('Verifique sua conexão e tente novamente.');
-    expect(RecoveryMessages.toOperationalMessage(new Error('TypeError: x is null')))
-      .toBe('Não foi possível recuperar esta operação agora.');
+  test('P0-03 mensagens operacionais — sem texto técnico e sem genérica opaca', () => {
+    const removed = RecoveryMessages.toOperationalMessage(new Error('Consignação não encontrada'));
+    expect(removed).toMatch(/removida|não está mais disponível/i);
+    expect(removed).toMatch(/Central/i);
+
+    const network = RecoveryMessages.toOperationalMessage(new Error('Network Error'));
+    expect(network).toMatch(/conexão/i);
+
+    const typeError = RecoveryMessages.toOperationalMessage(new Error('TypeError: x is null'));
+    expect(typeError).not.toMatch(/Não foi possível recuperar esta operação agora/i);
+    expect(typeError).toMatch(/Central de Consignações|retomar/i);
   });
 
   test('API offline: checkpoint preservado + mensagem operacional', async () => {
@@ -142,7 +146,7 @@ describe('RFC-03 Recovery Enterprise', () => {
     });
 
     expect(loaded.exists).toBe(true);
-    expect(loaded.error.operationalMessage).toBe('Verifique sua conexão e tente novamente.');
+    expect(loaded.error.operationalMessage).toMatch(/conexão/i);
     expect(RecoveryStorage.listAll()).toHaveLength(before);
   });
 

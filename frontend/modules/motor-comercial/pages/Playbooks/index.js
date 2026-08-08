@@ -36,6 +36,13 @@ const {
   routeWithActiveContext,
   getBackButtonLabel
 } = require('../../utils/cliente360Context');
+const {
+  ConfirmMessages,
+  emptyState,
+  notifySuccess,
+  notifyWarning,
+  notifyInfo
+} = require('../../messages');
 
 const REFRESH_INTERVAL_MS = 60000;
 
@@ -276,7 +283,7 @@ class PlaybooksPage {
     s.innerHTML = '<h2>Guias Operacionais</h2>';
     const list = this.filteredView.playbooks || [];
     if (!list.length) {
-      s.appendChild(EmptyState.create({ title: 'Nenhum guia operacional', description: 'Ajuste os filtros' }));
+      s.appendChild(EmptyState.create(emptyState('PLAYBOOKS')));
       return;
     }
     s.appendChild(Table.create({
@@ -403,10 +410,13 @@ class PlaybooksPage {
   }
 
   async _startPb(p) {
-    const ok = await confirmDialog({ title: 'Iniciar guia operacional', message: `Iniciar "${p.nome}"? Nenhuma ação será executada automaticamente.` });
+    const ok = await confirmDialog({
+      ...ConfirmMessages.INICIAR_PLAYBOOK,
+      message: `Iniciar "${p.nome}"? Nenhuma ação será executada automaticamente.`
+    });
     if (!ok) return;
     startPlaybook(p, { clienteId: this.filters.clienteId });
-    notify('Guia operacional iniciado', 'success');
+    notifySuccess('PLAYBOOK_INICIADO');
     await this._loadData(true);
     this._openFluxo(this.view.playbooks.find((x) => x.id === p.id) || p);
   }
@@ -418,14 +428,14 @@ class PlaybooksPage {
 
   async _completeStep(p, passoId) {
     updateChecklistItem(p.id, passoId, 'CONCLUIDO');
-    notify('Passo concluído', 'success');
+    notifySuccess('PLAYBOOK_PASSO_CONCLUIDO');
     await this._loadData(true);
     this.activePlaybook = this.view.playbooks.find((x) => x.id === p.id);
     this._renderAll();
   }
 
   async _ignoreStep(p, passoId) {
-    const ok = await confirmDialog({ title: 'Ignorar passo', message: 'Ignorar este passo?' });
+    const ok = await confirmDialog(ConfirmMessages.IGNORAR_PASSO);
     if (!ok) return;
     updateChecklistItem(p.id, passoId, 'IGNORADO');
     await this._loadData(true);
@@ -437,7 +447,7 @@ class PlaybooksPage {
     const obs = await promptDialog({ title: 'Observação', message: 'Registrar observação:', defaultValue: p.observacoes || '' });
     if (obs == null) return;
     saveInstance(p.id, { observacoes: obs });
-    notify('Observação salva', 'info');
+    notifyInfo('PLAYBOOK_OBS_SALVA');
   }
 
   async _openDrawer(p) {
@@ -451,7 +461,7 @@ class PlaybooksPage {
 
   _export(format) {
     const rows = this.filteredView.playbooks || [];
-    if (!rows.length) { notify('Nada para exportar', 'warning'); return; }
+    if (!rows.length) { notifyWarning('NADA_PARA_EXPORTAR'); return; }
     const header = ['Código', 'Nome', 'Categoria', 'Progresso', 'Status'];
     const lines = rows.map((r) => [r.codigo, r.nome, r.categoria, r.progresso, r.instanceStatus || ''].join(','));
     const csv = [header.join(','), ...lines].join('\n');
@@ -462,7 +472,7 @@ class PlaybooksPage {
       a.download = `playbooks.${format === 'excel' ? 'csv' : 'csv'}`;
       a.click();
     } else {
-      notify('Exportação em PDF disponível em breve — use planilha', 'info');
+      notifyInfo('EXPORT_PDF_EM_BREVE');
     }
   }
 

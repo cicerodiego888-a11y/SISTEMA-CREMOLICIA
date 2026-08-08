@@ -24,6 +24,7 @@ const {
   listarMovimentacoesPrestacao
 } = require('./prestacaoOperacaoHelpers');
 const { sincronizarCreditoComercial } = require('../../services/sincronizarCreditoComercial');
+const { resolverQuantidadeBaseMcc } = require('../../services/mccQuantidadeComercial');
 const {
   OUTBOX_EVENT_TYPES,
   OUTBOX_BRIDGE_NAMES,
@@ -48,7 +49,7 @@ class RegistrarPerdaUseCase extends ConsignacaoWriteUseCase {
   }
 
   async processar(entrada) {
-    const quantidade = Number(entrada.quantidade);
+    const quantidadeInformada = Number(entrada.quantidade);
     const correlationId = entrada.correlationId ?? gerarCorrelationId();
     const origem = entrada.origem ?? 'USUARIO';
 
@@ -58,15 +59,27 @@ class RegistrarPerdaUseCase extends ConsignacaoWriteUseCase {
 
       const item = await obterItemPrestacao(uow, consignacao, entrada);
       const saldo = calcularSaldoItem(item);
-      if (quantidade > saldo) {
+
+      const mccQty = await resolverQuantidadeBaseMcc(uow, {
+        produtoId: item.produtoId,
+        quantidade: quantidadeInformada,
+        unidadeOrigem: entrada.unidadeComercial || entrada.unidadeOrigem || item.unidadeComercial || item.unidade,
+        consignacaoId: consignacao.id,
+        operacao: 'PERDA',
+        usuarioId: entrada.usuarioId
+      });
+      // Saldo do item está na mesma unidade da entrega (legado = base). Compara qtd informada.
+      if (quantidadeInformada > saldo) {
         throw new QuantidadeSuperiorAoSaldoError({
           consignacaoId: consignacao.id,
           itemId: item.id,
           saldo,
-          quantidade
+          quantidade: quantidadeInformada
         });
       }
 
+      const quantidade = quantidadeInformada;
+      const quantidadeBase = mccQty.quantidadeBase;
       const valorPerda = quantidade * Number(item.precoUnitario ?? 0);
       const novaQtdPerdida = Number(item.quantidadePerdida ?? 0) + quantidade;
       const itens = await uow.consignacaoItem.listarPorConsignacao(consignacao.id);
@@ -78,7 +91,7 @@ class RegistrarPerdaUseCase extends ConsignacaoWriteUseCase {
         grupo,
         itens,
         { ...totaisAtuais, totalPerdido: totaisAtuais.totalPerdido + valorPerda },
-        { operacao: 'PERDA', itemId: item.id, quantidade }
+        { operacao: 'PERDA', itemId: item.id, quantidade, mcc: mccQty.auditoria }
       );
 
       const movimentacao = await registrarMovimentacaoComercial(uow, {
@@ -91,8 +104,9 @@ class RegistrarPerdaUseCase extends ConsignacaoWriteUseCase {
         snapshot,
         usuarioId: entrada.usuarioId ?? null,
         valor: valorPerda,
-        quantidade,
-        motivo: entrada.motivo ?? 'Perda registrada na prestação'
+        quantidade: quantidadeBase,
+        motivo: entrada.motivo ?? 'Perda registrada na prestação',
+        detalhes: mccQty.auditoria ? { mcc: mccQty.auditoria } : null
       });
 
       const itemAtualizado = await uow.consignacaoItem.atualizar(item.id, {
@@ -108,7 +122,25 @@ class RegistrarPerdaUseCase extends ConsignacaoWriteUseCase {
           item: itemAtualizado,
           valor: valorPerda,
           quantidade,
+          quantidadeBase,
           correlationId
+        },
+        correlationId,
+        requestId: entrada.requestId ?? null
+      });
+
+      await enfileirarBridgeOutbox(outboxEnqueue, {
+        eventType: OUTBOX_EVENT_TYPES.ESTOQUE_REGISTRAR_PERDA,
+        bridgeName: OUTBOX_BRIDGE_NAMES.ESTOQUE,
+        payload: {
+          consignacaoId: consignacao.id,
+          produtoId: item.produtoId,
+          item: itemAtualizado,
+          quantidade,
+          quantidadeBase,
+          unidadeOrigem: mccQty.unidadeOrigem,
+          correlationId,
+          usuarioId: entrada.usuarioId ?? null
         },
         correlationId,
         requestId: entrada.requestId ?? null
@@ -132,7 +164,8 @@ class RegistrarPerdaUseCase extends ConsignacaoWriteUseCase {
         consignacao,
         item: itemAtualizado,
         movimentacao,
-        correlationId
+        correlationId,
+        mcc: mccQty.auditoria
       };
     });
   }

@@ -1,4 +1,4 @@
-const { recalcularEstoqueConsolidado } = require('./estoqueFiscalService');
+const MotorEstoque = require('../motores/motor-estoque');
 
 function produtoTemMovimentacoes(db, produtoId, callback) {
   db.get(`
@@ -49,6 +49,11 @@ function registrarAjusteEstoque(db, dados, callback) {
   ], callback);
 }
 
+/**
+ * MCC-04 / EST-MCC-01 — Ajuste de estoque.
+ * Deltas devem estar em unidade base (conversão via EstoqueAdjustmentOrchestrator / MCC).
+ * Persistência de saldo + auditoria oficial via MotorEstoque.
+ */
 function aplicarAjusteEstoqueProduto(db, opcoes, callback) {
   const {
     produtoId,
@@ -60,7 +65,8 @@ function aplicarAjusteEstoqueProduto(db, opcoes, callback) {
     lote,
     dataFabricacao,
     dataValidade,
-    lotesService
+    lotesService,
+    loteId
   } = opcoes;
 
   const ajusteF = Number(ajusteFiscal || 0);
@@ -84,7 +90,6 @@ function aplicarAjusteEstoqueProduto(db, opcoes, callback) {
 
     const saldoFiscalDepois = Number((saldoFiscalAntes + ajusteF).toFixed(3));
     const saldoNaoFiscalDepois = Number((saldoNaoFiscalAntes + ajusteNF).toFixed(3));
-    const estoqueTotalDepois = Number((saldoFiscalDepois + saldoNaoFiscalDepois).toFixed(3));
 
     if (saldoFiscalDepois < 0) {
       return callback(new Error('Ajuste fiscal resultaria em saldo fiscal negativo.'));
@@ -97,17 +102,17 @@ function aplicarAjusteEstoqueProduto(db, opcoes, callback) {
     const ajusteTotalPositivo = Math.max(0, ajusteF) + Math.max(0, ajusteNF);
     const ajusteTotalNegativo = Math.abs(Math.min(0, ajusteF)) + Math.abs(Math.min(0, ajusteNF));
 
-    const finalizarComSaldos = () => {
-      db.run(`
-        UPDATE produtos
-        SET saldo_fiscal = ?,
-            saldo_nao_fiscal = ?,
-            estoque_atual = ?,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-      `, [saldoFiscalDepois, saldoNaoFiscalDepois, estoqueTotalDepois, produtoId], (upErr) => {
-        if (upErr) return callback(upErr);
-
+    const finalizarComMotorEstoque = (lotePersistidoId = null) => {
+      MotorEstoque.ajustar(db, {
+        produtoId,
+        deltaFiscal: ajusteF,
+        deltaNaoFiscal: ajusteNF,
+        motivo: String(motivo).trim(),
+        origem: MotorEstoque.OrigemEstoque.AJUSTE_MANUAL,
+        loteId: lotePersistidoId || loteId || null,
+        usuarioId,
+        referenciaTipo: 'ajuste_estoque'
+      }).then((resultado) => {
         registrarAjusteEstoque(db, {
           produto_id: produtoId,
           usuario_id: usuarioId,
@@ -116,24 +121,26 @@ function aplicarAjusteEstoqueProduto(db, opcoes, callback) {
           ajuste_fiscal: ajusteF,
           ajuste_nao_fiscal: ajusteNF,
           saldo_fiscal_antes: saldoFiscalAntes,
-          saldo_fiscal_depois: saldoFiscalDepois,
+          saldo_fiscal_depois: resultado.saldo_fiscal,
           saldo_nao_fiscal_antes: saldoNaoFiscalAntes,
-          saldo_nao_fiscal_depois: saldoNaoFiscalDepois,
+          saldo_nao_fiscal_depois: resultado.saldo_nao_fiscal,
           estoque_total_antes: estoqueTotalAntes,
-          estoque_total_depois: estoqueTotalDepois
+          estoque_total_depois: resultado.estoque_atual
         }, (histErr) => {
           if (histErr) return callback(histErr);
           callback(null, {
-            saldo_fiscal: saldoFiscalDepois,
-            saldo_nao_fiscal: saldoNaoFiscalDepois,
-            estoque_atual: estoqueTotalDepois
+            saldo_fiscal: resultado.saldo_fiscal,
+            saldo_nao_fiscal: resultado.saldo_nao_fiscal,
+            estoque_atual: resultado.estoque_atual,
+            motor: resultado.motor,
+            movimentacao: resultado.movimentacao || null
           });
         });
-      });
+      }).catch((err) => callback(err));
     };
 
-    if (!controlaValidade) {
-      return finalizarComSaldos();
+    if (!controlaValidade || !lotesService) {
+      return finalizarComMotorEstoque();
     }
 
     if (ajusteTotalPositivo > 0) {
@@ -151,20 +158,20 @@ function aplicarAjusteEstoqueProduto(db, opcoes, callback) {
         data_entrada: hoje,
         origem: 'AJUSTE_ESTOQUE',
         compra_id: null
-      }, (loteErr) => {
+      }, (loteErr, loteCriado) => {
         if (loteErr) return callback(loteErr);
-        finalizarComSaldos();
+        finalizarComMotorEstoque(loteCriado?.id || null);
       });
     }
 
     if (ajusteTotalNegativo > 0) {
       return lotesService.consumirLotesFEFO(produtoId, ajusteTotalNegativo, (consumoErr) => {
         if (consumoErr) return callback(consumoErr);
-        finalizarComSaldos();
+        finalizarComMotorEstoque();
       });
     }
 
-    finalizarComSaldos();
+    finalizarComMotorEstoque();
   });
 }
 

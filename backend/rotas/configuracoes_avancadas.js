@@ -53,7 +53,11 @@ router.get('/', exigirSuperAdmin, (req, res) => {
 
 router.post('/', exigirSuperAdmin, (req, res) => {
   try {
-    const data = req.body || {};
+    const data = { ...(req.body || {}) };
+    // 3.8D.3.2: UI só envia ligado/desligado; política homologada é sempre PRESERVAR_DINHEIRO
+    if (Object.prototype.hasOwnProperty.call(data, 'midp_ativado')) {
+      data.midp_politica = 'PRESERVAR_DINHEIRO';
+    }
     const validation = configService.validateConfig(data);
 
     if (!validation.valid) {

@@ -42,6 +42,7 @@ const {
   criarAlertaErroOperacional,
   auditarFinalRC1
 } = require('./prestacaoHardening');
+const { montarBlocoRateio } = require('./rateioPerdaUi');
 
 function _financeiroFromState(state) {
   return state?.snapshot?.financeiro
@@ -187,7 +188,14 @@ class FecharConsignacaoView {
     main.appendChild(FecharConsignacaoView._buildGradeProdutosPanel(state, ctx, itens));
     layout.appendChild(main);
 
-    layout.appendChild(FecharConsignacaoView._buildSidebarRetornos(state, painel));
+    const sidebarCol = document.createElement('div');
+    sidebarCol.className = 'cds-retornos-sidebar-col';
+    sidebarCol.appendChild(FecharConsignacaoView._buildSidebarRetornos(state, painel));
+    if (Number(state.rateioPerda?.totais?.totalPerdido || 0) > 0.01
+      || Number(painel.perdas || 0) > 0) {
+      sidebarCol.appendChild(montarBlocoRateio(state, ctx));
+    }
+    layout.appendChild(sidebarCol);
     wrap.appendChild(layout);
     return wrap;
   }
@@ -587,7 +595,9 @@ class FecharConsignacaoView {
   }
 
   static _buildSidebarRetornos(state, painel = {}) {
-    const fin = state.snapshot?.financeiro || painel.financeiro || {};
+    const fin = (painel.preview && painel.financeiro)
+      ? painel.financeiro
+      : (state.snapshot?.financeiro || painel.financeiro || {});
     const situacaoLabel = labelSituacaoFinanceiraOficial(fin.situacaoFinanceira)
       || labelSituacaoFinanceira(fin.situacaoFinanceira)
       || '—';
@@ -683,7 +693,9 @@ class FecharConsignacaoView {
 
   static patchPainelLateral(asideEl, painel, state = {}) {
     if (!asideEl || !painel) return;
-    const fin = state.snapshot?.financeiro || painel.financeiro || {};
+    const fin = (painel.preview && painel.financeiro)
+      ? painel.financeiro
+      : (state.snapshot?.financeiro || painel.financeiro || {});
     const situacaoLabel = labelSituacaoFinanceiraOficial(fin.situacaoFinanceira)
       || labelSituacaoFinanceira(fin.situacaoFinanceira)
       || '—';
@@ -1132,6 +1144,10 @@ class FecharConsignacaoView {
     );
     colEsq.appendChild(finSection);
     colEsq.appendChild(FecharConsignacaoView._buildBlocoPagamentos(state, ctx, fin));
+    if (Number(state.rateioPerda?.totais?.totalPerdido || 0) > 0.01
+      || Number(state.painel?.perdas || 0) > 0) {
+      colEsq.appendChild(montarBlocoRateio(state, ctx));
+    }
 
     const colDir = document.createElement('div');
     colDir.className = 'cds-prestacao-central-grid__col';
@@ -1212,6 +1228,12 @@ class FecharConsignacaoView {
         destaque: acoes.primaria === 'recebimento'
       });
     }
+
+    botoes.push({
+      label: 'Imprimir Comprovante',
+      acao: 'imprimir-comprovante',
+      destaque: false
+    });
 
     botoes.push({
       label: 'Voltar para Central',

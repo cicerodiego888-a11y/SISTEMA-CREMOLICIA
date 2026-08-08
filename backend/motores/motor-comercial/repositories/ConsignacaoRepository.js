@@ -81,7 +81,14 @@ class ConsignacaoRepository extends BaseRepository {
       const sql = this._obterSql();
       await sql.whenReady();
       const row = await sql.get(
-        `SELECT * FROM ${ConsignacaoRepository.TABELA} WHERE id = ?`,
+        `SELECT c.*,
+          cl.nome AS cliente_nome,
+          cl.cpf_cnpj AS cliente_documento,
+          cl.telefone AS cliente_telefone,
+          NULL AS cliente_fantasia
+         FROM ${ConsignacaoRepository.TABELA} c
+         LEFT JOIN clientes cl ON cl.id = c.cliente_id
+         WHERE c.id = ?`,
         [id]
       );
       return mapConsignacaoFromRow(row);
@@ -93,27 +100,53 @@ class ConsignacaoRepository extends BaseRepository {
       const sql = this._obterSql();
       await sql.whenReady();
 
-      let query = `SELECT * FROM ${ConsignacaoRepository.TABELA} WHERE 1=1`;
+      // RCM-04.B — JOIN clientes para nome/documento/telefone na listagem (SSOT)
+      let query = `
+        SELECT c.*,
+          cl.nome AS cliente_nome,
+          cl.cpf_cnpj AS cliente_documento,
+          cl.telefone AS cliente_telefone,
+          NULL AS cliente_fantasia
+        FROM ${ConsignacaoRepository.TABELA} c
+        LEFT JOIN clientes cl ON cl.id = c.cliente_id
+        WHERE 1=1`;
       const params = [];
 
       if (filtros.clienteId != null) {
-        query += ' AND cliente_id = ?';
+        query += ' AND c.cliente_id = ?';
         params.push(filtros.clienteId);
       }
       if (filtros.perfilComercialId != null) {
-        query += ' AND perfil_comercial_id = ?';
+        query += ' AND c.perfil_comercial_id = ?';
         params.push(filtros.perfilComercialId);
       }
       if (filtros.status) {
-        query += ' AND status = ?';
+        query += ' AND c.status = ?';
         params.push(filtros.status);
       }
       if (filtros.documentoNumero) {
-        query += ' AND documento_numero = ?';
+        query += ' AND c.documento_numero = ?';
         params.push(filtros.documentoNumero);
       }
+      // Busca: código, nome, CPF/CNPJ, telefone, observação
+      if (filtros.busca || filtros.q) {
+        const bruto = String(filtros.busca || filtros.q).trim();
+        const termo = `%${bruto}%`;
+        const termoDigitos = `%${bruto.replace(/\D/g, '')}%`;
+        query += ` AND (
+          CAST(c.id AS TEXT) LIKE ?
+          OR IFNULL(c.documento_numero, '') LIKE ?
+          OR IFNULL(c.observacao, '') LIKE ?
+          OR IFNULL(cl.nome, '') LIKE ?
+          OR IFNULL(cl.cpf_cnpj, '') LIKE ?
+          OR IFNULL(cl.telefone, '') LIKE ?
+          OR REPLACE(REPLACE(REPLACE(REPLACE(IFNULL(cl.cpf_cnpj, ''), '.', ''), '-', ''), '/', ''), ' ', '') LIKE ?
+          OR REPLACE(REPLACE(REPLACE(REPLACE(IFNULL(cl.telefone, ''), '(', ''), ')', ''), '-', ''), ' ', '') LIKE ?
+        )`;
+        params.push(termo, termo, termo, termo, termo, termo, termoDigitos, termoDigitos);
+      }
 
-      query += ' ORDER BY id DESC';
+      query += ' ORDER BY c.id DESC';
       const pag = this._paginacao(filtros);
       query += pag.sql;
       params.push(...pag.params);

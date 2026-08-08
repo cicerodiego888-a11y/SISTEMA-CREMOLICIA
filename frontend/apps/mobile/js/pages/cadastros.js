@@ -7,11 +7,15 @@ import { canAccessRoute } from '../permissions.js';
 export async function renderCadastros(root) {
   const items = [
     { route: 'clientes', label: 'Clientes', ic: 'users', hint: 'CRUD' },
+    { route: 'comercial/clientes', label: 'Cliente Consignado', ic: 'store', hint: 'Perfil comercial' },
     { route: 'fornecedores', label: 'Fornecedores', ic: 'store', hint: 'CRUD' },
     { route: 'produtos', label: 'Produtos', ic: 'box', hint: 'CRUD' },
     { route: 'categorias', label: 'Categorias', ic: 'tag', hint: 'CRUD' },
     { route: 'usuarios', label: 'Usuários', ic: 'user', hint: 'Admin' }
-  ].filter((i) => canAccessRoute(i.route));
+  ].filter((i) => {
+    if (i.route.startsWith('comercial')) return canAccessRoute('comercial');
+    return canAccessRoute(i.route);
+  });
 
   root.innerHTML = `
     <section class="cds-home-hero cds-m-enter" style="padding-bottom:8px">

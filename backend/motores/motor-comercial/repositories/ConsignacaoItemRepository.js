@@ -22,7 +22,14 @@ const MAPA_CAMPOS = {
   precoUnitario: 'preco_unitario',
   subtotalEntregue: 'subtotal_entregue',
   subtotalAcertado: 'subtotal_acertado',
-  observacao: 'observacao'
+  observacao: 'observacao',
+  // RCM-6.1 — snapshot de precificação (imutável após insert)
+  linhaComercialId: 'linha_comercial_id',
+  tabelaPrecoId: 'tabela_preco_id',
+  canalVenda: 'canal_venda',
+  unidadeComercial: 'unidade_comercial',
+  precoOrigem: 'preco_origem',
+  precoFallback: 'preco_fallback'
 };
 
 /** SELECT com enriquecimento de cadastro (STAB-06.6.1 — somente leitura). */
@@ -104,8 +111,10 @@ class ConsignacaoItemRepository extends BaseRepository {
           consignacao_id, produto_id,
           quantidade_entregue, quantidade_devolvida, quantidade_vendida,
           quantidade_perdida, quantidade_cortesia,
-          preco_unitario, subtotal_entregue, subtotal_acertado
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          preco_unitario, subtotal_entregue, subtotal_acertado,
+          linha_comercial_id, tabela_preco_id, canal_venda,
+          unidade_comercial, preco_origem, preco_fallback
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           dados.consignacaoId,
           dados.produtoId,
@@ -116,7 +125,13 @@ class ConsignacaoItemRepository extends BaseRepository {
           dados.quantidadeCortesia ?? 0,
           dados.precoUnitario ?? 0,
           dados.subtotalEntregue ?? 0,
-          dados.subtotalAcertado ?? 0
+          dados.subtotalAcertado ?? 0,
+          dados.linhaComercialId ?? null,
+          dados.tabelaPrecoId ?? null,
+          dados.canalVenda ?? null,
+          dados.unidadeComercial ?? null,
+          dados.precoOrigem ?? null,
+          dados.precoFallback != null ? (dados.precoFallback ? 1 : 0) : 0
         ]
       );
 

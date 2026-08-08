@@ -1,12 +1,11 @@
 /**
- * CDS Mobile RC2.4.9
- * Copyright (c) 2026 CDS Sistemas
- * Após NFC-e: exibe cupom e encerra prestação automaticamente.
+ * CDS Mobile RCM-9.2.3
+ * Fechamento MUC sorvete + homologação.
  */
-export const CDS_MOBILE_VERSION = '2.4.9-rc2.4.9';
-export const CDS_MOBILE_VERSION_LABEL = 'CDS Mobile RC2.4.9';
-export const CDS_MOBILE_BUILD = '20260717rc249fix1';
-export const CDS_MOBILE_STATUS = 'rc2.4.9-lista-produtos';
+export const CDS_MOBILE_VERSION = '2.5.3-rcm923';
+export const CDS_MOBILE_VERSION_LABEL = 'CDS Mobile RCM-9.2.3';
+export const CDS_MOBILE_BUILD = '20260808rcm923';
+export const CDS_MOBILE_STATUS = 'rcm923-fechamento';
 
 export default {
   version: CDS_MOBILE_VERSION,

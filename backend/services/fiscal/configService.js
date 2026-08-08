@@ -167,36 +167,46 @@ async function incrementaNumeroFiscal() {
   const ambiente = Number(cfg.fiscal_ambiente || 2);
 
   return new Promise((resolve, reject) => {
-    db.get(`
-      SELECT MAX(CAST(numero AS INTEGER)) AS maior
-      FROM nfce_notas
-      WHERE CAST(serie AS INTEGER) = ?
-        AND CAST(ambiente AS INTEGER) = ?
-    `, [serie, ambiente], async (err, row) => {
-      if (err) return reject(err);
+    // RCF-02: lock de escrita para reduzir corrida de numeração
+    db.serialize(() => {
+      db.run('BEGIN IMMEDIATE', (begErr) => {
+        if (begErr) return reject(begErr);
 
-      const maiorBanco = Number(row?.maior || 0);
+        db.get(`
+          SELECT MAX(CAST(numero AS INTEGER)) AS maior
+          FROM nfce_notas
+          WHERE CAST(serie AS INTEGER) = ?
+            AND CAST(ambiente AS INTEGER) = ?
+        `, [serie, ambiente], (err, row) => {
+          if (err) {
+            db.run('ROLLBACK', () => reject(err));
+            return;
+          }
 
-      const numeroSeguro = Math.max(
-        numeroConfig,
-        maiorBanco + 1
-      );
+          const maiorBanco = Number(row?.maior || 0);
+          const numeroSeguro = Math.max(numeroConfig, maiorBanco + 1);
 
-      try {
-        await setConfiguracao(
-          'fiscal_numero_atual',
-          String(numeroSeguro + 1),
-          'number',
-          'Próximo número NFC-e'
-        );
-
-        console.log(`[FISCAL] Número usado: ${numeroSeguro}`);
-        console.log(`[FISCAL] Próximo número salvo: ${numeroSeguro + 1}`);
-
-        resolve(numeroSeguro);
-      } catch (e) {
-        reject(e);
-      }
+          db.run(`
+            INSERT INTO configuracoes (chave, valor, tipo, descricao, updated_at)
+            VALUES (?, ?, 'number', 'Próximo número NFC-e', CURRENT_TIMESTAMP)
+            ON CONFLICT(chave) DO UPDATE SET
+              valor = excluded.valor,
+              tipo = excluded.tipo,
+              descricao = excluded.descricao,
+              updated_at = CURRENT_TIMESTAMP
+          `, [ 'fiscal_numero_atual', String(numeroSeguro + 1) ], (upErr) => {
+            if (upErr) {
+              db.run('ROLLBACK', () => reject(upErr));
+              return;
+            }
+            db.run('COMMIT', (cmtErr) => {
+              if (cmtErr) return reject(cmtErr);
+              console.log(`[RCF-02] Número usado: ${numeroSeguro} → próximo ${numeroSeguro + 1}`);
+              resolve(numeroSeguro);
+            });
+          });
+        });
+      });
     });
   });
 }

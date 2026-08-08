@@ -98,11 +98,20 @@ class TefManager {
         async () => {
           return await tefRetryService.autorizarComRetry(async () => {
             return await tefLockService.comLock(lockKey, async () => {
-              // Criar Promise com timeout
+              // Timeout cobre a operação INTEIRA (DB + adapter), não só criarTransacao
               const operacaoComTimeout = new Promise((resolve, reject) => {
                 const timeoutId = setTimeout(() => {
                   reject(new Error(`Timeout de ${operacaoTimeout}ms excedido na operação TEF`));
                 }, operacaoTimeout);
+
+                const finalizarOk = (valor) => {
+                  clearTimeout(timeoutId);
+                  resolve(valor);
+                };
+                const finalizarErro = (erro) => {
+                  clearTimeout(timeoutId);
+                  reject(erro);
+                };
 
                 repository.criarTransacao({
                   venda_id: dadosNormalizados.venda_id || null,
@@ -113,24 +122,26 @@ class TefManager {
                   provedor: adapter.nome,
                   idempotency_key: dadosNormalizados.idempotency_key || null
                 }, async (err, transacaoId) => {
-                  clearTimeout(timeoutId);
-                  
                   if (err) {
                     // Se erro for de chave duplicada (idempotency_key), buscar transação existente
                     if (err.message && err.message.includes('UNIQUE constraint')) {
-                      const transacaoExistente = await this._buscarPorIdempotencyKey(dadosNormalizados.idempotency_key);
-                      if (transacaoExistente) {
-                        return resolve({
-                          sucesso: false,
-                          codigo: 'TRANSACAO_DUPLICADA',
-                          mensagem: 'Transação duplicada detectada',
-                          transacao_id: transacaoExistente.id,
-                          status: transacaoExistente.status,
-                          transacao_existente: true
-                        });
+                      try {
+                        const transacaoExistente = await this._buscarPorIdempotencyKey(dadosNormalizados.idempotency_key);
+                        if (transacaoExistente) {
+                          return finalizarOk({
+                            sucesso: false,
+                            codigo: 'TRANSACAO_DUPLICADA',
+                            mensagem: 'Transação duplicada detectada',
+                            transacao_id: transacaoExistente.id,
+                            status: transacaoExistente.status,
+                            transacao_existente: true
+                          });
+                        }
+                      } catch (buscaErr) {
+                        return finalizarErro(buscaErr);
                       }
                     }
-                    return reject(err);
+                    return finalizarErro(err);
                   }
 
                   // Mascarar dados sensíveis nos logs
@@ -166,7 +177,7 @@ class TefManager {
                       ...persistencia
                     }, (updateErr) => {
                       if (updateErr) {
-                        return reject(updateErr);
+                        return finalizarErro(updateErr);
                       }
 
                       if (tefContrato.estaAprovado(retorno)) {
@@ -179,11 +190,11 @@ class TefManager {
                       const retornoMascarado = DataMaskingService.mascararObjeto(retorno);
                       repository.registrarLog(transacaoId, 'RETORNO', retorno.mensagem, retornoMascarado);
 
-                      resolve(tefContrato.paraRespostaApi(retorno, transacaoId));
+                      finalizarOk(tefContrato.paraRespostaApi(retorno, transacaoId));
                     });
                   } catch (error) {
                     repository.registrarLog(transacaoId, 'ERRO', error.message, { error: error.message });
-                    reject(error);
+                    finalizarErro(error);
                   }
                 });
               });

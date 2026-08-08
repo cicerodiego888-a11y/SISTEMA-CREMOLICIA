@@ -1221,6 +1221,10 @@ function renderConfiguracoesAvancadas(config) {
     const tipo = String(config.tipoImplantacao || 'ERP_SEM_FISCAL').toUpperCase();
     const modo = String(config.modoOperacao || 'LOCAL').toUpperCase();
     const modoConfirmacaoFiscal = String(config.modo_confirmacao_fiscal || 'TEF').toUpperCase();
+    const midpAtivado = config.midp_ativado === true
+        || config.midp_ativado === 'true'
+        || config.midp_ativado === 1
+        || String(config.midp_ativado || '').toUpperCase() === 'TRUE';
     const ipServidor = config.ipServidor || '';
     const porta = Number(config.porta) > 0 ? Number(config.porta) : 3001;
     const clienteServidorDisponivel = tipo === 'ERP_MULTICAIXA';
@@ -1318,6 +1322,21 @@ function renderConfiguracoesAvancadas(config) {
                         <div class="form-check">
                             <input class="form-check-input" type="radio" name="modoConfirmacaoFiscal" id="confirmacaoFiscalManual" value="MANUAL" ${modoConfirmacaoFiscal === 'MANUAL' ? 'checked' : ''}>
                             <label class="form-check-label" for="confirmacaoFiscalManual">Manual</label>
+                        </div>
+                    </div>
+
+                    <hr>
+
+                    <h6 class="fw-bold text-uppercase">MIDP — Distribuição Inteligente de Pagamentos</h6>
+                    <p class="text-muted small mb-2">Quando ativado, aplica automaticamente o algoritmo homologado (Preservar Dinheiro). Quando desativado, mantém o fluxo legado de emissão.</p>
+                    <div class="mb-3">
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="midpAtivado" id="midpAtivadoFalse" value="FALSE" ${midpAtivado ? '' : 'checked'}>
+                            <label class="form-check-label" for="midpAtivadoFalse">Desativado</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="midpAtivado" id="midpAtivadoTrue" value="TRUE" ${midpAtivado ? 'checked' : ''}>
+                            <label class="form-check-label" for="midpAtivadoTrue">Ativado</label>
                         </div>
                     </div>
 
@@ -1548,6 +1567,7 @@ async function salvarConfiguracoesAvancadas() {
     const tipoImplantacao = obterTipoImplantacaoSelecionado();
     const modoOperacao = String($('input[name="modoOperacao"]:checked').val() || 'LOCAL').toUpperCase();
     const modoConfirmacaoFiscal = String($('input[name="modoConfirmacaoFiscal"]:checked').val() || 'TEF').toUpperCase();
+    const midpAtivado = String($('input[name="midpAtivado"]:checked').val() || 'FALSE').toUpperCase() === 'TRUE';
     const ipServidor = $('#cfgIpServidor').val().trim();
     const porta = Number($('#cfgPorta').val()) || 3001;
     const estacaoCliente = await estacaoConectadaServidorRemoto();
@@ -1569,6 +1589,8 @@ async function salvarConfiguracoesAvancadas() {
         const body = {
             tipoImplantacao,
             modo_confirmacao_fiscal: modoConfirmacaoFiscal,
+            midp_ativado: midpAtivado,
+            midp_politica: 'PRESERVAR_DINHEIRO',
             porta,
             modoOperacao: estacaoCliente
                 ? String(servidorAtual.modoOperacao || 'LOCAL').toUpperCase()

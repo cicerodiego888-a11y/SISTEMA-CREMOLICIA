@@ -12,12 +12,16 @@ const DEFAULT = {
   modoOperacao: 'LOCAL',
   ipServidor: '',
   porta: 3002,
-  modo_confirmacao_fiscal: 'TEF'
+  modo_confirmacao_fiscal: 'TEF',
+  midp_ativado: false,
+  // Persistido sempre como PRESERVAR_DINHEIRO (3.8D.3.2). LEGADO só em leituras antigas.
+  midp_politica: 'PRESERVAR_DINHEIRO'
 };
 
 const TIPOS = ['ERP_SEM_FISCAL', 'ERP_FISCAL', 'ERP_MULTICAIXA'];
 const MODOS = ['LOCAL', 'CLIENTE_SERVIDOR'];
 const MODOS_CONFIRMACAO_FISCAL = ['TEF', 'MANUAL'];
+const MIDP_POLITICAS = ['LEGADO', 'PRESERVAR_DINHEIRO'];
 
 function getDbDir() {
   return process.env.DB_DIR || path.join(
@@ -158,6 +162,31 @@ function normalizeModoConfirmacaoFiscal(valor) {
   return modo === 'MANUAL' ? 'MANUAL' : 'TEF';
 }
 
+function normalizeMidpAtivado(valor) {
+  return valor === true
+    || valor === 'true'
+    || valor === 1
+    || valor === '1'
+    || String(valor || '').toUpperCase().trim() === 'TRUE';
+}
+
+function normalizeMidpPolitica(valor) {
+  const nome = String(valor || DEFAULT.midp_politica).toUpperCase().trim();
+  return MIDP_POLITICAS.includes(nome) ? nome : DEFAULT.midp_politica;
+}
+
+/**
+ * Política efetiva persistida (3.8D.3.2).
+ * LEGADO em bancos/configs antigos → PRESERVAR_DINHEIRO na gravação.
+ */
+function migrarMidpPolitica(valor) {
+  const nome = normalizeMidpPolitica(valor);
+  if (nome === 'LEGADO') {
+    return 'PRESERVAR_DINHEIRO';
+  }
+  return nome === 'PRESERVAR_DINHEIRO' ? nome : DEFAULT.midp_politica;
+}
+
 function normalizeConfig(obj) {
   return {
     tipoImplantacao: String(obj?.tipoImplantacao || DEFAULT.tipoImplantacao).toUpperCase(),
@@ -165,12 +194,35 @@ function normalizeConfig(obj) {
     ipServidor: String(obj?.ipServidor || '').trim(),
     porta: Number(obj?.porta || DEFAULT.porta),
     modo_confirmacao_fiscal: normalizeModoConfirmacaoFiscal(obj?.modo_confirmacao_fiscal),
+    midp_ativado: obj?.midp_ativado === undefined
+      ? DEFAULT.midp_ativado
+      : normalizeMidpAtivado(obj.midp_ativado),
+    midp_politica: obj?.midp_politica === undefined
+      ? DEFAULT.midp_politica
+      : normalizeMidpPolitica(obj.midp_politica),
     ...normalizePadraoFiscal(obj)
   };
 }
 
 function getModoConfirmacaoFiscal(cfg) {
   return normalizeModoConfirmacaoFiscal((cfg || readConfig()).modo_confirmacao_fiscal);
+}
+
+function isMidpAtivado(cfg) {
+  return normalizeMidpAtivado((cfg || readConfig()).midp_ativado);
+}
+
+function getMidpPolitica(cfg) {
+  // Compat: ainda lê o valor persistido (pode ser LEGADO em configs antigas).
+  return normalizeMidpPolitica((cfg || readConfig()).midp_politica);
+}
+
+/**
+ * Política runtime oficial (3.8D.3.2): ligada → PRESERVAR; desligada → LEGADO.
+ * Não depende de midp_politica na UI.
+ */
+function getMidpPoliticaEfetiva(cfg) {
+  return isMidpAtivado(cfg) ? 'PRESERVAR_DINHEIRO' : 'LEGADO';
 }
 
 function getPadraoFiscal(cfg) {
@@ -256,12 +308,44 @@ function validateConfig(obj) {
     errors.push('modo_confirmacao_fiscal inválido');
   }
 
+  // Compat leitura: aceita LEGADO/PRESERVAR; na validação de gravação migra LEGADO.
+  if (config.midp_politica !== undefined && config.midp_politica !== null) {
+    const raw = String(config.midp_politica).toUpperCase().trim();
+    if (raw && !MIDP_POLITICAS.includes(raw)) {
+      errors.push('midp_politica inválida');
+    }
+  }
+  config.midp_politica = migrarMidpPolitica(config.midp_politica);
+
   return { valid: errors.length === 0, errors, config };
+}
+
+function readElectronStationConfigRaw() {
+  return readJsonFile(getElectronConfigPath()) || {};
+}
+
+function isSetupPdvConcluido() {
+  const data = readElectronStationConfigRaw();
+  return data.setupPdvConcluido === true;
+}
+
+function marcarSetupPdvConcluido(concluido = true) {
+  const atual = readElectronStationConfigRaw();
+  const payload = {
+    ...atual,
+    setupPdvConcluido: concluido === true
+  };
+
+  const electronPath = getElectronConfigPath();
+  const dir = path.dirname(electronPath);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(electronPath, JSON.stringify(payload, null, 2), 'utf8');
+  return payload;
 }
 
 function readElectronStationConfig() {
   const global = readConfig();
-  const data = readJsonFile(getElectronConfigPath());
+  const data = readElectronStationConfigRaw();
   const porta = Number.isInteger(Number(data?.porta)) && Number(data.porta) > 0
     ? Number(data.porta)
     : (global.porta || DEFAULT.porta);
@@ -270,33 +354,42 @@ function readElectronStationConfig() {
     return {
       modo: 'cliente',
       ipServidor: String(data.ipServidor).trim(),
-      porta
+      porta,
+      setupPdvConcluido: data.setupPdvConcluido === true
     };
   }
 
   return {
     modo: 'local',
     ipServidor: '127.0.0.1',
-    porta
+    porta,
+    setupPdvConcluido: data.setupPdvConcluido === true
   };
 }
 
-function saveElectronStationConfig({ modo, ipServidor, porta }) {
+function saveElectronStationConfig({ modo, ipServidor, porta, setupPdvConcluido }) {
   const modoNormalizado = String(modo || 'local').trim().toLowerCase() === 'cliente' ? 'cliente' : 'local';
   const global = readConfig();
+  const atual = readElectronStationConfigRaw();
   const portaFinal = Number.isInteger(Number(porta)) && Number(porta) > 0
     ? Number(porta)
     : (global.porta || DEFAULT.porta);
+
+  const setupFlag = setupPdvConcluido === undefined
+    ? atual.setupPdvConcluido === true
+    : setupPdvConcluido === true;
 
   const payload = modoNormalizado === 'cliente'
     ? {
       modo: 'cliente',
       ipServidor: String(ipServidor || '').trim(),
-      porta: portaFinal
+      porta: portaFinal,
+      setupPdvConcluido: setupFlag
     }
     : {
       modo: 'local',
-      porta: portaFinal
+      porta: portaFinal,
+      setupPdvConcluido: setupFlag
     };
 
   if (payload.modo === 'cliente' && !payload.ipServidor) {
@@ -317,9 +410,19 @@ function getModoRedeEstacaoElectron() {
 function syncElectronConfig(cfg) {
   const config = normalizeConfig(cfg);
   const modoRede = getModoRedeElectron(config);
+  const atual = readElectronStationConfigRaw();
   const payload = modoRede.modo === 'cliente'
-    ? { modo: 'cliente', ipServidor: modoRede.ipServidor, porta: modoRede.porta }
-    : { modo: 'local', porta: modoRede.porta };
+    ? {
+      modo: 'cliente',
+      ipServidor: modoRede.ipServidor,
+      porta: modoRede.porta,
+      setupPdvConcluido: atual.setupPdvConcluido === true
+    }
+    : {
+      modo: 'local',
+      porta: modoRede.porta,
+      setupPdvConcluido: atual.setupPdvConcluido === true
+    };
 
   const electronPath = getElectronConfigPath();
   const dir = path.dirname(electronPath);
@@ -369,7 +472,10 @@ function saveConfig(obj) {
     modoOperacao: validation.config.modoOperacao,
     ipServidor: validation.config.ipServidor,
     porta: validation.config.porta,
-    modo_confirmacao_fiscal: validation.config.modo_confirmacao_fiscal
+    modo_confirmacao_fiscal: validation.config.modo_confirmacao_fiscal,
+    midp_ativado: validation.config.midp_ativado,
+    // Sempre PRESERVAR_DINHEIRO na persistência (seleção de política removida da UI)
+    midp_politica: migrarMidpPolitica(validation.config.midp_politica)
   };
 
   ensureConfigFile();
@@ -419,15 +525,20 @@ function salvarModoEstacaoLocal({ modo, ipServidor, porta }) {
       modoOperacao: current.modoOperacao,
       ipServidor: current.ipServidor,
       porta: current.porta,
-      modo_confirmacao_fiscal: current.modo_confirmacao_fiscal
+      modo_confirmacao_fiscal: current.modo_confirmacao_fiscal,
+      midp_ativado: current.midp_ativado,
+      midp_politica: current.midp_politica
     });
   }
 
-  return saveElectronStationConfig({
+  const salvo = saveElectronStationConfig({
     modo: modoNormalizado,
     ipServidor: modoNormalizado === 'cliente' ? String(ipServidor || '').trim() : '',
-    porta
+    porta,
+    setupPdvConcluido: true
   });
+
+  return salvo;
 }
 
 module.exports = {
@@ -437,8 +548,15 @@ module.exports = {
   TIPOS,
   MODOS,
   MODOS_CONFIRMACAO_FISCAL,
+  MIDP_POLITICAS,
   getModoConfirmacaoFiscal,
   normalizeModoConfirmacaoFiscal,
+  isMidpAtivado,
+  normalizeMidpAtivado,
+  getMidpPolitica,
+  getMidpPoliticaEfetiva,
+  normalizeMidpPolitica,
+  migrarMidpPolitica,
   getDbDir,
   getConfigPath,
   getElectronConfigPath,
@@ -460,6 +578,9 @@ module.exports = {
   obterModoEstacaoLocal,
   voltarModoLocalEstacao,
   salvarModoEstacaoLocal,
+  readElectronStationConfigRaw,
+  isSetupPdvConcluido,
+  marcarSetupPdvConcluido,
   getRecoveryFlagPath,
   criarFlagForcarModoLocal,
   consumirFlagForcarModoLocal

@@ -24,6 +24,7 @@ const {
   listarMovimentacoesPrestacao
 } = require('./prestacaoOperacaoHelpers');
 const { sincronizarCreditoComercial } = require('../../services/sincronizarCreditoComercial');
+const { resolverQuantidadeBaseMcc } = require('../../services/mccQuantidadeComercial');
 
 class RegistrarCortesiaUseCase extends ConsignacaoWriteUseCase {
   async validar(entrada) {
@@ -39,7 +40,7 @@ class RegistrarCortesiaUseCase extends ConsignacaoWriteUseCase {
   }
 
   async processar(entrada) {
-    const quantidade = Number(entrada.quantidade);
+    const quantidadeInformada = Number(entrada.quantidade);
     const correlationId = entrada.correlationId ?? gerarCorrelationId();
     const origem = entrada.origem ?? 'USUARIO';
 
@@ -49,15 +50,26 @@ class RegistrarCortesiaUseCase extends ConsignacaoWriteUseCase {
 
       const item = await obterItemPrestacao(uow, consignacao, entrada);
       const saldo = calcularSaldoItem(item);
-      if (quantidade > saldo) {
+      if (quantidadeInformada > saldo) {
         throw new QuantidadeSuperiorAoSaldoError({
           consignacaoId: consignacao.id,
           itemId: item.id,
           saldo,
-          quantidade
+          quantidade: quantidadeInformada
         });
       }
 
+      const mccQty = await resolverQuantidadeBaseMcc(uow, {
+        produtoId: item.produtoId,
+        quantidade: quantidadeInformada,
+        unidadeOrigem: entrada.unidadeComercial || entrada.unidadeOrigem || item.unidadeComercial || item.unidade,
+        consignacaoId: consignacao.id,
+        operacao: 'CORTESIA',
+        usuarioId: entrada.usuarioId
+      });
+
+      const quantidade = quantidadeInformada;
+      const quantidadeBase = mccQty.quantidadeBase;
       const valorCortesia = quantidade * Number(item.precoUnitario ?? 0);
       const novaQtdCortesia = Number(item.quantidadeCortesia ?? 0) + quantidade;
       const itens = await uow.consignacaoItem.listarPorConsignacao(consignacao.id);
@@ -69,7 +81,7 @@ class RegistrarCortesiaUseCase extends ConsignacaoWriteUseCase {
         grupo,
         itens,
         { ...totaisAtuais, totalCortesia: totaisAtuais.totalCortesia + valorCortesia },
-        { operacao: 'CORTESIA', itemId: item.id, quantidade }
+        { operacao: 'CORTESIA', itemId: item.id, quantidade, mcc: mccQty.auditoria }
       );
 
       const movimentacao = await registrarMovimentacaoComercial(uow, {
@@ -82,8 +94,9 @@ class RegistrarCortesiaUseCase extends ConsignacaoWriteUseCase {
         snapshot,
         usuarioId: entrada.usuarioId ?? null,
         valor: valorCortesia,
-        quantidade,
-        motivo: entrada.motivo ?? 'Cortesia registrada na prestação'
+        quantidade: quantidadeBase,
+        motivo: entrada.motivo ?? 'Cortesia registrada na prestação',
+        detalhes: mccQty.auditoria ? { mcc: mccQty.auditoria } : null
       });
 
       const itemAtualizado = await uow.consignacaoItem.atualizar(item.id, {
@@ -108,7 +121,8 @@ class RegistrarCortesiaUseCase extends ConsignacaoWriteUseCase {
         consignacao,
         item: itemAtualizado,
         movimentacao,
-        correlationId
+        correlationId,
+        mcc: mccQty.auditoria
       };
     });
   }

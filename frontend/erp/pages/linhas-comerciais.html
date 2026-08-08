@@ -1,0 +1,43 @@
+<!-- Página: Linhas de Precificação (RCM-8.7) -->
+<div class="container mt-4">
+  <nav aria-label="breadcrumb" class="mb-2">
+    <ol class="breadcrumb mb-0">
+      <li class="breadcrumb-item"><a href="#" onclick="loadPage('configuracoes'); return false;">Configurações</a></li>
+      <li class="breadcrumb-item">Comercial</li>
+      <li class="breadcrumb-item active" aria-current="page">Linhas de Precificação</li>
+    </ol>
+  </nav>
+
+  <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+    <div>
+      <h2 class="mb-0">Linhas de Precificação</h2>
+      <small class="text-muted">Produtos da mesma Linha compartilham os preços cadastrados na Central de Precificação</small>
+    </div>
+    <button type="button" class="btn btn-success" id="btn-nova-linha-comercial">
+      Nova Linha de Precificação
+    </button>
+  </div>
+
+  <div class="mb-3 d-flex flex-wrap gap-2 align-items-center">
+    <input type="text" id="filtro-linhas-comerciais" class="form-control" placeholder="Pesquisar por código ou nome..." style="max-width: 420px;" autocomplete="off">
+  </div>
+
+  <div id="linhas-migracao-alerta" class="alert alert-warning d-none"></div>
+
+  <div class="table-responsive">
+    <table class="table table-bordered table-hover align-middle">
+      <thead>
+        <tr>
+          <th>Linha de Precificação</th>
+          <th>Produtos vinculados</th>
+          <th>Tabelas com preço</th>
+          <th>Operações</th>
+          <th>Última alteração</th>
+          <th>Status</th>
+          <th style="width:220px;">Ações</th>
+        </tr>
+      </thead>
+      <tbody id="linhas-comerciais-tbody"></tbody>
+    </table>
+  </div>
+</div>

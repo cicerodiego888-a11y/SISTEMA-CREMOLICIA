@@ -1,4 +1,7 @@
 const QRCode = require('qrcode');
+const FiscalOperacionalService = require('../../motores/motor-conversao-comercial/integracao/fiscal/FiscalOperacionalService');
+
+const fiscalOperacional = new FiscalOperacionalService();
 
 function montarPagamentosDanfe(pagamentos) {
   if (!Array.isArray(pagamentos) || pagamentos.length === 0) {
@@ -35,13 +38,30 @@ function obterValorFiscalItemDanfe(item = {}) {
   return Number(item.valor_fiscal ?? 0);
 }
 
-/** Helpers exclusivos para a tabela de itens do DANFE (impressão). */
+/**
+ * FIS-01 — com UC: quantidade comercial do snapshot MCC.
+ * Legado (sem UC): cupom DANFE lista a venda completa (fiscal + não fiscal).
+ */
 function obterQuantidadeImpressao(item = {}) {
-  return Number(item.quantidade_fiscal ?? 0) + Number(item.quantidade_nao_fiscal ?? 0);
+  if (fiscalOperacional.itemTemUnidadeComercial(item)) {
+    return fiscalOperacional.obterQuantidadeComercial(item);
+  }
+  const qFisc = Number(item.quantidade_fiscal ?? 0);
+  const qNao = Number(item.quantidade_nao_fiscal ?? 0);
+  const soma = qFisc + qNao;
+  if (soma > 0) return soma;
+  return Number(item.quantidade ?? 0);
 }
 
 function obterValorImpressao(item = {}) {
-  return Number(item.valor_fiscal ?? 0) + Number(item.valor_nao_fiscal ?? 0);
+  if (fiscalOperacional.itemTemUnidadeComercial(item) && Number(item.valor_fiscal) > 0) {
+    return Number(item.valor_fiscal || 0);
+  }
+  return Number(item.valor_fiscal || 0) + Number(item.valor_nao_fiscal || 0);
+}
+
+function obterUnidadeImpressao(item = {}) {
+  return fiscalOperacional.obterUnidadeDocumento(item);
 }
 
 // Formata CNPJ: 65957340000150 -> 65.957.340/0001-50
@@ -99,7 +119,12 @@ async function gerarDanfeHtml({
 
   const qrCodeDataUrl = qrCodeUrl ? await QRCode.toDataURL(qrCodeUrl) : '';
 
-  const itensImpressao = Array.isArray(itensDanfe) ? itensDanfe : [];
+  // RCF-08: DANFE NFC-e = somente itens/valores fiscais
+  const itensImpressao = (Array.isArray(itensFiscal) && itensFiscal.length)
+    ? itensFiscal
+    : (Array.isArray(itensDanfe) ? itensDanfe.filter((i) =>
+      Number(i.quantidade_fiscal || 0) > 0 && Number(i.valor_fiscal || 0) > 0
+    ) : []);
 
   const pagamentosLista = Array.isArray(venda.pagamentos) ? venda.pagamentos : [];
   const possuiTipoRecebimento = pagamentosLista.some((p) => p.tipo_recebimento);
@@ -107,20 +132,25 @@ async function gerarDanfeHtml({
     ? pagamentosLista.filter((p) => p.tipo_recebimento === 'fiscal')
     : pagamentosLista;
 
-  const valorTotalVenda = Number(venda.total ?? 0) > 0
-    ? Number(venda.total)
-    : itensImpressao.reduce((acc, item) => acc + obterValorImpressao(item), 0);
+  const valorTotalFiscal = Number(venda.valor_fiscal) > 0
+    ? Number(venda.valor_fiscal)
+    : itensImpressao.reduce((acc, item) => acc + obterValorFiscalItemDanfe(item), 0);
 
   const itensHtml = itensImpressao.map((item) => {
-    const quantidade = obterQuantidadeImpressao(item);
-    const subtotal = obterValorImpressao(item);
+    const quantidade = obterQuantidadeFiscalDanfe(item) > 0
+      ? obterQuantidadeFiscalDanfe(item)
+      : obterQuantidadeImpressao(item);
+    const unidade = obterUnidadeImpressao(item);
+    const subtotal = obterValorFiscalItemDanfe(item) > 0
+      ? obterValorFiscalItemDanfe(item)
+      : obterValorImpressao(item);
     const precoUnitario = quantidade > 0
       ? subtotal / quantidade
       : Number(item.preco_unitario || 0);
     return `
     <tr>
       <td>${item.produto_nome || ''}</td>
-      <td style="text-align:center;">${quantidade}</td>
+      <td style="text-align:center;">${quantidade} ${unidade}</td>
       <td style="text-align:right;">${precoUnitario.toFixed(2)}</td>
       <td style="text-align:right;">${subtotal.toFixed(2)}</td>
     </tr>
@@ -174,7 +204,7 @@ async function gerarDanfeHtml({
     <tbody>${itensHtml}</tbody>
   </table>
   <div class="sep"></div>
-  <p>Total: R$ ${valorTotalVenda.toFixed(2)}</p>
+  <p>Total Fiscal: R$ ${valorTotalFiscal.toFixed(2)}</p>
   <p>Desconto: R$ ${Number(venda.desconto || 0).toFixed(2)}</p>
   ${montarPagamentosDanfe(pagamentosFiscal) ? `<p>${montarPagamentosDanfe(pagamentosFiscal).replace(/\n/g, '<br>')}</p>` : ''}
   <div class="sep"></div>
@@ -193,6 +223,7 @@ module.exports = {
   gerarDanfeHtml,
   obterQuantidadeImpressao,
   obterValorImpressao,
+  obterUnidadeImpressao,
   obterQuantidadeFiscalDanfe,
   obterValorFiscalItemDanfe
 };

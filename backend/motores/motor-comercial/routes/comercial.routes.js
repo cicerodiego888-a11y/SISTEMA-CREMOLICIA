@@ -106,6 +106,8 @@ router.patch('/consignacoes/:id/itens/:item/observacao', rota('consignacao', 'at
 router.delete('/consignacoes/:id/itens/:item', rota('consignacao', 'removerItem'));
 
 router.post('/consignacoes/:id/entrega', rota('consignacao', 'registrarEntrega'));
+router.get('/consignacoes/:id/comprovante', rota('consignacao', 'obterComprovante'));
+router.post('/consignacoes/:id/comprovante/acoes', rota('consignacao', 'registrarAcaoComprovante'));
 router.post('/consignacoes/:id/termo-entrega', rota('consignacao', 'registrarEmissaoTermoEntrega'));
 router.post('/consignacoes/:id/devolucao', rota('consignacao', 'registrarDevolucao'));
 router.post('/consignacoes/:id/transferencia', rota('consignacao', 'transferir'));
@@ -113,6 +115,9 @@ router.post('/consignacoes/:id/transferencia', rota('consignacao', 'transferir')
 router.post('/consignacoes/:id/prestacao/abrir', rota('consignacao', 'abrirPrestacao'));
 router.post('/consignacoes/:id/prestacao/venda', rota('consignacao', 'registrarVenda'));
 router.post('/consignacoes/:id/prestacao/perda', rota('consignacao', 'registrarPerda'));
+router.get('/consignacoes/:id/prestacao/rateio-perda', rota('consignacao', 'consultarRateioPerda'));
+router.put('/consignacoes/:id/prestacao/rateio-perda', rota('consignacao', 'definirRateioPerda'));
+router.get('/projections/rateio-perdas/indicadores', rota('projection', 'indicadoresRateioPerdas'));
 router.post('/consignacoes/:id/prestacao/cortesia', rota('consignacao', 'registrarCortesia'));
 router.post('/consignacoes/:id/prestacao/pagamento', rota('consignacao', 'registrarPagamento'));
 router.post('/consignacoes/:id/prestacao/fechar', rota('consignacao', 'fecharPrestacao'));

@@ -28,12 +28,12 @@
   "extraMetadata": {
     "main": "electron-erp.js"
   },
+  "afterPack": "./scripts/afterPack-set-icon.js",
   "win": {
     "target": "nsis",
     "icon": "assets/icon.ico",
-    "signtoolOptions": {
-      "publisherName": "CDS Sistemas"
-    }
+    "sign": null,
+    "signAndEditExecutable": false
   },
   "nsis": {
     "oneClick": false,
@@ -41,6 +41,9 @@
     "createDesktopShortcut": true,
     "createStartMenuShortcut": true,
     "shortcutName": "CDS ERP",
+    "installerIcon": "assets/icon.ico",
+    "uninstallerIcon": "assets/icon.ico",
+    "installerHeaderIcon": "assets/icon.ico",
     "artifactName": "CDS-ERP-Setup-${version}.${ext}",
     "uninstallDisplayName": "CDS ERP"
   }

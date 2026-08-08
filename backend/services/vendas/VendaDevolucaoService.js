@@ -6,7 +6,9 @@ const { resolverQuantidadesVendaItem, calcularDevolucaoVendaFiscalPrimeiro } = r
 const { gravarAuditoria } = require('../auditoria');
 const { validarMotivoTexto } = require('../validacao/validarMotivoTexto');
 const { recalcularFinanceiroDevolucaoVenda } = require('./VendaFinanceiroService');
+const MotorEstoque = require('../../motores/motor-estoque');
 
+/** PDV-01 — estorno devolve quantidade base via MotorEstoque.entrar (sem reconversão). */
 function devolverSaldosDistribuidos(produtoId, quantidadeFiscal, quantidadeNaoFiscal, callback) {
   const qtdFiscal = Number(quantidadeFiscal || 0);
   const qtdNaoFiscal = Number(quantidadeNaoFiscal || 0);
@@ -15,15 +17,19 @@ function devolverSaldosDistribuidos(produtoId, quantidadeFiscal, quantidadeNaoFi
     return callback(null);
   }
 
-  db.run(`
-    UPDATE produtos
-    SET
-      saldo_fiscal = saldo_fiscal + ?,
-      saldo_nao_fiscal = saldo_nao_fiscal + ?,
-      estoque_atual = (saldo_fiscal + ?) + (saldo_nao_fiscal + ?),
-      updated_at = CURRENT_TIMESTAMP
-    WHERE id = ?
-  `, [qtdFiscal, qtdNaoFiscal, qtdFiscal, qtdNaoFiscal, produtoId], callback);
+  MotorEstoque.entrar(db, {
+    produtoId,
+    quantidadeBase: qtdFiscal + qtdNaoFiscal,
+    quantidadeFiscal: qtdFiscal,
+    quantidadeNaoFiscal: qtdNaoFiscal,
+    origem: MotorEstoque.OrigemEstoque.DEVOLUCAO,
+    referenciaTipo: 'venda_devolucao',
+    motivo: 'PDV_ESTORNO'
+  }).then(() => callback(null)).catch((estErr) => {
+    const e = new Error(estErr?.message || String(estErr));
+    e.status = estErr?.status || 500;
+    callback(e);
+  });
 }
 
 function devolverEstoqueItemVenda(item, callback) {

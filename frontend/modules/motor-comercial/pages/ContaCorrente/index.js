@@ -40,6 +40,11 @@ const {
   getBackButtonLabel
 } = require('../../utils/cliente360Context');
 const { ensureStyles: ensureContaCorrenteStyles } = require('./styles');
+const {
+  emptyState,
+  notifySuccess,
+  notifyError
+} = require('../../messages');
 
 const REFRESH_INTERVAL_MS = 60000;
 
@@ -380,17 +385,24 @@ class ContaCorrentePage {
     const params = this._getApiParams();
 
     try {
+      const contaCorrenteParams = {
+        consignacaoId: params.consignacaoId,
+        clienteId: params.clienteId,
+        dataInicio: params.dataInicio,
+        dataFim: params.dataFim
+      };
+
       const requests = [
         this.projectionApi.listarMovimentacoes(params),
         this.projectionApi.obterProjecaoSaldos(params),
         this.projectionApi.obterProjecaoIndicadores(params),
         this.projectionApi.obterProjecaoDashboard({ clienteId: this.clienteId }),
         this.projectionApi.obterProjecaoInsights({ clienteId: this.clienteId, ...params }),
-        this.projectionApi.listarTimeline({ ...params, limite: 15 })
+        this.projectionApi.listarTimeline({ ...params, limite: 15 }),
+        this.projectionApi.obterProjecaoContaCorrente(contaCorrenteParams)
       ];
 
       if (this.consignacaoId) {
-        requests.push(this.projectionApi.obterProjecaoContaCorrente(params));
         requests.push(this.api.obterConsignacao(this.consignacaoId).catch(() => ({})));
       }
       if (this.clienteId) {
@@ -404,16 +416,17 @@ class ContaCorrentePage {
       const dashboard = results[3];
       const insights = results[4];
       const timeline = results[5];
-      let contaCorrente = {};
+      const contaCorrente = results[6] || {};
       let consignacao = {};
       let situacao = {};
+      let cursor = 7;
 
       if (this.consignacaoId) {
-        contaCorrente = results[6] || {};
-        consignacao = results[7] || {};
-        if (this.clienteId) situacao = results[8] || {};
-      } else if (this.clienteId) {
-        situacao = results[6] || {};
+        consignacao = results[cursor] || {};
+        cursor += 1;
+      }
+      if (this.clienteId) {
+        situacao = results[cursor] || {};
       }
 
       if (consignacao.clienteId) this.clienteId = consignacao.clienteId;
@@ -641,7 +654,7 @@ class ContaCorrentePage {
     title.textContent = 'Alertas';
     host.appendChild(title);
     if (!(this.view.alertas || []).length) {
-      host.appendChild(EmptyState.create({ title: 'Sem alertas', description: 'Nenhum alerta financeiro' }));
+      host.appendChild(EmptyState.create(emptyState('CONTA_CORRENTE_ALERTAS')));
       return;
     }
     (this.view.alertas || []).forEach((a) => {
@@ -663,7 +676,7 @@ class ContaCorrentePage {
     host.appendChild(title);
     const items = this.view.pendencias || [];
     if (!items.length) {
-      host.appendChild(EmptyState.create({ title: 'Sem pendências', description: 'Nenhuma pendência financeira' }));
+      host.appendChild(EmptyState.create(emptyState('CONTA_CORRENTE_PENDENCIAS')));
       return;
     }
     host.appendChild(Table.create({
@@ -793,7 +806,7 @@ class ContaCorrentePage {
     const csv = ['Data,Documento,Tipo,Descrição,Entrada,Saída,Saldo,Operador,CorrelationId',
       ...rows.map((r) => r.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(','))].join('\n');
     this._download(csv, 'extrato-conta-corrente.csv', 'text/csv;charset=utf-8;');
-    notify('Planilha exportada.', 'success');
+    notifySuccess('PLANILHA_EXPORTADA');
   }
 
   _exportExcel() {
@@ -802,7 +815,7 @@ class ContaCorrentePage {
       r.data, r.documento, r.tipoLabel, r.descricao, r.entrada, r.saida, r.saldoProjetado
     ]);
     exportToXlsx(headers, rows, 'extrato-conta-corrente.xlsx');
-    notify('Excel exportado.', 'success');
+    notifySuccess('EXCEL_EXPORTADO');
   }
 
   _exportPdf() {
@@ -816,7 +829,8 @@ class ContaCorrentePage {
       rows,
       filename: 'extrato-conta-corrente.pdf'
     });
-    notify(result.ok ? 'PDF exportado.' : (result.message || 'Não foi possível exportar o PDF.'), result.ok ? 'success' : 'error');
+    if (result.ok) notifySuccess('PDF_EXPORTADO');
+    else notifyError('PDF_EXPORTAR', result);
   }
 
   _download(content, filename, mime) {

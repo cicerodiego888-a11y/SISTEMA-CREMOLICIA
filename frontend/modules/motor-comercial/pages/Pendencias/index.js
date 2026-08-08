@@ -33,6 +33,12 @@ const {
   routeWithActiveContext,
   getBackButtonLabel
 } = require('../../utils/cliente360Context');
+const {
+  ConfirmMessages,
+  emptyState,
+  notifySuccess,
+  notifyInfo
+} = require('../../messages');
 
 const REFRESH_INTERVAL_MS = 60000;
 
@@ -366,7 +372,7 @@ class PendenciasPage {
 
     const items = this.filteredView.proximasAcoes || [];
     if (!items.length) {
-      section.appendChild(EmptyState.create({ title: 'Tudo em dia', description: 'Nenhuma ação prioritária no momento' }));
+      section.appendChild(EmptyState.create(emptyState('PENDENCIAS')));
       return;
     }
 
@@ -518,18 +524,24 @@ class PendenciasPage {
   }
 
   async _resolveAlerta(alerta) {
-    const ok = await confirmDialog({ title: 'Resolver alerta', message: `Marcar "${alerta.descricao}" como resolvido?` });
+    const ok = await confirmDialog({
+      ...ConfirmMessages.RESOLVER_ALERTA,
+      message: `Marcar "${alerta.descricao}" como resolvido?`
+    });
     if (!ok) return;
     savePendenciaAction('resolved', alerta, { responsavel: getOperadorNome() });
-    notify('Alerta resolvido', 'success');
+    notifySuccess('PENDENCIA_RESOLVIDA');
     this._loadData(true);
   }
 
   async _ignoreAlerta(alerta) {
-    const ok = await confirmDialog({ title: 'Ignorar alerta', message: `Ignorar "${alerta.descricao}"?` });
+    const ok = await confirmDialog({
+      ...ConfirmMessages.IGNORAR_ALERTA,
+      message: `Ignorar "${alerta.descricao}"?`
+    });
     if (!ok) return;
     savePendenciaAction('ignored', alerta);
-    notify('Alerta ignorado', 'info');
+    notifySuccess('PENDENCIA_IGNORADA');
     this._loadData(true);
   }
 
@@ -539,7 +551,7 @@ class PendenciasPage {
     const until = new Date();
     until.setDate(until.getDate() + Number(dias || 1));
     savePendenciaAction('deferred', alerta, { until: until.toISOString() });
-    notify(`Alerta adiado até ${until.toLocaleDateString('pt-BR')}`, 'info');
+    notifyInfo('PENDENCIA_ADIADA', until.toLocaleDateString('pt-BR'));
     this._loadData(true);
   }
 
@@ -547,14 +559,14 @@ class PendenciasPage {
     const para = await promptDialog({ title: 'Delegar alerta', message: 'Delegar para (nome do operador):', defaultValue: '' });
     if (!para) return;
     savePendenciaAction('delegated', alerta, { para });
-    notify(`Alerta delegado para ${para}`, 'success');
+    notifySuccess('PENDENCIA_DELEGADA');
   }
 
   async _observeAlerta(alerta) {
     const obs = await promptDialog({ title: 'Observação', message: 'Registrar observação:', defaultValue: alerta.observacao || '' });
     if (obs == null) return;
     savePendenciaAction('observation', alerta, { observacao: obs });
-    notify('Observação registrada', 'success');
+    notifySuccess('OBSERVACAO_REGISTRADA');
     this._loadData(true);
   }
 

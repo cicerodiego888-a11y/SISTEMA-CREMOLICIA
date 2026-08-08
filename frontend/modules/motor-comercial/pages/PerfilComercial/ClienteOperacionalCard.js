@@ -64,11 +64,19 @@ class ClienteOperacionalCard {
     }));
 
     const actions = card.querySelector('.cds-cliente-op-card__actions');
-    actions.appendChild(Button.create({
+    const abrirBtn = Button.create({
       text: 'Abrir',
       variant: 'primary',
-      onClick: () => handlers.onAbrir && handlers.onAbrir(cliente)
-    }));
+      onClick: (event) => {
+        event?.stopPropagation?.();
+        const id = Number(card.dataset.clienteId || cliente.clienteId);
+        if (handlers.onAbrir) {
+          handlers.onAbrir({ ...cliente, clienteId: id });
+        }
+      }
+    });
+    abrirBtn.dataset.clienteId = String(cliente.clienteId);
+    actions.appendChild(abrirBtn);
 
     const menuActions = [
       { label: 'Editar', onClick: () => handlers.onEditar && handlers.onEditar(cliente) },

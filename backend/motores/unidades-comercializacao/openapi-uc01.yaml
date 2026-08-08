@@ -1,0 +1,152 @@
+# UC-01.1 — OpenAPI (Unidades de Comercialização)
+
+Documentação da API de **cadastro** UC-01 / UC-01.1.  
+Não altera rotas MUC (`/produtos/:id/unidades`) nem módulos operacionais.
+
+```yaml
+openapi: 3.0.3
+info:
+  title: CDS — Unidades de Comercialização (UC-01.1)
+  version: 1.1.0
+  description: |
+    Fundação CORE: 1 Produto → 1 Unidade Base (SSOT) → N Unidades Comerciais.
+    Canais, prioridade, unidade padrão e flag conversão por lote (sem execução nesta sprint).
+
+paths:
+  /api/produtos/{id}/unidades-comercializacao:
+    get:
+      summary: Listar unidades de comercialização do produto
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Lista + metadados do produto
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnidadesComercializacaoLista'
+    post:
+      summary: Criar unidade de comercialização
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UnidadeComercializacaoInput'
+      responses:
+        '201':
+          description: Criada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnidadeComercializacaoDTO'
+        '400':
+          description: Validação / auditoria de consistência
+
+  /api/produtos/{id}/unidades-comercializacao/{unidadeId}:
+    put:
+      summary: Atualizar unidade
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: unidadeId, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UnidadeComercializacaoInput'
+      responses:
+        '200':
+          description: Atualizada
+        '400':
+          description: Validação
+        '404':
+          description: Não encontrada
+    delete:
+      summary: Excluir unidade
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: unidadeId, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200':
+          description: Removida
+
+components:
+  schemas:
+    CanaisComercializacao:
+      type: object
+      properties:
+        compra: { type: integer, enum: [0, 1] }
+        venda_erp: { type: integer, enum: [0, 1] }
+        venda_atacado: { type: integer, enum: [0, 1] }
+        venda_varejo: { type: integer, enum: [0, 1] }
+        pdv: { type: integer, enum: [0, 1] }
+        nfce: { type: integer, enum: [0, 1] }
+        nfe: { type: integer, enum: [0, 1] }
+        comercial: { type: integer, enum: [0, 1] }
+        orcamento: { type: integer, enum: [0, 1] }
+
+    UnidadeComercializacaoInput:
+      type: object
+      required: [descricao, tipo, unidade_comercial, quantidade]
+      properties:
+        descricao: { type: string }
+        tipo:
+          type: string
+          enum: [PADRAO, AGRUPAMENTO, FRACIONAMENTO, CONVERSAO_FISICA]
+        unidade_comercial: { type: string }
+        quantidade: { type: number, exclusiveMinimum: 0 }
+        unidade_base: { type: string, description: Espelho SSOT; servidor força produtos.unidade }
+        prioridade: { type: integer, minimum: 1 }
+        unidade_padrao: { type: integer, enum: [0, 1] }
+        conversao_por_lote: { type: integer, enum: [0, 1], description: Prep. UC-02 — sem efeito operacional }
+        canais_comercializacao:
+          $ref: '#/components/schemas/CanaisComercializacao'
+        ativo: { type: integer, enum: [0, 1] }
+
+    UnidadeComercializacaoDTO:
+      allOf:
+        - $ref: '#/components/schemas/UnidadeComercializacaoInput'
+        - type: object
+          properties:
+            id: { type: integer }
+            produto_id: { type: integer }
+            tipo_label: { type: string }
+            tipo_icone: { type: string }
+            tipo_tooltip: { type: string }
+            permite_compra: { type: integer }
+            permite_venda: { type: integer }
+            permite_pdv: { type: integer }
+
+    UnidadesComercializacaoLista:
+      type: object
+      properties:
+        produto_id: { type: integer }
+        unidade_base: { type: string }
+        utiliza_conversao_fisica: { type: integer }
+        unidade_conversao_fisica: { type: string, nullable: true }
+        catalogo:
+          type: object
+          properties:
+            tipos: { type: array }
+            canais: { type: array }
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/UnidadeComercializacaoDTO'
+```
+
+## Regras de auditoria (400)
+- Quantidade ≤ 0
+- Prioridade duplicada no mesmo produto
+- Unidade Comercial = Unidade Base com Tipo ≠ `PADRAO`
+- Tipo `PADRAO` exige quantidade = 1
+- Ao marcar `unidade_padrao=1`, a anterior é limpa automaticamente (somente uma padrão)

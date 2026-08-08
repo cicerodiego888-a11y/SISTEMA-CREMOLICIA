@@ -25,9 +25,18 @@ function testMapFail() {
   assert.ok(response.error);
 }
 
+function testMapCreatedDoesNotForce201OnFailure() {
+  const result = Result.fail(new Error('Falha de criação'));
+  const response = ResultHttpMapper.mapCreated(result);
+
+  assert.strictEqual(response.success, false);
+  assert.notStrictEqual(response._statusCode, 201);
+}
+
 function run() {
   testMapOkWithDados();
   testMapFail();
+  testMapCreatedDoesNotForce201OnFailure();
   console.log('result-http-mapper.test.js: OK');
 }
 

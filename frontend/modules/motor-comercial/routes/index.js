@@ -59,6 +59,15 @@ const routes = [
       requiresAuth: true
     }
   },
+  {
+    path: '/consignacoes/:id/comprovante',
+    name: 'comprovante-entrega',
+    component: 'ComprovanteEntrega',
+    meta: {
+      title: 'Resumo Inteligente da Entrega',
+      requiresAuth: true
+    }
+  },
 
   // ============================================================================
   // PRESTAÇÃO

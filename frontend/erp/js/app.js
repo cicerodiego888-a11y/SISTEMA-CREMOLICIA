@@ -5,6 +5,9 @@ window.CDS_MODULE = 'erp';
 window.CDS_DEFAULT_PAGE = 'dashboard';
 
 function loadPage(page) {
+    if (typeof resolverPaginaErpNav === 'function') {
+        page = resolverPaginaErpNav(page);
+    }
     currentPage = page;
 
     if (!paginaPermitidaPorImplantacao(page)) {
@@ -23,6 +26,10 @@ function loadPage(page) {
         desativarPdvFullscreen();
     }
     document.body.classList.remove('menu-open', 'pdv-mode');
+
+    if (typeof destacarNavConfigComercial === 'function') {
+        destacarNavConfigComercial(page);
+    }
 
     switch (page) {
         case 'dashboard':
@@ -97,12 +104,55 @@ function loadPage(page) {
                     loadCategorias();
                 }
             });
+        case 'canais-venda':
+            return carregarPaginaHtml('canais-venda.html', function () {
+                if (typeof loadCanaisVenda === 'function') loadCanaisVenda();
+            });
+        case 'tipos-comerciais':
+            return carregarPaginaHtml('tipos-comerciais.html', function () {
+                if (typeof loadTiposComerciais === 'function') loadTiposComerciais();
+            });
+        case 'tabelas-preco':
+            return carregarPaginaHtml('tabelas-preco.html', function () {
+                if (typeof loadTabelasPreco === 'function') loadTabelasPreco();
+            });
+        case 'linhas-comerciais':
+            return carregarPaginaHtml('linhas-comerciais.html', function () {
+                if (typeof inicializarPaginaLinhasComerciais === 'function') {
+                    inicializarPaginaLinhasComerciais();
+                } else if (typeof loadLinhasComerciais === 'function') {
+                    loadLinhasComerciais();
+                }
+            });
+        case 'casquinha-sabores':
+            return carregarPaginaHtml('casquinha-sabores.html', function () {
+                if (typeof loadCasquinhaSabores === 'function') loadCasquinhaSabores();
+            });
+        case 'kits-combos':
+            return carregarPaginaHtml('kits-combos.html', function () {
+                if (typeof loadKitsCombos === 'function') loadKitsCombos();
+            });
+        case 'venda-no-atacado':
+        case 'configuracao-comercial':
+            return carregarPaginaHtml('venda-no-atacado.html', function () {
+                if (typeof loadVendaNoAtacado === 'function') loadVendaNoAtacado();
+            });
+        case 'diagnostico-comercial':
+            return carregarPaginaHtml('diagnostico-comercial.html', function () {
+                if (typeof loadDiagnosticoComercial === 'function') loadDiagnosticoComercial();
+            });
         case 'auditoria':
             return carregarPaginaHtml('auditoria.html', function () {
                 if (typeof inicializarPaginaAuditoria === 'function') {
                     inicializarPaginaAuditoria();
                 } else if (typeof carregarAuditoria === 'function') {
                     carregarAuditoria(1);
+                }
+            });
+        case 'diagnostico-instancia':
+            return carregarPaginaHtml('diagnostico-instancia.html', function () {
+                if (typeof inicializarPaginaDiagnosticoInstancia === 'function') {
+                    inicializarPaginaDiagnosticoInstancia();
                 }
             });
         case 'caixas':

@@ -6,6 +6,13 @@ const moment = require('moment');
 const { gravarAuditoria } = require('../services/auditoria');
 const { validarCaixaAberto } = require('../middleware/validarCaixaAberto');
 const { sqlExcluirContaVendaCancelada } = require('../services/vendas/VendaFinanceiroService');
+const { publicarEventoArMfe } = require('../motores/motor-financeiro/adapters');
+
+function emitirEventoArMfe(operacao) {
+  Promise.resolve(publicarEventoArMfe(db, operacao)).catch((err) => {
+    console.error('[MFE-05] emitirEventoArMfe:', err?.message || err);
+  });
+}
 
 router.get('/em-aberto', (req, res) => {
   db.all(`
@@ -186,12 +193,29 @@ router.post('/pagar/:id', validarCaixaAberto, (req, res) => {
                         ip_requisicao: req.ip || null
                       }).catch((auditErr) => console.error('Erro ao gravar auditoria de pagamento de parcela:', auditErr));
 
+                      const valorRestanteNovo = restante - valorNum;
+                      emitirEventoArMfe({
+                        tipo: valorRestanteNovo <= 0 ? 'baixar' : 'parcial',
+                        valor: valorNum,
+                        valor_pago: valorNum,
+                        valor_restante: valorRestanteNovo,
+                        titulo_id: Number(id),
+                        conta_receber_id: Number(id),
+                        venda_id: conta.venda_id,
+                        cliente_id: conta.cliente_id,
+                        numero_parcela: conta.numero_parcela,
+                        total_parcelas: conta.total_parcelas,
+                        data_vencimento: conta.data_vencimento,
+                        operadorId: req.operadorId || req.user?.id || null,
+                        idempotencyKey: `ar:pagar:${id}:${valorNum}:${data}`
+                      });
+
                       res.json({
                         message: 'Pagamento registrado',
                         id,
                         valor_pago: valorNum,
                         valor_restante_anterior: restante,
-                        valor_restante_novo: restante - valorNum
+                        valor_restante_novo: valorRestanteNovo
                       });
                     };
 

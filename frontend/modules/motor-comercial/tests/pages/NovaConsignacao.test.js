@@ -73,4 +73,62 @@ describe('NovaConsignacaoPage', () => {
     const wizard = new NovaConsignacaoPage();
     expect(normalizeCurrency(wizard._formatCurrency(1000.50))).toBe('R$ 1.000,50');
   });
+
+  test('Concluir: POST cria consignação e redireciona para Entrega (sem mensagem de recovery)', async () => {
+    const navigate = window.MotorComercial.navigate;
+    const notify = window.showNotification;
+    navigate.mockClear();
+    notify.mockClear();
+
+    const wizard = new NovaConsignacaoPage();
+    wizard.currentStep = 2;
+    wizard.data.clienteId = 10;
+    wizard.data.perfilComercialId = 3;
+    wizard.data.itens = [
+      { produtoId: 7, produto: 'Picolé', quantidade: 2, preco: 5, persistido: false }
+    ];
+    wizard.clienteProfile = {
+      nome: 'Cliente Teste',
+      limiteDisponivel: 1000,
+      situacao: 'ATIVO'
+    };
+
+    wizard.api.criarConsignacao = jest.fn(async () => ({
+      id: 555,
+      status: 'RASCUNHO',
+      documento: { numero: 'CONS-2026-000555' }
+    }));
+    wizard.api.adicionarItem = jest.fn(async () => ({ id: 1, produtoId: 7 }));
+    wizard.api.obterConsignacao = jest.fn(async () => ({
+      id: 555,
+      status: 'RASCUNHO',
+      itens: [{ id: 91, produtoId: 7, quantidade: 2, precoUnitario: 5 }]
+    }));
+
+    await wizard._createConsignacao();
+
+    expect(wizard.api.criarConsignacao).toHaveBeenCalledTimes(1);
+    expect(wizard.api.adicionarItem).toHaveBeenCalledWith(555, expect.objectContaining({
+      produtoId: 7,
+      quantidade: 2
+    }));
+    expect(wizard.consignacaoId).toBe(555);
+    expect(navigate).toHaveBeenCalledWith('/consignacoes/555/entrega', expect.any(Object));
+
+    const opaqueRecovery = notify.mock.calls.find((call) =>
+      String(call[0] || '').includes('Não foi possível recuperar esta operação agora')
+    );
+    expect(opaqueRecovery).toBeUndefined();
+    const successToast = notify.mock.calls.find((call) =>
+      String(call[0] || '').includes('Consignação criada com sucesso')
+    );
+    expect(successToast).toBeTruthy();
+  });
+
+  test('_extractCreatedConsignacao aceita entidade já unwrapped e envelope com consignacao', () => {
+    const wizard = new NovaConsignacaoPage();
+    expect(wizard._extractCreatedConsignacao({ id: 9, status: 'RASCUNHO' }).id).toBe(9);
+    expect(wizard._extractCreatedConsignacao({ consignacao: { id: 11 } }).id).toBe(11);
+    expect(wizard._extractCreatedConsignacao(null)).toBeNull();
+  });
 });

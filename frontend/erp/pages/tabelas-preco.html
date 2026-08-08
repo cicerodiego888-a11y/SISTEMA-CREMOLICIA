@@ -1,0 +1,47 @@
+<!-- Página: Central de Precificação (RCM-8.3) — API: /tabelas-preco -->
+<div class="container mt-4">
+  <nav aria-label="breadcrumb" class="mb-2">
+    <ol class="breadcrumb mb-0">
+      <li class="breadcrumb-item"><a href="#" onclick="loadPage('configuracoes'); return false;">Configurações</a></li>
+      <li class="breadcrumb-item">Comercial</li>
+      <li class="breadcrumb-item active" aria-current="page">Central de Precificação</li>
+    </ol>
+  </nav>
+
+  <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+    <div>
+      <h2 class="mb-0">Central de Precificação</h2>
+      <small class="text-muted">Central de Precificação · Motor Oficial · Linha ou Produto</small>
+    </div>
+    <div class="d-flex gap-2">
+      <button type="button" class="btn btn-outline-info" id="btn-cobertura-global" title="Verificar cobertura geral">
+        <i class="fas fa-shield-alt"></i> Verificar Cobertura
+      </button>
+      <button type="button" class="btn btn-outline-secondary" id="btn-simular-preco">
+        <i class="fas fa-flask"></i> Simular Precificação
+      </button>
+      <button type="button" class="btn btn-success" id="btn-nova-tabela-preco">
+        Nova Tabela
+      </button>
+    </div>
+  </div>
+
+  <div class="mb-3">
+    <input type="text" id="filtro-tabelas-preco" class="form-control" placeholder="Pesquisar tabela por código, nome ou descrição..." style="max-width: 420px;" autocomplete="off">
+  </div>
+
+  <table class="table table-bordered table-hover">
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Código</th>
+        <th>Nome</th>
+        <th>Canal / Operação</th>
+        <th>Registros</th>
+        <th>Ativo</th>
+        <th>Ações</th>
+      </tr>
+    </thead>
+    <tbody id="tabelas-preco-tbody"></tbody>
+  </table>
+</div>

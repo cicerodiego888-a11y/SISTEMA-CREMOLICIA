@@ -66,4 +66,42 @@ describe('EntregaConsignacaoPage', () => {
 
     await expect(page._verificarEntregaJaPersistida()).resolves.toBe(false);
   });
+
+  test('_loadData: consignação recém-criada abre pela API sem toast de recovery', async () => {
+    const notify = window.showNotification;
+    notify.mockClear();
+
+    const page = new EntregaConsignacaoPage(555);
+    page.api.obterConsignacao = jest.fn(async () => ({
+      id: 555,
+      status: 'RASCUNHO',
+      clienteId: 10,
+      perfilComercialId: 3,
+      documento: 'CONS-2026-000555',
+      itens: [{ id: 1, produtoId: 7, quantidade: 2, precoUnitario: 5 }]
+    }));
+    page.api.obterPerfil = jest.fn(async () => ({
+      perfilTipo: 'CONSIGNADO',
+      ativo: true,
+      bloqueado: false,
+      limiteComercial: 1000
+    }));
+    page.api.listarItensConsignacao = jest.fn(async () => []);
+    page.projectionApi.obterSituacaoCliente = jest.fn(async () => ({
+      clienteNome: 'Cliente Teste',
+      limiteDisponivel: 1000,
+      saldoEmAberto: 0
+    }));
+    page.projectionApi.obterResumoPrestacao = jest.fn(async () => ({ itens: [], saldoAtual: 0 }));
+
+    await page._loadData();
+
+    expect(page.consignacao).toBeTruthy();
+    expect(page.consignacao.id).toBe(555);
+    expect(page.error).toBeNull();
+    const opaqueRecovery = notify.mock.calls.find((call) =>
+      String(call[0] || '').includes('Não foi possível recuperar esta operação agora')
+    );
+    expect(opaqueRecovery).toBeUndefined();
+  });
 });

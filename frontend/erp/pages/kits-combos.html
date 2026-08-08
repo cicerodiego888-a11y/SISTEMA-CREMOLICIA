@@ -1,0 +1,35 @@
+<!-- Kits e Combos (RCM-05.9) -->
+<div class="container mt-4">
+  <nav aria-label="breadcrumb" class="mb-2">
+    <ol class="breadcrumb mb-0">
+      <li class="breadcrumb-item"><a href="#" onclick="loadPage('configuracoes'); return false;">Configurações</a></li>
+      <li class="breadcrumb-item">Comercial</li>
+      <li class="breadcrumb-item active">Kits e Combos</li>
+    </ol>
+  </nav>
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <div>
+      <h2 class="mb-0">Kits e Combos</h2>
+      <small class="text-muted">Produtos compostos — estoque baixado nos itens</small>
+    </div>
+    <button type="button" class="btn btn-success" id="btn-novo-kit">Novo Kit</button>
+  </div>
+  <div class="mb-3">
+    <input type="search" id="filtro-kits" class="form-control" placeholder="Pesquisar código ou descrição..." style="max-width: 420px;">
+  </div>
+  <table class="table table-bordered table-hover">
+    <thead>
+      <tr>
+        <th>Código</th>
+        <th>Descrição</th>
+        <th>Categoria</th>
+        <th>Formação</th>
+        <th>Preço</th>
+        <th>Itens</th>
+        <th>Ativo</th>
+        <th>Ações</th>
+      </tr>
+    </thead>
+    <tbody id="kits-tbody"></tbody>
+  </table>
+</div>

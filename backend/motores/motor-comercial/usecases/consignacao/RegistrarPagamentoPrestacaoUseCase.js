@@ -138,7 +138,12 @@ class RegistrarPagamentoPrestacaoUseCase extends ConsignacaoWriteUseCase {
         grupoPagamento,
         itens,
         totaisPosPagamento,
-        { operacao: 'PAGAMENTO', valor, escopo }
+        {
+          operacao: 'PAGAMENTO',
+          valor,
+          escopo,
+          formaPagamento: entrada.formaPagamento ?? null
+        }
       );
 
       const movimentacao = await registrarMovimentacaoComercial(uow, {

@@ -75,13 +75,26 @@ class AdicionarItemRequest {
    * @param {number} data.quantidade
    * @param {number} [data.precoUnitario]
    * @param {string} [data.usuarioId]
+   * @param {string} [data.unidadeComercial]
+   * @param {number} [data.linhaComercialId]
+   * @param {number} [data.tabelaPrecoId]
+   * @param {string} [data.canalVenda]
+   * @param {string} [data.precoOrigem]
+   * @param {boolean|number} [data.precoFallback]
    */
   static fromJSON(data) {
     return {
       produtoId: data.produtoId,
       quantidade: data.quantidade,
       precoUnitario: data.precoUnitario || 0,
-      usuarioId: data.usuarioId || null
+      usuarioId: data.usuarioId || null,
+      // RCM-6.1 — snapshot de precificação
+      unidadeComercial: data.unidadeComercial || data.unidade_comercial || null,
+      linhaComercialId: data.linhaComercialId ?? data.linha_comercial_id ?? null,
+      tabelaPrecoId: data.tabelaPrecoId ?? data.tabela_preco_id ?? null,
+      canalVenda: data.canalVenda || data.canal_venda || data.canal || null,
+      precoOrigem: data.precoOrigem || data.preco_origem || null,
+      precoFallback: data.precoFallback ?? data.preco_fallback ?? null
     };
   }
 
@@ -470,6 +483,18 @@ class ConsignacaoResponse {
     return {
       id: consignacao.id,
       clienteId: consignacao.clienteId,
+      clienteNome: consignacao.clienteNome
+        ?? consignacao.cliente_nome
+        ?? null,
+      clienteDocumento: consignacao.clienteDocumento
+        ?? consignacao.cliente_documento
+        ?? null,
+      clienteFantasia: consignacao.clienteFantasia
+        ?? consignacao.cliente_fantasia
+        ?? null,
+      clienteTelefone: consignacao.clienteTelefone
+        ?? consignacao.cliente_telefone
+        ?? null,
       perfilComercialId: consignacao.perfilComercialId,
       status: consignacao.status,
       documento: consignacao.documento,
@@ -536,7 +561,14 @@ class ItemConsignacaoResponse {
       produtoId: item.produtoId,
       produtoNome,
       codigo: item.codigo ?? null,
-      unidade: item.unidade ?? 'UN',
+      unidade: item.unidade ?? item.unidadeComercial ?? 'UN',
+      unidadeComercial: item.unidadeComercial ?? item.unidade ?? 'UN',
+      unidadeBaseProduto: item.unidadeBaseProduto ?? null,
+      linhaComercialId: item.linhaComercialId ?? null,
+      tabelaPrecoId: item.tabelaPrecoId ?? null,
+      canalVenda: item.canalVenda ?? null,
+      precoOrigem: item.precoOrigem ?? null,
+      precoFallback: !!item.precoFallback,
       valorUnitario,
       precoUnitario: valorUnitario,
       preco: valorUnitario,

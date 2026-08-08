@@ -188,7 +188,7 @@ describe('fecharConsignacaoMappers', () => {
     expect(proximoCampoRetorno('vendido', 1)).toBe('perdido');
   });
 
-  test('buildPainelLateralPreview atualiza qtds sem recalcular R$', () => {
+  test('buildPainelLateralPreview atualiza qtds e estima R$ da grade', () => {
     const painel = buildPainelLateralPreview(
       { valorVendido: 40, valorRecebido: 50 },
       [
@@ -202,6 +202,23 @@ describe('fecharConsignacaoMappers', () => {
     expect(painel.valorVenda).toBe(40);
     expect(painel.valorRecebido).toBe(50);
     expect(painel.saldoEmAberto).toBe(0);
+    expect(painel.preview).toBe(true);
+  });
+
+  test('buildPainelLateralPreview estima valorVenda quando SSOT ainda é zero', () => {
+    const painel = buildPainelLateralPreview(
+      { valorVendido: 0, valorRecebido: 0 },
+      [
+        { vendido: 2, devolvido: 1, perdido: 0, cortesia: 0, preco: 15, enviado: 5 },
+        { vendido: 2, devolvido: 1, perdido: 0, cortesia: 0, preco: 10, enviado: 3 }
+      ]
+    );
+    expect(painel.produtosVendidos).toBe(4);
+    expect(painel.valorVenda).toBe(50);
+    expect(painel.valorRecebido).toBe(0);
+    expect(painel.saldoEmAberto).toBe(50);
+    expect(painel.situacaoFinanceira).toBe('EM_ABERTO');
+    expect(painel.financeiroEstimado).toBe(true);
     expect(painel.preview).toBe(true);
   });
 

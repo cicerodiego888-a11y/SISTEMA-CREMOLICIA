@@ -1,0 +1,63 @@
+<!-- Página: Canais de Venda (RCM-04.1 / RCM-04.8) -->
+<div class="container mt-4">
+  <nav aria-label="breadcrumb" class="mb-2">
+    <ol class="breadcrumb mb-0">
+      <li class="breadcrumb-item"><a href="#" onclick="loadPage('configuracoes'); return false;">Configurações</a></li>
+      <li class="breadcrumb-item">Comercial</li>
+      <li class="breadcrumb-item active" aria-current="page">Canais de Venda</li>
+    </ol>
+  </nav>
+
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <div>
+      <h2 class="mb-0">Canais de Venda</h2>
+      <small class="text-muted">Cadastro master — Comercialização V2</small>
+    </div>
+    <button class="btn btn-success" data-bs-toggle="modal" data-bs-target="#modal-canal-venda" onclick="limparFormularioCanalVenda()">
+      Novo Canal
+    </button>
+  </div>
+
+  <table class="table table-bordered table-hover">
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Código</th>
+        <th>Nome</th>
+        <th>Ativo</th>
+        <th>Ações</th>
+      </tr>
+    </thead>
+    <tbody id="canais-venda-tbody"></tbody>
+  </table>
+</div>
+
+<div class="modal fade" id="modal-canal-venda" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="modal-canal-venda-titulo">Novo Canal de Venda</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="canal-venda-id">
+        <div class="mb-3">
+          <label for="canal-venda-codigo" class="form-label">Código *</label>
+          <input type="text" id="canal-venda-codigo" class="form-control" maxlength="40" placeholder="Ex.: VAREJO">
+        </div>
+        <div class="mb-3">
+          <label for="canal-venda-nome" class="form-label">Nome *</label>
+          <input type="text" id="canal-venda-nome" class="form-control" maxlength="120">
+        </div>
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" id="canal-venda-ativo" checked>
+          <label class="form-check-label" for="canal-venda-ativo">Ativo</label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+        <button type="button" class="btn btn-success" id="btn-salvar-canal-venda">Salvar</button>
+      </div>
+    </div>
+  </div>
+</div>

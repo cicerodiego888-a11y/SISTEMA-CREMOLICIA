@@ -202,6 +202,9 @@ function showVendaModal(venda) {
                         </div>
                     </div>
                     <div class="modal-footer">
+                        <button type="button" class="btn btn-primary" onclick="reimprimirComprovanteVendaHistorico(${venda.id})">
+                            <i class="fas fa-receipt"></i> Reimprimir comprovante de venda
+                        </button>
                         ${mostrarNaoFiscal ? `
                         <button type="button" class="btn btn-warning" onclick="reimprimirCupomNaoFiscalHistorico(${venda.id})">
                             <i class="fas fa-receipt"></i> Reimprimir cupom não fiscal

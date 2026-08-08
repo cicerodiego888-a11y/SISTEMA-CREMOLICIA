@@ -81,7 +81,8 @@ const { buildResumoFinanceiroCentral: buildResumoLegacy } = require('./prestacao
 const {
   imprimirComprovante,
   visualizarComprovante,
-  exportarComprovantePdf
+  exportarComprovantePdf,
+  abrirComprovantePrestacao
 } = require('../../services/ComprovanteFechamentoService');
 const {
   notify,
@@ -136,6 +137,7 @@ class PrestacaoContasPage {
     /** Log de sessão (UX) — últimas ações nesta estação. */
     this.logOperacionalSessao = [];
     this.faturamento = null;
+    this.rateioPerda = null;
     this._ultimaFalhaEmitir = null;
     this._emitindoNfce = false;
     this.proximoAtendimento = null;
@@ -479,12 +481,12 @@ class PrestacaoContasPage {
       title: pagarDis
         ? (saldoAberto <= 0.01
           ? 'Não há saldo em aberto para receber.'
-          : 'Aguarde a operação em andamento.')
+          : 'Registrando pagamento...')
         : null,
       onClick: () => this._registrarPagamento()
     }), pagarDis ? (saldoAberto <= 0.01
       ? 'Não há saldo em aberto para receber.'
-      : 'Aguarde a operação em andamento.') : ''));
+      : 'Registrando pagamento...') : ''));
 
     const podeMostrarEmitir = fiscal.codigo !== SITUACAO_FISCAL.NAO_APLICAVEL
       && fiscal.codigo !== SITUACAO_FISCAL.AUTORIZADA
@@ -582,7 +584,8 @@ class PrestacaoContasPage {
       faturamento: this.faturamento,
       emitindoNfce: Boolean(this._emitindoNfce),
       historico: this.historico,
-      ultimaFalhaEmitir: this._ultimaFalhaEmitir || null
+      ultimaFalhaEmitir: this._ultimaFalhaEmitir || null,
+      rateioPerda: this.rateioPerda || null
     };
   }
 
@@ -603,6 +606,7 @@ class PrestacaoContasPage {
       onRetryLinha: (i) => this._retryLinha(i),
       onVisualizarDanfe: (vendaId) => this._abrirDanfe(vendaId),
       onReimprimirDanfe: (vendaId) => this._abrirDanfe(vendaId),
+      onSalvarRateioPerda: (payload) => this._salvarRateioPerda(payload),
       onEmitirNfceRetry: () => {
         this._ultimaFalhaEmitir = null;
         this._emitirNfcePrestacao();
@@ -891,6 +895,7 @@ class PrestacaoContasPage {
       this.steps = inicializarMomentos(true);
       await this._loadData(true, { skipUi: true });
       this._updateUI();
+      await this._gerarComprovantePrestacaoAposEncerrar({ autoPrint: false });
     } catch (error) {
       notify(
         humanizarErroOperacional(error).mensagem
@@ -942,19 +947,21 @@ class PrestacaoContasPage {
     }
 
     try {
-      const [consignacao, prestacao, historico, contaCorrente] = await Promise.all([
+      const [consignacao, prestacao, historico, contaCorrente, rateioPerda] = await Promise.all([
         carregarConsignacaoCompleta(this.api, this.projectionApi, this.consignacaoId),
         this.projectionApi.obterResumoPrestacao({ consignacaoId: this.consignacaoId }).catch(() => null),
         this.projectionApi.listarMovimentacoes({ consignacaoId: this.consignacaoId }).catch(() => []),
         this.projectionApi.obterProjecaoContaCorrente({
           consignacaoId: this.consignacaoId,
           clienteId: this.navigationContext.clienteId || undefined
-        }).catch(() => null)
+        }).catch(() => null),
+        this.api.obterRateioPerda(this.consignacaoId).catch(() => null)
       ]);
 
       this.consignacao = consignacao;
       this.historico = historico;
       this.contaCorrente = contaCorrente;
+      this.rateioPerda = rateioPerda;
       this.resumoPrestacao = this._buildResumoFromData(prestacao, historico, consignacao, contaCorrente);
       limparDirtyTodos(this.resumoPrestacao?.itens || []);
       this._capturarBaseline();
@@ -1643,9 +1650,9 @@ class PrestacaoContasPage {
   _atualizarPainelPreview() {
     if (this.currentStep !== STEP_RETORNOS || !this.resumoPrestacao?.itens?.length) return;
     const itens = this.resumoPrestacao.itens;
-    // Qtds podem ser preview; R$ sempre do snapshot SSOT
-    const financeiro = this.snapshot?.financeiro || this._syncSnapshotFinanceiro();
-    const painelPreview = buildPainelLateralPreview(this.resumoPrestacao, itens, financeiro);
+    // Qtds + estimativa R$ da grade; SSOT oficial no snapshot após flush
+    const financeiroSsot = this.snapshot?.financeiro || this._syncSnapshotFinanceiro();
+    const painelPreview = buildPainelLateralPreview(this.resumoPrestacao, itens, financeiroSsot);
     this.painel = painelPreview;
     this._patchPainelLateral(painelPreview);
     FecharConsignacaoView.patchResumoRapido(
@@ -1689,6 +1696,60 @@ class PrestacaoContasPage {
   _updatePagamentoField(key, value) {
     this.pagamentoDraft[key] = value;
     this.pagamentoErro = null;
+  }
+
+  /**
+   * RC4.2 — persiste rateio inteligente de perdas.
+   */
+  async _salvarRateioPerda(payload = {}) {
+    if (!(await this._garantirPrestacaoAberta())) return false;
+    this.loading.operation = true;
+    this._updateFooter();
+    try {
+      const resultado = await withLoading('Salvando rateio da perda…', () =>
+        this.api.definirRateioPerda(this.consignacaoId, {
+          tipoRateio: payload.tipoRateio,
+          valorCliente: payload.valorCliente,
+          valorEmpresa: payload.valorEmpresa,
+          campoEditado: payload.campoEditado || null,
+          motivoPerda: payload.motivoPerda,
+          observacaoPerda: payload.observacaoPerda,
+          usuarioId: getUsuarioId()
+        })
+      );
+      this.rateioPerda = {
+        ...(this.rateioPerda || {}),
+        rateio: resultado?.rateio || resultado?.data?.rateio || payload,
+        resumoFinanceiro: resultado?.resumoFinanceiro || resultado?.data?.resumoFinanceiro || null,
+        totais: resultado?.totais || resultado?.data?.totais || this.rateioPerda?.totais
+      };
+      notify('Rateio da perda salvo.', 'success');
+      this._pushLogOperacional('Rateio da perda definido', {
+        tipo: payload.tipoRateio,
+        cliente: payload.valorCliente,
+        empresa: payload.valorEmpresa,
+        motivo: payload.motivoPerda
+      });
+      registrarLogOperacional('RATEIO_PERDA', {
+        consignacaoId: this.consignacaoId,
+        resultado: 'OK',
+        detalhes: {
+          tipoRateio: payload.tipoRateio,
+          valorCliente: payload.valorCliente,
+          valorEmpresa: payload.valorEmpresa,
+          motivoPerda: payload.motivoPerda
+        }
+      });
+      await this._loadData(true, { skipUi: true });
+      this._updateContent();
+      return true;
+    } catch (error) {
+      notify(humanizarErroOperacional(error).mensagem, 'error');
+      return false;
+    } finally {
+      this.loading.operation = false;
+      this._updateFooter();
+    }
   }
 
   /**
@@ -1923,6 +1984,7 @@ class PrestacaoContasPage {
       this.steps = inicializarMomentos(true);
       await this._loadData(true, { skipUi: true });
       this._updateUI();
+      await this._gerarComprovantePrestacaoAposEncerrar({ autoPrint: false });
     } catch (error) {
       notify(humanizarErroOperacional(error).mensagem, 'error');
       registrarLogOperacional('ENCERRAR_PRESTACAO', {
@@ -1933,6 +1995,27 @@ class PrestacaoContasPage {
     } finally {
       this.loading.operation = false;
       this._updateFooter();
+    }
+  }
+
+  /**
+   * RC2.1 — Comprovante de Prestação (Motor de Comprovantes), independente de NFC-e.
+   */
+  async _gerarComprovantePrestacaoAposEncerrar({ autoPrint = false } = {}) {
+    try {
+      await withLoading(
+        'Gerando comprovante de prestação…',
+        () => abrirComprovantePrestacao(this.consignacaoId, { imprimir: autoPrint })
+      );
+    } catch (error) {
+      notify(
+        humanizarErroOperacional(error).mensagem
+          || 'Prestação encerrada, mas não foi possível gerar o comprovante.',
+        'warning'
+      );
+      this._pushLogOperacional('Falha ao gerar comprovante de prestação', {
+        erro: String(error?.message || error)
+      });
     }
   }
 
@@ -1969,10 +2052,15 @@ class PrestacaoContasPage {
 
     switch (acao) {
       case 'imprimir':
-        await imprimirComprovante(this.consignacao, this.resumoPrestacao, painel);
+      case 'imprimir-comprovante':
+        await imprimirComprovante(this.consignacao || this.consignacaoId);
         break;
       case 'pdf':
-        await visualizarComprovante(this.consignacao, this.resumoPrestacao, painel);
+      case 'visualizar-comprovante':
+        await visualizarComprovante(this.consignacao || this.consignacaoId);
+        break;
+      case 'pdf-download':
+        await exportarComprovantePdf(this.consignacao || this.consignacaoId);
         break;
       case 'voltar-cliente':
         if (this.navigationContext.clienteId) {

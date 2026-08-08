@@ -135,19 +135,46 @@ function viewVenda(id) {
 }
 
 function rotuloModoVendaItem(item) {
+    const forma = String(item?.forma_comercializacao || '').toUpperCase();
+    if (forma === 'PESO') return 'Peso';
+    if (forma === 'VOLUME') return 'Volume';
+    if (forma === 'CASQUINHA') return 'Casquinha';
+    if (forma === 'UNIDADE') return 'Unidade';
     const tipo = String(item?.tipo_venda || '').toUpperCase();
     if (tipo === 'UNIDADE' || item?.modo_venda === 'unidade') return 'Unidade';
+    const un = String(item?.unidade_comercial || item?.unidade || '').toUpperCase();
+    if (un === 'L' || un === 'LITRO' || un === 'LITROS') return 'Volume';
+    if (un === 'KG') return 'Peso';
     return 'Peso';
 }
 
 function formatarQuantidadeVendaItem(item) {
+    const forma = String(item?.forma_comercializacao || '').toUpperCase();
     const tipo = String(item?.tipo_venda || '').toUpperCase();
-    if (tipo === 'UNIDADE' || item?.modo_venda === 'unidade') {
+    if (tipo === 'UNIDADE' || item?.modo_venda === 'unidade' || forma === 'UNIDADE') {
         return `${Math.round(Number(item.quantidade || 0))} UN`;
     }
-    const unidade = String(item?.unidade || '').toUpperCase();
+    let unidade = String(item?.unidade_comercial || item?.unidade || '').toUpperCase();
+    if (unidade === 'LITRO' || unidade === 'LITROS' || unidade === 'LT') unidade = 'L';
+    if (unidade === 'KILO' || unidade === 'KILOS') unidade = 'KG';
     const quantidade = Number(item?.quantidade || 0);
+    if (forma === 'PESO' || unidade === 'KG') {
+        return `${quantidade.toFixed(3).replace('.', ',')} Kg`;
+    }
+    if (forma === 'VOLUME' || unidade === 'L') {
+        return `${String(Number(quantidade.toFixed(3))).replace('.', ',')} L`;
+    }
     return unidade ? `${quantidade} ${unidade}` : String(quantidade);
+}
+
+function formatarPrecoUnitarioHistorico(item) {
+    const preco = formatCurrency(item.preco_unitario);
+    const forma = String(item?.forma_comercializacao || '').toUpperCase();
+    let unidade = String(item?.unidade_comercial || item?.unidade || '').toUpperCase();
+    if (unidade === 'LITRO' || unidade === 'LITROS' || unidade === 'LT') unidade = 'L';
+    if (forma === 'PESO' || unidade === 'KG') return `${preco}/KG`;
+    if (forma === 'VOLUME' || unidade === 'L') return `${preco}/L`;
+    return preco;
 }
 
 function formatarQuantidadeEstoqueKg(item) {
@@ -178,9 +205,12 @@ function showVendaModal(venda) {
         return `
         <tr>
             <td>${item.produto_id || '-'}</td>
-            <td>${escapeHtml(item.produto_nome || '-')}</td>
+            <td>
+              ${escapeHtml(item.produto_nome || '-')}
+              ${Number(item.quantidade_bolas || 0) > 0 ? `<br><small class="text-muted">${Number(item.quantidade_bolas)} Bola${Number(item.quantidade_bolas) > 1 ? 's' : ''}${(item.sabores || []).length ? ' — ' + (item.sabores || []).map((s) => escapeHtml(s.nome || s)).join(', ') : ''}</small>` : ''}
+            </td>
             <td>${rotuloModoVendaItem(item)}</td>
-            <td>${formatCurrency(item.preco_unitario)}</td>
+            <td>${formatarPrecoUnitarioHistorico(item)}</td>
             <td>${formatarQuantidadeVendaItem(item)}</td>
             <td>${Number(item.quantidade_fiscal ?? 0).toFixed(3).replace('.', ',')}</td>
             <td>${Number(item.quantidade_nao_fiscal ?? 0).toFixed(3).replace('.', ',')}</td>
@@ -215,6 +245,10 @@ function showVendaModal(venda) {
                             <div class="col-sm-4"><strong>Documento:</strong> ${escapeHtml(venda.documento || '-')}</div>
                             <div class="col-sm-4"><strong>Número de itens:</strong> ${itens.length}</div>
                         </div>
+                        ${venda.canal_venda ? `
+                        <div class="row mb-3">
+                            <div class="col-sm-4"><strong>Canal:</strong> <code>${escapeHtml(String(venda.canal_venda).toUpperCase())}</code></div>
+                        </div>` : ''}
                         ${vendaPossuiNfceAutorizada(venda) ? `
                         <div class="alert alert-success py-2 mb-3">
                             <i class="fas fa-receipt"></i>
@@ -252,6 +286,9 @@ function showVendaModal(venda) {
                         </div>
                     </div>
                     <div class="modal-footer">
+                        <button type="button" class="btn btn-primary" onclick="reimprimirComprovanteVendaHistorico(${venda.id})">
+                            <i class="fas fa-receipt"></i> Reimprimir comprovante de venda
+                        </button>
                         ${mostrarNaoFiscal ? `
                         <button type="button" class="btn btn-warning" onclick="reimprimirCupomNaoFiscalHistorico(${venda.id})">
                             <i class="fas fa-receipt"></i> Reimprimir cupom não fiscal

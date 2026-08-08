@@ -14,12 +14,7 @@ const {
   moeda,
   custoUnitarioVenda,
   itemCompraUsaConversaoUnidades,
-  resolverCustoUnitarioCadastro,
   resolverPrecosCadastroAposCompra,
-  obterTotalConvertidoItemCompra,
-  validarDistribuicaoConversaoUnidadesItem,
-  resolverQuantidadesEstoqueCompraItem,
-  calcularSubtotalFinanceiroItemCompra,
   resolverQuantidadesCompraItem
 } = require('../lib/motorConversaoUnidades');
 const { emitirNFeDevolucaoCompra } = require('../services/fiscal/nfeDevolucaoCompra');
@@ -29,10 +24,80 @@ const {
   resolverCamposEntrada,
   deveGerarFinanceiroEntrada
 } = require('../lib/entradaProducaoPropria');
+const mcc = require('../motores/motor-conversao-comercial');
+const MotorEstoque = require('../motores/motor-estoque');
+const { publicarEventoCompraApMfe } = require('../motores/motor-financeiro/adapters');
+const { obterMotor, FeatureFlag } = require('../motores/motor-financeiro');
 
 const itemCompraEhFracionado = itemCompraUsaConversaoUnidades;
-const obterTotalConvertidoItemCompraBackend = obterTotalConvertidoItemCompra;
-const validarDistribuicaoFracionadoItem = validarDistribuicaoConversaoUnidadesItem;
+
+/** MFE-06 — FEATURE_MFE_AP */
+function isCompraApBridgeAtivo() {
+  try {
+    return Boolean(obterMotor().featureFlags.isEnabled(FeatureFlag.FEATURE_MFE_AP));
+  } catch (_) {
+    return false;
+  }
+}
+
+function emitirEventoCompraApMfe(operacao) {
+  Promise.resolve(publicarEventoCompraApMfe(db, operacao)).catch((err) => {
+    console.error('[MFE-06] emitirEventoCompraApMfe:', err?.message || err);
+  });
+}
+
+/** MCC-03 — Entrada operacional (Orchestrator obrigatório; sem Converter direto) */
+const entradaMcc = new mcc.EntradaMercadoriasOperacionalService({
+  orchestrator: mcc.compraOrchestrator,
+  mcc: mcc.motor,
+  criarLote: (dados, cb) => lotesService.criarLote(dados, cb),
+  gravarAuditoria
+});
+
+function itemUsaEntradaMcc(item = {}) {
+  return !!(
+    item.unidade_comercial
+    || item.unidade_origem
+    || item.modo_entrada_conversao
+    || item.peso_embalagem
+    || item.peso_total
+    || item.volume_total
+    || item.utiliza_conversao_fisica
+    || Number(item.mcc_entrada) === 1
+  );
+}
+
+/**
+ * Validação prévia: legado fracionado ainda checa distribuição.
+ * Itens MCC / UC / física são validados na conversão operacional.
+ */
+function validarDistribuicaoItemCompra(item = {}) {
+  if (itemUsaEntradaMcc(item)) return null;
+  if (!itemCompraEhFracionado(item)) return null;
+
+  const qtds = resolverQuantidadesCompraItem(item);
+  const qtdEmb = Number(item.quantidade_embalagens || 0);
+  const qtdPorEmb = Number(item.quantidade_por_embalagem || 0);
+  const totalConvertido = qtdEmb > 0 && qtdPorEmb > 0
+    ? qtdEmb * qtdPorEmb
+    : Number(item.peso_total_compra || 0);
+  const nome = String(item.produto_nome || item.produto_id || 'Produto').trim();
+
+  if (totalConvertido <= 0) {
+    return `${nome}: informe a conversão de unidades antes da distribuição fiscal.`;
+  }
+
+  const soma = Number(qtds.quantidade_fiscal || 0) + Number(qtds.quantidade_nao_fiscal || 0);
+  if (soma <= 0) {
+    return `${nome}: informe quantidades absolutas em fiscal e/ou não fiscal.`;
+  }
+
+  if (Math.abs(soma - totalConvertido) > 0.001) {
+    return `${nome}: fiscal (${qtds.quantidade_fiscal}) + não fiscal (${qtds.quantidade_nao_fiscal}) deve somar ${totalConvertido} (total convertido).`;
+  }
+
+  return null;
+}
 
 
 /**
@@ -101,7 +166,11 @@ function calcularRateioItens(itens, totais = {}) {
   const outras = moeda(totais.valor_outras_despesas);
 
   return itens.map((item) => {
-    const subtotalItem = calcularSubtotalFinanceiroItemCompra(item);
+    const subtotalItem = moeda(
+      Number(item.subtotal) > 0
+        ? item.subtotal
+        : (Number(item.valor_total_embalagem) || Number(item.preco_unitario || 0) * Number(item.quantidade || 0))
+    );
     const subtotal = moeda(item.subtotal !== undefined ? item.subtotal : subtotalItem);
     const proporcao = valorProdutos > 0 ? subtotal / valorProdutos : 0;
 
@@ -109,14 +178,21 @@ function calcularRateioItens(itens, totais = {}) {
     const descontoRateado = moeda(desconto * proporcao);
     const outrasRateado = moeda(outras * proporcao);
 
-    const quantidade = itemCompraEhFracionado(item)
-      ? resolverQuantidadesEstoqueCompraItem(item).quantidade
-      : Number(item.quantidade || 0);
+    const quantidade = Number(
+      item.quantidade_convertida
+      ?? item.peso_total_compra
+      ?? item.quantidade
+      ?? 0
+    );
     const custoTotalFinal = moeda(subtotal + freteRateado + outrasRateado - descontoRateado);
-    const fracionado = Number(item.produto_fracionado ?? item.vendido_por_peso ?? 0) === 1;
+    const precisaCustoUnitarioFino = itemUsaEntradaMcc(item) || itemCompraEhFracionado(item);
     const custoUnitarioFinal = quantidade > 0
-      ? (fracionado ? custoUnitarioVenda(custoTotalFinal / quantidade) : moeda(custoTotalFinal / quantidade))
-      : (fracionado ? custoUnitarioVenda(item.preco_unitario) : moeda(item.preco_unitario));
+      ? (precisaCustoUnitarioFino
+        ? custoUnitarioVenda(custoTotalFinal / quantidade)
+        : moeda(custoTotalFinal / quantidade))
+      : (precisaCustoUnitarioFino
+        ? custoUnitarioVenda(item.preco_unitario)
+        : moeda(item.preco_unitario));
 
     return {
       ...item,
@@ -163,6 +239,78 @@ function garantirFornecedorCompra(dados, callback) {
   });
 }
 
+function montarParcelasFinanceiroCompra(compra) {
+  const {
+    id,
+    data_compra,
+    condicao_pagamento,
+    data_vencimento,
+    parcelas,
+    valor_entrada,
+    total
+  } = compra;
+
+  const qtdParcelas = Math.max(1, Number(parcelas) || 1);
+  const valorTotal = Number(total) || 0;
+  const vencimentoBase = toDate(data_vencimento, data_compra);
+  const lista = [];
+
+  if (condicao_pagamento === 'parcelado' && qtdParcelas > 1) {
+    const valorBase = Math.floor((valorTotal / qtdParcelas) * 100) / 100;
+    const resto = Math.round((valorTotal - (valorBase * qtdParcelas)) * 100) / 100;
+    for (let i = 1; i <= qtdParcelas; i++) {
+      const valorParcela = Number((valorBase + (i === qtdParcelas ? resto : 0)).toFixed(2));
+      lista.push({
+        numero: i,
+        totalParcelas: qtdParcelas,
+        valor: valorParcela,
+        saldo: valorParcela,
+        vencimento: addMonths(vencimentoBase, i - 1),
+        status: 'ABERTO'
+      });
+    }
+    return lista;
+  }
+
+  if (condicao_pagamento === 'entrada_parcelado' && qtdParcelas > 0 && valor_entrada > 0) {
+    const totalParcelas = qtdParcelas + 1;
+    lista.push({
+      numero: 1,
+      totalParcelas,
+      valor: Number(valor_entrada),
+      saldo: 0,
+      vencimento: data_compra,
+      status: 'PAGO'
+    });
+    const valorRestante = valorTotal - Number(valor_entrada);
+    const valorBase = Math.floor((valorRestante / qtdParcelas) * 100) / 100;
+    const resto = Math.round((valorRestante - (valorBase * qtdParcelas)) * 100) / 100;
+    for (let i = 1; i <= qtdParcelas; i++) {
+      const valorParcela = Number((valorBase + (i === qtdParcelas ? resto : 0)).toFixed(2));
+      lista.push({
+        numero: i + 1,
+        totalParcelas,
+        valor: valorParcela,
+        saldo: valorParcela,
+        vencimento: addMonths(vencimentoBase, i - 1),
+        status: 'ABERTO'
+      });
+    }
+    return lista;
+  }
+
+  const pagoNaHora = condicao_pagamento === 'avista';
+  lista.push({
+    numero: 1,
+    totalParcelas: 1,
+    valor: valorTotal,
+    saldo: pagoNaHora ? 0 : valorTotal,
+    vencimento: pagoNaHora ? data_compra : vencimentoBase,
+    status: pagoNaHora ? 'PAGO' : 'ABERTO'
+  });
+  return lista;
+}
+
 function criarFinanceiroCompra(compra, callback) {
   const {
     id,
@@ -181,6 +329,33 @@ function criarFinanceiroCompra(compra, callback) {
   const valorTotal = Number(total) || 0;
   const descricaoBase = `Compra ${id}${fornecedor ? ` - ${fornecedor}` : ''}`;
   const vencimentoBase = toDate(data_vencimento, data_compra);
+
+  // MFE-06: flag ON → Gateway (sem INSERT direto); OFF → legado
+  if (isCompraApBridgeAtivo()) {
+    db.run('DELETE FROM financeiro WHERE compra_id = ?', [id], (deleteErr) => {
+      if (deleteErr) return callback(deleteErr);
+      const parcelasAr = montarParcelasFinanceiroCompra(compra);
+      emitirEventoCompraApMfe({
+        tipo: 'compra_confirmada',
+        eventType: 'PURCHASE_CONFIRMED',
+        compra_id: id,
+        valor: valorTotal,
+        total: valorTotal,
+        fornecedor,
+        data_compra,
+        data_vencimento: vencimentoBase,
+        forma_pagamento,
+        condicao_pagamento,
+        total_parcelas: parcelasAr.length,
+        parcelas: parcelasAr,
+        observacao,
+        persistirTitulo: true,
+        idempotencyKey: `compra-ap:confirm:${id}`
+      });
+      callback(null);
+    });
+    return;
+  }
 
   db.run('DELETE FROM financeiro WHERE compra_id = ?', [id], (deleteErr) => {
     if (deleteErr) return callback(deleteErr);
@@ -239,7 +414,6 @@ function criarFinanceiroCompra(compra, callback) {
     if (condicao_pagamento === 'entrada_parcelado' && qtdParcelas > 0 && valor_entrada > 0) {
       const totalParcelas = qtdParcelas + 1;
       let pendentes = totalParcelas;
-      // Entrada
       inserir({
         descricao: `${descricaoBase} - Entrada`,
         valor: valor_entrada,
@@ -252,7 +426,6 @@ function criarFinanceiroCompra(compra, callback) {
         pendentes -= 1;
         if (pendentes === 0) callback(null);
       });
-      // Parcelas restantes
       const valorRestante = valorTotal - valor_entrada;
       const valorBase = Math.floor((valorRestante / qtdParcelas) * 100) / 100;
       const resto = Math.round((valorRestante - (valorBase * qtdParcelas)) * 100) / 100;
@@ -386,42 +559,48 @@ function processarItensCompra(compraId, itens, fornecedor, opcoes, done) {
     }
 
     const item = itens[index++];
-    const qtdsEstoque = resolverQuantidadesEstoqueCompraItem(item);
-    const itemProcessado = {
-      ...item,
-      quantidade_fiscal: qtdsEstoque.quantidade_fiscal,
-      quantidade_nao_fiscal: qtdsEstoque.quantidade_nao_fiscal,
-      quantidade: qtdsEstoque.quantidade,
-      peso_total_compra: qtdsEstoque.quantidade_convertida
-    };
 
     const itemComContexto = {
-      ...itemProcessado,
-      fornecedor: itemProcessado.fornecedor || fornecedor || null,
-      fornecedor_cnpj: itemProcessado.fornecedor_cnpj || fornecedorCnpj || null
+      ...item,
+      fornecedor: item.fornecedor || fornecedor || null,
+      fornecedor_cnpj: item.fornecedor_cnpj || fornecedorCnpj || null,
+      mcc_entrada: 1
     };
 
     ensureProductForItem(itemComContexto, (prodErr, produtoId) => {
       if (prodErr) return done(prodErr);
 
-      db.get('SELECT preco_compra, preco_venda, controlar_validade FROM produtos WHERE id = ?', [produtoId], (getErr, produto) => {
-        if (getErr) return done(getErr);
-
-        const antigo = { preco_compra: produto?.preco_compra, preco_venda: produto?.preco_venda };
-        const controlarValidade = produto?.controlar_validade === 1;
+      entradaMcc.processarItemOperacional(db, {
+        compraId,
+        fornecedor,
+        fornecedorNome: fornecedor,
+        item: itemComContexto,
+        produtoId,
+        loteOrigem: opcoes?.loteOrigem || 'COMPRA',
+        usuarioId: opcoes?.usuarioId || null
+      }).then((resultadoMcc) => {
+        const qtdsEstoque = resultadoMcc.qtdsEstoque;
+        const precosCadastro = resultadoMcc.precos;
+        const produto = resultadoMcc.produto;
         const qtdTotal = qtdsEstoque.quantidade;
         const qtdFiscal = qtdsEstoque.quantidade_fiscal;
         const qtdNaoFiscal = qtdsEstoque.quantidade_nao_fiscal;
-        const fracionado = itemCompraEhFracionado(itemProcessado);
-        const precosCadastro = resolverPrecosCadastroAposCompra(itemProcessado);
-        const precoUnitarioGravar = fracionado
-          ? precosCadastro.precoCompra
-          : moeda(itemProcessado.preco_unitario || precosCadastro.precoCompra || 0);
+        const itemProcessado = {
+          ...itemComContexto,
+          quantidade_fiscal: qtdFiscal,
+          quantidade_nao_fiscal: qtdNaoFiscal,
+          quantidade: qtdTotal,
+          peso_total_compra: qtdTotal,
+          unidade: resultadoMcc.unidadeBase || item.unidade || produto.unidade || 'UN'
+        };
+
+        const antigo = { preco_compra: produto?.preco_compra, preco_venda: produto?.preco_venda };
+        const precoUnitarioGravar = precosCadastro.precoCompra;
         const custoFinalGravar = precosCadastro.precoCompra;
         const precoVendaGravar = precosCadastro.atualizarVenda
           ? (precosCadastro.precoVenda ?? Number(itemProcessado.preco_venda_sugerido || 0))
           : Number(itemProcessado.preco_venda_sugerido || 0);
-        const subtotalGravar = calcularSubtotalFinanceiroItemCompra(itemProcessado);
+        const subtotalGravar = moeda(precosCadastro.subtotal);
 
         db.run(`
           INSERT INTO compras_itens (
@@ -449,105 +628,91 @@ function processarItensCompra(compraId, itens, fornecedor, opcoes, done) {
           Number(itemProcessado.outras_despesas_rateado || 0),
           custoFinalGravar,
           Number(itemProcessado.produto_fracionado ?? itemProcessado.vendido_por_peso ?? 0),
-          qtdsEstoque.quantidade_convertida,
+          qtdTotal,
           custoFinalGravar,
           Number(itemProcessado.atualizar_preco_venda ?? 1),
           qtdFiscal > 0 ? 1 : 0,
           qtdFiscal,
           qtdNaoFiscal,
-          itemProcessado.compra_em || null,
-          Number(itemProcessado.quantidade_embalagens || 0),
+          itemProcessado.compra_em || itemProcessado.unidade_comercial || null,
+          Number(itemProcessado.quantidade_embalagens || itemProcessado.quantidade_comercial || 0),
           Number(itemProcessado.quantidade_por_embalagem || 0),
-          Number(itemProcessado.valor_total_embalagem || itemProcessado.subtotal || 0)
+          Number(itemProcessado.valor_total_embalagem || itemProcessado.subtotal || subtotalGravar || 0)
         ], (insertErr) => {
           if (insertErr) return done(insertErr);
 
-          db.run(`
-            UPDATE produtos
-            SET
-              saldo_fiscal = COALESCE(saldo_fiscal, 0) + ?,
-              saldo_nao_fiscal = COALESCE(saldo_nao_fiscal, 0) + ?,
-              estoque_atual = (COALESCE(saldo_fiscal, 0) + ?) + (COALESCE(saldo_nao_fiscal, 0) + ?),
-              preco_compra = ?,
-              preco_venda = CASE WHEN ? = 1 THEN ? ELSE preco_venda END,
-              lucro_percentual = CASE WHEN ? = 1 THEN ? ELSE lucro_percentual END,
-              fornecedor = COALESCE(?, fornecedor),
-              ncm = COALESCE(?, ncm),
-              codigo_barras = COALESCE(?, codigo_barras),
-              unidade = COALESCE(?, unidade),
-              produto_fracionado = CASE WHEN ? = 1 THEN 1 ELSE COALESCE(produto_fracionado, 0) END,
-              vendido_por_peso = CASE WHEN ? = 1 THEN 1 ELSE COALESCE(vendido_por_peso, 0) END,
-              updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-          `, [
-            qtdFiscal,
-            qtdNaoFiscal,
-            qtdFiscal,
-            qtdNaoFiscal,
-            precosCadastro.precoCompra,
+          // MCC-04 — estoque somente via MotorEstoque (quantidade base já convertida pelo MCC)
+          MotorEstoque.entrar(db, {
+            produtoId,
+            quantidadeBase: qtdTotal,
+            quantidadeFiscal: qtdFiscal,
+            quantidadeNaoFiscal: qtdNaoFiscal,
+            origem: MotorEstoque.OrigemEstoque.COMPRA,
+            loteId: resultadoMcc.lote?.id || null,
+            referenciaTipo: 'compra',
+            referenciaId: compraId,
+            usuarioId: opcoes?.usuarioId || null,
+            motivo: `ENTRADA_COMPRA:${compraId}`
+          }).then(() => {
+            db.run(`
+              UPDATE produtos
+              SET
+                preco_compra = ?,
+                preco_venda = CASE WHEN ? = 1 THEN ? ELSE preco_venda END,
+                lucro_percentual = CASE WHEN ? = 1 THEN ? ELSE lucro_percentual END,
+                fornecedor = COALESCE(?, fornecedor),
+                ncm = COALESCE(?, ncm),
+                codigo_barras = COALESCE(?, codigo_barras),
+                unidade = COALESCE(?, unidade),
+                produto_fracionado = CASE WHEN ? = 1 THEN 1 ELSE COALESCE(produto_fracionado, 0) END,
+                vendido_por_peso = CASE WHEN ? = 1 THEN 1 ELSE COALESCE(vendido_por_peso, 0) END,
+                updated_at = CURRENT_TIMESTAMP
+              WHERE id = ?
+            `, [
+              precosCadastro.precoCompra,
+              precosCadastro.atualizarVenda ? 1 : 0,
+              precosCadastro.precoVenda ?? Number(itemProcessado.preco_venda_sugerido || 0),
+              precosCadastro.atualizarVenda ? 1 : 0,
+              precosCadastro.lucroPercentual,
+              fornecedor || null,
+              itemProcessado.ncm || null,
+              itemProcessado.codigo_barras || null,
+              itemProcessado.unidade || 'UN',
+              Number(itemProcessado.produto_fracionado ?? itemProcessado.vendido_por_peso ?? 0),
+              Number(itemProcessado.produto_fracionado ?? itemProcessado.vendido_por_peso ?? 0),
+              produtoId
+            ], (upErr) => {
+              if (upErr) return done(upErr);
 
-            precosCadastro.atualizarVenda ? 1 : 0,
-            precosCadastro.precoVenda ?? Number(itemProcessado.preco_venda_sugerido || 0),
+              const precoCompraNovo = precosCadastro.precoCompra;
+              const precoVendaNovo = precosCadastro.atualizarVenda
+                ? (precosCadastro.precoVenda ?? Number(itemProcessado.preco_venda_sugerido || 0))
+                : Number(antigo.preco_venda || 0);
 
-            precosCadastro.atualizarVenda ? 1 : 0,
-            precosCadastro.lucroPercentual,
-
-            fornecedor || null,
-            itemProcessado.ncm || null,
-            itemProcessado.codigo_barras || null,
-            itemProcessado.unidade || 'UN',
-
-            Number(itemProcessado.produto_fracionado ?? itemProcessado.vendido_por_peso ?? 0),
-
-            Number(itemProcessado.produto_fracionado ?? itemProcessado.vendido_por_peso ?? 0),
-
-            produtoId
-          ], (upErr) => {
-            if (upErr) return done(upErr);
-
-            if (controlarValidade) {
-              if (!itemProcessado.data_validade) {
-                return done(new Error(`Produto "${itemProcessado.produto_nome || produtoId}" controla validade. Informe a data de validade.`));
+              if (antigo && (Number(antigo.preco_compra) !== Number(precoCompraNovo)
+                || Number(antigo.preco_venda) !== Number(precoVendaNovo))) {
+                db.run(`
+                  INSERT INTO produtos_preco_historico (
+                    produto_id, preco_compra_anterior, preco_compra_novo, preco_venda_anterior, preco_venda_novo
+                  ) VALUES (?, ?, ?, ?, ?)
+                `, [produtoId, antigo.preco_compra, precoCompraNovo, antigo.preco_venda, precoVendaNovo], () => next());
+              } else {
+                next();
               }
-
-              const hoje = new Date().toISOString().split('T')[0];
-
-              lotesService.criarLote({
-                produto_id: produtoId,
-                quantidade_inicial: qtdTotal,
-                data_validade: itemProcessado.data_validade,
-                data_entrada: hoje,
-                origem: opcoes?.loteOrigem || 'COMPRA',
-                compra_id: compraId
-              }, (loteErr) => {
-                if (loteErr) {
-                  console.error('Erro ao criar lote para compra:', loteErr.message);
-                }
-
-                continuarProcessamento();
-              });
-            } else {
-              continuarProcessamento();
-            }
+            });
+          }).catch((estErr) => {
+            const err = new Error(estErr?.message || String(estErr));
+            err.status = estErr?.status || 500;
+            err.codigo = estErr?.codigo;
+            done(err);
           });
         });
-
-          function continuarProcessamento() {
-            const precoCompraNovo = precosCadastro.precoCompra;
-            const precoVendaNovo = precosCadastro.atualizarVenda
-              ? (precosCadastro.precoVenda ?? Number(itemProcessado.preco_venda_sugerido || 0))
-              : Number(antigo.preco_venda || 0);
-
-            if (antigo && (Number(antigo.preco_compra) !== Number(precoCompraNovo) || Number(antigo.preco_venda) !== Number(precoVendaNovo))) {
-              db.run(`
-                INSERT INTO produtos_preco_historico (
-                  produto_id, preco_compra_anterior, preco_compra_novo, preco_venda_anterior, preco_venda_novo
-                ) VALUES (?, ?, ?, ?, ?)
-              `, [produtoId, antigo.preco_compra, precoCompraNovo, antigo.preco_venda, precoVendaNovo], () => next());
-            } else {
-              next();
-            }
-          }
+      }).catch((mccErr) => {
+        const status = mccErr?.status || 400;
+        const err = new Error(mccErr?.message || String(mccErr));
+        err.status = status;
+        err.code = mccErr?.code;
+        done(err);
       });
     });
   }
@@ -913,7 +1078,7 @@ router.post('/', (req, res) => {
     }
 
     for (const item of itens) {
-      const erroDistribuicao = validarDistribuicaoFracionadoItem(item);
+      const erroDistribuicao = validarDistribuicaoItemCompra(item);
       if (erroDistribuicao) {
         return res.status(400).json({ error: erroDistribuicao });
       }
@@ -1117,7 +1282,13 @@ router.post('/', (req, res) => {
             if (itensErr) {
               console.error('Erro ao processar itens da compra:', itensErr);
               db.run('ROLLBACK');
-              return res.status(500).json({ error: itensErr.message });
+              const status = Number(itensErr.status) >= 400 && Number(itensErr.status) < 600
+                ? Number(itensErr.status)
+                : 500;
+              return res.status(status).json({
+                error: itensErr.message,
+                codigo: itensErr.codigo || itensErr.code || undefined
+              });
             }
 
             if (!gerarFinanceiro) {

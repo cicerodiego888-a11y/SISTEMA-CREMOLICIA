@@ -164,6 +164,22 @@ function mapConsignacaoFromRow(row) {
   return {
     id: row.id,
     clienteId: row.cliente_id,
+    clienteNome: row.cliente_nome != null && String(row.cliente_nome).trim() !== ''
+      ? String(row.cliente_nome).trim()
+      : null,
+    clienteDocumento: row.cliente_documento != null && String(row.cliente_documento).trim() !== ''
+      ? String(row.cliente_documento).trim()
+      : null,
+    clienteFantasia: row.cliente_fantasia != null && String(row.cliente_fantasia).trim() !== ''
+      ? String(row.cliente_fantasia).trim()
+      : (row.nome_fantasia != null && String(row.nome_fantasia).trim() !== ''
+        ? String(row.nome_fantasia).trim()
+        : null),
+    clienteTelefone: row.cliente_telefone != null && String(row.cliente_telefone).trim() !== ''
+      ? String(row.cliente_telefone).trim()
+      : (row.telefone != null && String(row.telefone).trim() !== ''
+        ? String(row.telefone).trim()
+        : null),
     perfilComercialId: row.perfil_comercial_id,
     status: row.status,
     documento: mapDocumentoComercialFromRow(row),
@@ -186,6 +202,7 @@ function mapConsignacaoFromRow(row) {
 
 function mapConsignacaoItemFromRow(row) {
   if (!row) return null;
+  const { resolverUnidadeComercialCongelada } = require('../services/unidadeComercialCongelada');
   const quantidadeEntregue = Number(row.quantidade_entregue ?? 0);
   // Antes da confirmação de entrega, a quantidade operacional vive em quantidade_entregue
   const quantidade = row.quantidade != null
@@ -200,6 +217,15 @@ function mapConsignacaoItemFromRow(row) {
     quantidadeEntregue - quantidadeDevolvida - quantidadeVendida - quantidadePerdida - quantidadeCortesia
   );
   const produtoNome = row.produto_nome ?? row.produtoNome ?? null;
+  const unidadeBaseProduto = String(row.produto_unidade ?? row.unidade ?? 'UN').trim().toUpperCase() || 'UN';
+  const unidadeComercialRaw = row.unidade_comercial != null && String(row.unidade_comercial).trim() !== ''
+    ? String(row.unidade_comercial).trim().toUpperCase()
+    : null;
+  const uc = resolverUnidadeComercialCongelada({
+    id: row.id,
+    unidadeComercial: unidadeComercialRaw,
+    unidade: unidadeBaseProduto
+  }, { silencioso: true });
   return {
     id: row.id,
     consignacaoId: row.consignacao_id,
@@ -208,7 +234,16 @@ function mapConsignacaoItemFromRow(row) {
       ? String(produtoNome).trim()
       : null,
     codigo: row.produto_codigo ?? row.codigo ?? null,
-    unidade: row.produto_unidade ?? row.unidade ?? 'UN',
+    // RCM-6.1: unidade operacional = UC congelada (ou base do produto em itens antigos)
+    unidade: uc.unidadeComercial,
+    unidadeComercial: uc.unidadeComercial,
+    unidadeBaseProduto,
+    unidadeComercialHerdada: uc.herdadaDaBase,
+    linhaComercialId: row.linha_comercial_id != null ? Number(row.linha_comercial_id) : null,
+    tabelaPrecoId: row.tabela_preco_id != null ? Number(row.tabela_preco_id) : null,
+    canalVenda: row.canal_venda != null ? String(row.canal_venda).toUpperCase() : null,
+    precoOrigem: row.preco_origem ?? null,
+    precoFallback: Number(row.preco_fallback ?? 0) === 1,
     quantidade,
     quantidadeEntregue,
     quantidadeDevolvida,

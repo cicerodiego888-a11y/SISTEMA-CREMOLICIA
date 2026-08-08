@@ -177,15 +177,39 @@ function resolveClienteLabel(consignacao, extras = {}) {
 function mapConsignacaoView(consignacao, extras = {}) {
   if (!consignacao) return null;
   const itens = extras.itens || consignacao.itens || [];
+  const status = String(consignacao.status || '').toUpperCase();
+  const isRascunho = status === 'RASCUNHO';
+  const valorResolvido = extras.valor !== undefined
+    ? extras.valor
+    : (isRascunho
+      ? null
+      : (consignacao.valorTotalEntregue ?? consignacao.valor ?? 0));
+  const saldoResolvido = extras.saldo !== undefined
+    ? extras.saldo
+    : (isRascunho
+      ? null
+      : (consignacao.saldoAberto ?? consignacao.saldo ?? 0));
+
   return {
     ...consignacao,
     documento: formatDocumento(consignacao.documento, consignacao.id),
+    clienteId: consignacao.clienteId ?? null,
     clienteNome: resolveClienteLabel(consignacao, extras),
+    clienteDocumento: consignacao.clienteDocumento
+      ?? consignacao.cliente_documento
+      ?? null,
+    clienteFantasia: consignacao.clienteFantasia
+      ?? consignacao.cliente_fantasia
+      ?? null,
+    clienteTelefone: consignacao.clienteTelefone
+      ?? consignacao.cliente_telefone
+      ?? null,
     cliente: resolveClienteLabel(consignacao, extras),
     consignado: extras.perfilNome || consignacao.consignado || consignacao.perfilComercialId,
     data: consignacao.dataAbertura || consignacao.data,
-    valor: extras.valor ?? consignacao.valorTotalEntregue ?? consignacao.valor ?? 0,
-    saldo: extras.saldo ?? consignacao.saldoAberto ?? consignacao.saldo ?? 0,
+    valor: valorResolvido,
+    saldo: saldoResolvido,
+    aguardandoEntrega: isRascunho,
     quantidadeItens: itens.length,
     prestacaoContasAtiva: consignacao.prestacaoContasAtiva ?? extras.prestacaoContasAtiva ?? null,
     ultimaMovimentacao: consignacao.updatedAt,

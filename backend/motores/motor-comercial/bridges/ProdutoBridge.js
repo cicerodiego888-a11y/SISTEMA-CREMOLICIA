@@ -25,11 +25,11 @@ class ProdutoBridge {
     }
   }
 
-  async consultarProduto(produtoId, context) {
+  async consultarProduto(produtoId, context, opts = {}) {
     const startTime = Date.now();
     try {
       if (!this._platform) throw new Error('ProdutoPlatformGateway não configurado');
-      const produto = await this._platform.buscarPorId(produtoId);
+      const produto = await this._platform.buscarPorId(produtoId, opts);
       if (!produto) throw new Error('Produto não encontrado');
       return Result.ok(produto);
     } catch (error) {
@@ -38,19 +38,24 @@ class ProdutoBridge {
     }
   }
 
-  async consultarUnidade(produtoId, context) {
+  async consultarUnidade(produtoId, context, opts = {}) {
     try {
-      const produto = await this._platform.buscarPorId(produtoId);
+      const produto = await this._platform.buscarPorId(produtoId, opts);
       if (!produto) throw new Error('Produto não encontrado');
-      return Result.ok({ produtoId, unidade: produto.unidade, descricao: produto.unidade });
+      return Result.ok({
+        produtoId,
+        unidade: produto.unidadeComercial || produto.unidade,
+        unidadeComercial: produto.unidadeComercial || produto.unidade,
+        descricao: produto.unidadeComercial || produto.unidade
+      });
     } catch (error) {
       return Result.fail(error);
     }
   }
 
-  async consultarPreco(produtoId, tabelaPreco, context) {
+  async consultarPreco(produtoId, tabelaPreco, context, opts = {}) {
     try {
-      const preco = await this._platform.consultarPreco(produtoId, tabelaPreco);
+      const preco = await this._platform.consultarPreco(produtoId, tabelaPreco, opts);
       return Result.ok(preco);
     } catch (error) {
       return Result.fail(error);

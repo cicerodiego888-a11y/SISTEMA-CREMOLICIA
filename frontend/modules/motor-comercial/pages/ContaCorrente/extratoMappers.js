@@ -24,7 +24,8 @@ const TIPO_LABELS = {
   ALTERACAO_LIMITE: 'Alteração Limite',
   REABERTURA_PRESTACAO: 'Fechamento reaberto',
   ENCERRAMENTO: 'Encerramento',
-  CANCELAMENTO: 'Cancelamento'
+  CANCELAMENTO: 'Cancelamento',
+  PERFIL_CRIADO: 'Perfil criado'
 };
 
 function pick(obj, path) {
@@ -42,32 +43,43 @@ function readValue(sources, paths) {
   return null;
 }
 
+/**
+ * Saldo do cabeçalho = quanto o cliente deve (SSOT CreditoComercial).
+ * Prefere situacao/conta-corrente.saldoDevedor; saldoEmAberto (só AR) vem por último.
+ */
 function buildResumoFinanceiro(contaCorrente = {}, saldos = {}, situacao = {}) {
-  const sources = [contaCorrente, saldos, situacao, contaCorrente.totais || {}];
+  const sources = [situacao, contaCorrente, contaCorrente.totais || {}, saldos];
   return {
     saldoInicial: readValue(sources, ['saldoInicial']),
-    entradas: readValue(sources, ['entradas', 'vendas', 'totalEntradas']),
+    entradas: readValue(sources, ['entradas', 'vendas', 'totalEntradas', 'entregas']),
     saidas: readValue(sources, ['saidas', 'totalSaidas']),
-    recebimentos: readValue(sources, ['pagamentos', 'recebimentos', 'valorRecebido']),
+    recebimentos: readValue(sources, ['pagamentos', 'recebimentos', 'valorRecebido', 'saldoRecebido']),
     perdas: readValue(sources, ['perdas', 'valorPerdido', 'saldoPerdido']),
     cortesias: readValue(sources, ['cortesias', 'valorCortesia', 'saldoCortesia']),
     devolucoes: readValue(sources, ['devolucoes', 'saldoDevolvido', 'valorDevolvido']),
-    saldoAtual: readValue(sources, ['saldoAtual', 'saldo', 'saldoEmAberto']),
+    saldoAtual: readValue(sources, ['saldoDevedor', 'saldoAtual', 'saldo', 'saldoEmAberto']),
     limiteComercial: readValue(sources, ['limiteComercial', 'limite']),
     limiteUtilizado: readValue(sources, ['limiteUtilizado', 'limiteConsumido']),
-    limiteDisponivel: readValue(sources, ['limiteDisponivel'])
+    limiteDisponivel: readValue(sources, ['limiteDisponivel', 'creditoDisponivel'])
   };
 }
 
 function mapExtratoRow(mov) {
   const tipo = mov.tipo || mov.tipoMovimentacao || '-';
+  const descricao = mov.descricao
+    || mov.descricaoResumo
+    || mov.motivo
+    || mov.observacao
+    || TIPO_LABELS[tipo]
+    || '-';
   return {
     id: mov.id,
     data: mov.data || mov.dataMovimentacao,
-    documento: mov.documento || mov.documentoNumero || mov.consignacaoId || '-',
+    documento: mov.documento || mov.documentoNumero
+      || (mov.consignacaoId != null ? `Consignação #${mov.consignacaoId}` : '-'),
     tipo,
     tipoLabel: TIPO_LABELS[tipo] || tipo,
-    descricao: mov.descricao || mov.descricaoResumo || mov.observacao || '-',
+    descricao,
     entrada: mov.entrada ?? mov.valorEntrada ?? (mov.direcao === 'ENTRADA' ? mov.valor : null),
     saida: mov.saida ?? mov.valorSaida ?? (mov.direcao === 'SAIDA' ? mov.valor : null),
     valor: mov.valor,
@@ -81,13 +93,35 @@ function mapExtratoRow(mov) {
   };
 }
 
+/**
+ * Extrato oficial: lançamentos da Conta Corrente (geraContaCorrente).
+ * Histórico completo só como fallback (sem ruído de perfil / abertura).
+ */
 function buildExtrato(contaCorrente = {}, historico = {}) {
   const lancamentos = contaCorrente.lancamentos || [];
+  if (lancamentos.length) {
+    return lancamentos.map(mapExtratoRow);
+  }
+
   const movimentacoes = Array.isArray(historico)
     ? historico
     : (historico.movimentacoes || historico.registros || historico.items || []);
-  const source = lancamentos.length ? lancamentos : movimentacoes;
-  return source.map(mapExtratoRow);
+
+  const TIPOS_EXTRATO = new Set([
+    'ENTREGA', 'DEVOLUCAO', 'VENDA_PRESTACAO', 'VENDA',
+    'PERDA', 'CORTESIA', 'PAGAMENTO',
+    'TRANSFERENCIA_SAIDA', 'TRANSFERENCIA_ENTRADA',
+    'FECHAMENTO_PRESTACAO', 'REABERTURA_PRESTACAO',
+    'ENCERRAMENTO', 'CANCELAMENTO', 'AJUSTE_VALOR', 'ESTORNO'
+  ]);
+
+  return movimentacoes
+    .filter((m) => {
+      const tipo = m.tipo || m.tipoMovimentacao;
+      if (m.ledger === 'PERFIL') return false;
+      return TIPOS_EXTRATO.has(tipo);
+    })
+    .map(mapExtratoRow);
 }
 
 function buildIndicadores(indicadores = {}, contaCorrente = {}, saldos = {}) {

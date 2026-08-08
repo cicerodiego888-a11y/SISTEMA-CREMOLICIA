@@ -23,12 +23,22 @@ function itemVendaPorUnidadeCupom(item) {
 function formatarHtmlItemCupom(item) {
     const nome = escapeHtmlCupom(item.produto_nome || item.nome || 'Produto');
     const subtotal = Number(item.subtotal || 0);
+    const bolas = Number(item.quantidade_bolas || 0);
+    const sabores = Array.isArray(item.sabores) ? item.sabores : [];
+    const titulo = bolas > 0
+      ? (String(nome).toUpperCase().includes('CASQUINHA')
+        ? `${nome.toUpperCase()}`
+        : `CASQUINHA ${bolas} BOLA${bolas > 1 ? 'S' : ''}`)
+      : nome;
+    const linhasSabores = sabores.length
+      ? `\n${sabores.map((s) => `- ${escapeHtmlCupom(s.nome || s)}`).join('\n')}`
+      : '';
 
     if (itemVendaPorUnidadeCupom(item)) {
         const qtd = Math.round(Number(item.quantidade || 0));
         const preco = Number(item.preco_unitario || item.preco || 0);
         return `
-${nome}
+${titulo}${linhasSabores}
 ${qtd} UN
 R$ ${preco.toFixed(2).replace('.', ',')}
 Total
@@ -38,8 +48,30 @@ ${subtotal.toFixed(2).replace('.', ',')}
 
     const qtd = Number(item.quantidade || 0);
     const preco = Number(item.preco_unitario || item.preco || 0);
+    const forma = String(item.forma_comercializacao || '').toUpperCase();
+    let un = String(item.unidade_comercial || item.unidade || '').toUpperCase();
+    if (un === 'LITRO' || un === 'LITROS' || un === 'LT') un = 'L';
+    if (un === 'KILO' || un === 'KILOS') un = 'KG';
+    if (forma === 'PESO' || un === 'KG') {
+        return `
+${titulo}${linhasSabores}
+${qtd.toFixed(3).replace('.', ',')} KG
+${preco.toFixed(2).replace('.', ',')}/KG
+${subtotal.toFixed(2).replace('.', ',')}
+`;
+    }
+    if (forma === 'VOLUME' || un === 'L') {
+        const qFmt = String(Number(qtd.toFixed(3))).replace('.', ',');
+        return `
+${titulo}${linhasSabores}
+${qFmt} L
+${preco.toFixed(2).replace('.', ',')}/L
+${subtotal.toFixed(2).replace('.', ',')}
+`;
+    }
+
     return `
-${nome}
+${titulo}${linhasSabores}
 ${qtd} x R$ ${preco.toFixed(2).replace('.', ',')} = R$ ${subtotal.toFixed(2).replace('.', ',')}
 `;
 }
@@ -248,7 +280,7 @@ async function imprimirCupomNaoFiscal(vendaId, venda, total, desconto) {
     }
 }
 
-async function imprimirDANFEFiscal(vendaId) {
+async function imprimirDANFEFiscal(vendaId, opcoes = {}) {
     if (!vendaId) {
         if (typeof showNotification === 'function') {
             showNotification('Venda não informada para reimpressão.', 'warning');
@@ -258,17 +290,41 @@ async function imprimirDANFEFiscal(vendaId) {
 
     try {
         const token = localStorage.getItem('token');
-        const resposta = await fetch(`${API_URL}/fiscal/danfe/venda/${vendaId}`, {
+        const notaId = opcoes.notaId || opcoes.nota_id || null;
+        // RCF-06: sempre amarrar à venda; nunca buscar só por notaId sem vendaId
+        const qsParts = [];
+        if (notaId) qsParts.push(`notaId=${encodeURIComponent(notaId)}`);
+        const qs = qsParts.length ? `?${qsParts.join('&')}` : '';
+        const url = `${API_URL}/fiscal/danfe/venda/${vendaId}${qs}`;
+
+        console.log('[RCF-06] imprimirDANFEFiscal', { vendaId, notaId, url });
+
+        const resposta = await fetch(url, {
             method: 'GET',
             headers: { Authorization: `Bearer ${token}` }
         });
 
         const htmlDanfe = await resposta.text();
+        const hdrVenda = resposta.headers.get('X-CDS-Venda-Id');
+        const hdrNota = resposta.headers.get('X-CDS-Nota-Id');
+        console.log('[RCF-06] DANFE headers', { hdrVenda, hdrNota, status: resposta.status });
 
         if (!resposta.ok) {
             console.error('Erro ao buscar DANFE:', { status: resposta.status, resposta: htmlDanfe });
             if (typeof showNotification === 'function') {
                 showNotification(`Erro ao abrir cupom fiscal: ${htmlDanfe}`, 'danger');
+            }
+            return;
+        }
+
+        if (hdrVenda && String(hdrVenda) !== String(vendaId)) {
+            console.error('[RCF-06] Abortando impressão: DANFE pertence a outra venda', {
+                esperado: vendaId,
+                obtido: hdrVenda,
+                notaId: hdrNota
+            });
+            if (typeof showNotification === 'function') {
+                showNotification('RCF-06: DANFE pertence a outra venda. Impressão abortada.', 'danger');
             }
             return;
         }
@@ -335,6 +391,64 @@ function reimprimirCupomFiscalHistorico(vendaId) {
     imprimirDANFEFiscal(vendaId);
 }
 
+/**
+ * Abre/baixa o XML da NFC-e autorizada da venda (histórico PDV/ERP).
+ */
+async function abrirXmlNfceHistorico(vendaId, opcoes = {}) {
+    if (!vendaId) {
+        if (typeof showNotification === 'function') {
+            showNotification('Venda não informada.', 'warning');
+        }
+        return;
+    }
+
+    try {
+        const token = localStorage.getItem('token');
+        const notaId = opcoes.notaId || opcoes.nota_id || null;
+        const qs = notaId ? `?notaId=${encodeURIComponent(notaId)}` : '';
+        const resp = await fetch(`${API_URL}/fiscal/xml/venda/${vendaId}${qs}`, {
+            method: 'GET',
+            headers: { Authorization: `Bearer ${token}` }
+        });
+
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+            throw new Error(data.error || data.erro || 'XML não encontrado.');
+        }
+
+        const xml = String(data.xml || '').trim();
+        if (!xml) {
+            throw new Error('XML vazio para esta NFC-e.');
+        }
+
+        const fileName = `nfce-venda-${vendaId}${data.numero ? '-' + data.numero : ''}.xml`;
+        const blob = new Blob([xml], { type: 'application/xml;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+
+        // Preferência: nova aba com o XML; fallback download
+        const janela = window.open(url, '_blank');
+        if (!janela) {
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = fileName;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+        }
+
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
+
+        if (typeof showNotification === 'function') {
+            showNotification(`XML NFC-e${data.numero ? ' #' + data.numero : ''} aberto.`, 'success');
+        }
+    } catch (error) {
+        console.error('Erro ao abrir XML NFC-e:', error);
+        if (typeof showNotification === 'function') {
+            showNotification(error.message || 'Erro ao abrir XML da NFC-e.', 'danger');
+        }
+    }
+}
+
 async function reimprimirCupomNaoFiscalHistorico(vendaId) {
     if (!vendaId) return;
 
@@ -383,4 +497,5 @@ window.imprimirCupomNaoFiscal = imprimirCupomNaoFiscal;
 window.vendaPossuiNfceAutorizada = vendaPossuiNfceAutorizada;
 window.vendaPossuiCupomNaoFiscal = vendaPossuiCupomNaoFiscal;
 window.reimprimirCupomFiscalHistorico = reimprimirCupomFiscalHistorico;
+window.abrirXmlNfceHistorico = abrirXmlNfceHistorico;
 window.reimprimirCupomNaoFiscalHistorico = reimprimirCupomNaoFiscalHistorico;

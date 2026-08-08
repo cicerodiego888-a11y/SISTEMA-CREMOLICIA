@@ -153,7 +153,9 @@ function clienteLabel(c, extras = {}) {
 }
 
 function valorConsignacaoOf(c) {
-  return Number(
+  const status = String(c?.status || c?.situacao || '').toUpperCase();
+  if (status === 'RASCUNHO') return null;
+  const n = Number(
     c?.valorExibido ??
       c?.valorTotalEntregue ??
       c?.valor_total ??
@@ -161,6 +163,15 @@ function valorConsignacaoOf(c) {
       c?.total ??
       0
   );
+  return Number.isFinite(n) ? n : 0;
+}
+
+function valorListaDisplay(c) {
+  const status = String(c?.status || c?.situacao || '').toUpperCase();
+  if (status === 'RASCUNHO' || valorConsignacaoOf(c) == null) {
+    return '—';
+  }
+  return formatMoney(valorConsignacaoOf(c) || (c.saldo ?? 0));
 }
 
 function saldoConsignacaoOf(c, resumoPrest) {
@@ -566,7 +577,7 @@ function createItensDraftController(root, consignacaoId, initialItens, { c, phas
       try {
         await window.CDSApi.post(`comercial/consignacoes/${consignacaoId}/entrega`, usuarioPayload());
         showToast('Entrega registrada.', 'success');
-        onFullReload();
+        window.CDSMobile?.navigate?.(`comercial/${consignacaoId}/comprovante`, { replace: true });
       } catch (err) {
         showToast(err.message || 'Falha na entrega', 'error');
       }
@@ -951,13 +962,42 @@ async function buscarProdutosComercial(termo) {
 }
 
 /**
+ * RCM-8.5 — resolve preço CONSIGNADO via Motor Oficial antes de persistir.
+ * Snapshot completo (mesmo contrato do Desktop).
+ */
+async function resolverPrecoConsignacaoMobile(produtoId, quantidade = 1) {
+  const t0 = Date.now();
+  const resolvido = await window.CDSApi.post('configuracao-comercial/resolver-precos', {
+    canal: 'CONSIGNADO',
+    documento: 'consignacao-mobile',
+    itens: [{ produto_id: Number(produtoId), quantidade: Number(quantidade) || 1 }]
+  });
+  const row = ((resolvido && resolvido.itens) || [])[0];
+  if (!row || row.erro) {
+    throw Object.assign(new Error((row && row.erro) || 'Falha ao resolver preço'), { status: 400 });
+  }
+  try {
+    console.log('[RCM-8.5][COMERCIAL][Resolver]', JSON.stringify({
+      operacao: 'CONSIGNADO',
+      tabela: row.tabela_preco_nome || row.tabela_preco_id,
+      produto: produtoId,
+      linha: row.linha_comercial_id,
+      preco: row.preco_venda,
+      origem: row.preco_origem,
+      tempo_ms: Date.now() - t0,
+      documento: 'consignacao-mobile'
+    }));
+  } catch (_) { /* ignore */ }
+  return row;
+}
+
+/**
  * POST /comercial/consignacoes/:id/itens — payload idêntico ao Desktop.
  * Se produto já existe: PUT .../itens/:itemId com novaQuantidade (como acumular no Desktop).
  */
 async function persistirItemConsignacao(consignacaoId, { produtoId, quantidade, precoUnitario }, itensAtuais = []) {
   const pid = Number(produtoId);
   const qtd = Number(quantidade);
-  const preco = Number(precoUnitario ?? 0);
 
   if (!Number.isFinite(pid) || pid <= 0) {
     throw Object.assign(new Error('produtoId inválido'), { status: 400 });
@@ -976,18 +1016,37 @@ async function persistirItemConsignacao(consignacaoId, { produtoId, quantidade, 
     return { modo: 'alterar', novaQuantidade };
   }
 
+  // RCM-8.5 — nunca grava preço de catálogo; sempre Motor Oficial CONSIGNADO
+  let row;
+  try {
+    row = await resolverPrecoConsignacaoMobile(pid, qtd);
+  } catch (e) {
+    // fallback: se API falhar e cliente trouxe preço, ainda assim tenta (backend bridge corrige)
+    row = null;
+  }
+  const preco = row && Number.isFinite(Number(row.preco_venda))
+    ? Number(row.preco_venda)
+    : Number(precoUnitario ?? 0);
+
   const payload = usuarioPayload({
     produtoId: pid,
     quantidade: qtd,
-    precoUnitario: preco
+    precoUnitario: preco,
+    unidadeComercial: row
+      ? String(row.unidade_comercial || row.unidadeComercial || 'UN').toUpperCase()
+      : undefined,
+    tabelaPrecoId: row && row.tabela_preco_id != null ? Number(row.tabela_preco_id) : undefined,
+    linhaComercialId: row && row.linha_comercial_id != null ? Number(row.linha_comercial_id) : undefined,
+    canalVenda: 'CONSIGNADO',
+    precoOrigem: row ? (row.preco_origem || null) : undefined,
+    precoFallback: row ? !!row.preco_fallback : undefined
   });
 
   try {
     await window.CDSApi.post(`comercial/consignacoes/${consignacaoId}/itens`, payload);
-    return { modo: 'adicionar', payload };
+    return { modo: 'adicionar', payload, snapshot: row };
   } catch (err) {
     if (!isDuplicateItemError(err)) throw err;
-    // Corrida / lista desatualizada: recarrega itens e soma
     let itens = itensAtuais;
     try {
       const raw = await window.CDSApi.get(`comercial/consignacoes/${consignacaoId}/itens`);
@@ -1064,6 +1123,11 @@ export async function renderComercial(root) {
 
     root.innerHTML = `
       ${showPartialBanner ? `<div class="cds-mobile-banner">${icon('warning')} <span>Parte dos dados falhou ao carregar.</span></div>` : ''}
+      <div class="cds-quick-grid" style="grid-template-columns:1fr 1fr;margin-bottom:12px">
+        <button type="button" class="cds-quick" data-go="comercial/clientes">${icon('users')} Clientes consignados</button>
+        <button type="button" class="cds-quick" data-go="comercial/prestacao">${icon('receipt')} Prestação de Contas</button>
+        ${canCreate ? `<button type="button" class="cds-quick" data-go="comercial/clientes/novo">${icon('plus')} Novo consignado</button>` : ''}
+      </div>
       <div class="cds-kpi-grid">
         ${kpiHtml({ id: 'abertas', iconName: 'store', label: 'Abertas', value: (dash || lista.length) ? formatNumber(abertas) : '—', tone: 'warning', ok: !!(dash || listR.status === 'fulfilled') })}
         ${kpiHtml({ id: 'pendencias', iconName: 'warning', label: 'Pendências', value: (pendencias || dash) ? formatNumber(totalPend) : '—', tone: 'danger', ok: !!(pendencias || dash) })}
@@ -1090,7 +1154,7 @@ export async function renderComercial(root) {
               go: `comercial/${c.id || c.consignacao_id}`,
               title: asText(c.numero_documento || formatDocumento(c.documento, c.id) || `#${c.id}`, 'Consignação'),
               subtitle: clienteLabel(c),
-              value: formatMoney(valorConsignacaoOf(c) || (c.saldo ?? 0)),
+              value: valorListaDisplay(c),
               status: c.status || c.situacao,
               meta: [formatDate(c.criado_em || c.data_criacao || c.created_at || '')].filter((x) => x !== '—')
             })).join('')
@@ -1115,14 +1179,24 @@ export async function renderComercial(root) {
       const q = String(e.target.value || '').trim().toLowerCase();
       const filtered = !q
         ? all
-        : all.filter((c) => JSON.stringify(c).toLowerCase().includes(q));
+        : all.filter((c) => {
+          const blob = [
+            c.id, c.documento, c.documento_numero, c.numero_documento,
+            c.clienteNome, c.cliente_nome, c.cliente, c.clienteFantasia,
+            c.clienteDocumento, c.cliente_documento, c.clienteTelefone, c.cliente_telefone,
+            c.observacao, c.observacoes
+          ].map((v) => String(v || '').toLowerCase()).join(' ');
+          const digits = blob.replace(/\D/g, '');
+          const qDigits = q.replace(/\D/g, '');
+          return blob.includes(q) || (qDigits && digits.includes(qDigits));
+        });
       root.querySelector('#comercial-count').textContent = countLabel(filtered.length, 'consignação', 'consignações');
       const list = root.querySelector('#comercial-list');
       list.innerHTML = filtered.slice(0, 50).map((c) => listCardHtml({
         go: `comercial/${c.id || c.consignacao_id}`,
         title: asText(c.numero_documento || formatDocumento(c.documento, c.id) || `#${c.id}`, 'Consignação'),
         subtitle: clienteLabel(c),
-        value: formatMoney(valorConsignacaoOf(c) || (c.saldo ?? 0)),
+        value: valorListaDisplay(c),
         status: c.status || c.situacao,
         meta: [formatDate(c.criado_em || c.data_criacao || c.created_at || '')].filter((x) => x !== '—')
       })).join('') || emptyHtml('Nenhuma consignação no filtro');
@@ -1164,7 +1238,7 @@ export async function renderKpiDetail(root, kpiId) {
                 go: `comercial/${c.id || c.consignacao_id}`,
                 title: asText(c.numero_documento || formatDocumento(c.documento, c.id) || `#${c.id}`, 'Consignação'),
                 subtitle: clienteLabel(c),
-                value: formatMoney(valorConsignacaoOf(c) || (c.saldo ?? 0)),
+                value: valorListaDisplay(c),
                 status: c.status || c.situacao,
                 meta: [formatDate(c.criado_em || c.data_criacao || c.created_at || '')].filter((x) => x !== '—')
               })).join('')
@@ -1561,7 +1635,7 @@ export async function renderDetail(root, id) {
       try {
         await window.CDSApi.post(`comercial/consignacoes/${id}/entrega`, usuarioPayload());
         showToast('Entrega registrada.', 'success');
-        reload();
+        window.CDSMobile?.navigate?.(`comercial/${id}/comprovante`, { replace: true });
       } catch (err) {
         showToast(err.message || 'Falha na entrega', 'error');
       }
@@ -2242,9 +2316,10 @@ async function flushGradePrestacao(consignacaoId, baseline, currentRows) {
 }
 
 /**
- * Estação de Prestação de Contas — grade de retornos (paridade Desktop).
+ * Estação de Prestação — grade de retornos (quantidades).
+ * Rota: #/comercial/:id/prestacao/grade
  */
-export async function renderPrestacao(root, id) {
+export async function renderPrestacaoGrade(root, id) {
   root.innerHTML = loadingHtml('Abrindo prestação de contas…');
   try {
     await ensurePrestacaoAberta(id);
@@ -2281,15 +2356,18 @@ export async function renderPrestacao(root, id) {
 
     root.innerHTML = `
       <div class="cds-comercial-detail cds-prestacao-page">
-        ${backBarHtml('Consignação')}
+        ${backBarHtml('Prestação')}
         <article class="cds-card cds-m-enter">
           <div class="cds-consignacao-header__top">
-            <h3 class="cds-card__title" style="margin:0">Prestação de contas</h3>
+            <h3 class="cds-card__title" style="margin:0">Grade de retornos</h3>
             ${statusBadgeHtml(c.status || c.situacao)}
           </div>
           <div class="cds-row"><span>Documento</span><strong>${escapeHtml(c.documentoLabel || formatDocumento(c.documento, id))}</strong></div>
           <div class="cds-row"><span>Cliente</span><strong>${escapeHtml(clienteLabel(c))}</strong></div>
           <div class="cds-row"><span>Saldo</span><strong>${escapeHtml(formatMoney(resumo?.saldoAtual ?? saldoCab))}</strong></div>
+          <button type="button" class="cds-mobile-btn cds-mobile-btn--secondary" data-go="comercial/${escapeHtml(String(id))}/prestacao" style="width:100%;margin-top:10px">
+            Voltar ao resumo / rateio
+          </button>
         </article>
 
         ${sectionTitleHtml('Grade de retornos')}
@@ -2322,7 +2400,7 @@ export async function renderPrestacao(root, id) {
     bindGo(root);
     bindGradeSaldoLive(root);
 
-    const reload = () => window.CDSMobile?.navigate?.(`comercial/${id}/prestacao`, { replace: true });
+    const reload = () => window.CDSMobile?.navigate?.(`comercial/${id}/prestacao/grade`, { replace: true });
     const opsCtx = { phase, resumoFinal, reload, clienteNome: clienteLabel(c) };
 
     root.querySelector('#btn-salvar-grade')?.addEventListener('click', async () => {
@@ -2357,9 +2435,25 @@ export async function renderPrestacao(root, id) {
 export async function render(root, parsed) {
   const sub = parsed?.parts?.[1];
   const sub2 = parsed?.parts?.[2];
+  const sub3 = parsed?.parts?.[3];
+  if (sub === 'clientes') {
+    const mod = await import('./comercial-clientes.js');
+    return mod.render(root, parsed);
+  }
+  // RCM-04.1 — Prestação de Contas (cards + rateio)
+  if (sub === 'prestacao' || (sub && sub2 === 'prestacao')) {
+    const mod = await import('./comercial-prestacao.js');
+    if (sub && sub2 === 'prestacao' && sub3 === 'grade') {
+      return renderPrestacaoGrade(root, sub);
+    }
+    return mod.render(root, parsed);
+  }
   if (sub === 'nova') return renderNova(root);
   if (sub === 'abertas' || sub === 'pendencias') return renderKpiDetail(root, sub);
-  if (sub && sub2 === 'prestacao') return renderPrestacao(root, sub);
+  if (sub && sub2 === 'comprovante') {
+    const mod = await import('./comercial-comprovante.js');
+    return mod.renderComprovanteEntrega(root, sub);
+  }
   if (sub) return renderDetail(root, sub);
   return renderComercial(root);
 }
@@ -2368,7 +2462,7 @@ export default {
   render,
   renderDetail,
   renderKpiDetail,
-  renderPrestacao,
+  renderPrestacaoGrade,
   title: 'Comercial',
   subtitle: 'Campo'
 };

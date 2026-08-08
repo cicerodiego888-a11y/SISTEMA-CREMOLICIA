@@ -148,12 +148,21 @@ async function responderVendaComFiscal(res, payload) {
   const { resolverStatusPagamentoVenda } = require('./VendaPagamentoService');
   const valorFiscal = Number(payload.valorFiscal || 0);
   const valorNaoFiscal = Number(payload.valorNaoFiscal || 0);
-  const statusPagamento = resolverStatusPagamentoVenda(
-    valorNaoFiscal,
-    [],
-    payload.statusPagamento || 'quitada',
-    { valorFiscal }
-  );
+  const statusInformado = payload.statusPagamento || 'quitada';
+
+  // Se o orquestrador já quitou (PIX único cobrindo fiscal+NF), respeitar.
+  // Não recalcular com recebimentos vazios — isso forçava aguardando_nao_fiscal
+  // e impedia a NFC-e mesmo com a venda totalmente paga.
+  const statusPagamento = statusInformado === 'quitada'
+    ? 'quitada'
+    : resolverStatusPagamentoVenda(
+      valorNaoFiscal,
+      Array.isArray(payload.recebimentos) ? payload.recebimentos.filter((r) =>
+        String(r.tipo_recebimento || '').toLowerCase() === 'nao_fiscal'
+      ) : [],
+      statusInformado,
+      { valorFiscal }
+    );
 
   const respostaBase = {
     id: payload.vendaId,
@@ -196,8 +205,6 @@ async function responderVendaComFiscal(res, payload) {
   // NFC-e NÃO bloqueia o POST /vendas.
   // A venda já foi COMMIT antes desta função; o PDV emite em
   // POST /fiscal/emitir/venda/:id (timeout dedicado + modal de reemissão).
-  // Antes: await emitirPorVendaId aqui → UI congelada até ~183s (SOAP 90s × 2)
-  // e ReferenceError em catch (transacoesTefAutorizadas) podia travar a resposta.
   mark('res.json imediato — NFC-e assíncrona via endpoint dedicado');
   return res.json({
     ...respostaBase,

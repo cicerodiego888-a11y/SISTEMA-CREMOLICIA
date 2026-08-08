@@ -41,6 +41,7 @@ const DashboardPage = require('../pages/Dashboard');
 const ConsignacoesPage = require('../pages/Consignacoes');
 const NovaConsignacaoPage = require('../pages/NovaConsignacao');
 const EntregaConsignacaoPage = require('../pages/EntregaConsignacao');
+const ComprovanteEntregaPage = require('../pages/ComprovanteEntrega');
 const PrestacaoContasPage = require('../pages/PrestacaoContas');
 const PrestacaoLocatorPage = require('../pages/PrestacaoLocator');
 const PerfilComercialPage = require('../pages/PerfilComercial');
@@ -93,6 +94,12 @@ const PAGE_COMPONENTS = {
       throw new Error('Informe o ID da consignação para acessar a entrega.');
     }
     return EntregaConsignacaoPage.create(params.id, query);
+  },
+  ComprovanteEntrega: (params, query) => {
+    if (!params || !params.id) {
+      throw new Error('Informe o ID da consignação para acessar o comprovante.');
+    }
+    return ComprovanteEntregaPage.create(params.id, query);
   },
   PrestacaoLocator: (_params, query) => PrestacaoLocatorPage.create({}, query),
   Prestacao: (params, query) => {

@@ -22,6 +22,13 @@ const {
   logElectronFlow,
   clearCentralArrivalGuard
 } = require('../../utils/electronNavigationGuard');
+const {
+  notifySuccess,
+  notifyWarning,
+  notifyInfo,
+  notifyError,
+  loadingText
+} = require('../../messages');
 
 const REFRESH_INTERVAL_MS = 60000;
 
@@ -301,12 +308,12 @@ class DashboardPage {
     clearCentralArrivalGuard();
 
     if (!item.consignacaoId) {
-      notify('Não há dívida elegível na Conta Corrente deste cliente.', 'warning');
+      notifyWarning('SEM_DIVIDA_ELEGIVEL');
       return;
     }
 
     if (String(item.statusConsignacao || '').toUpperCase() === 'QUITADA') {
-      notify('Cliente já quitado. Removendo da fila...', 'info');
+      notifyInfo('CLIENTE_QUITADO_FILA');
       this._loadData();
       return;
     }
@@ -333,7 +340,7 @@ class DashboardPage {
 
           const auditoria = getOperadorAuditoria();
           const resultado = await withLoading(
-            'Registrando recebimento na Conta Corrente...',
+            loadingText('REGISTRANDO_RECEBIMENTO'),
             () => this.api.registrarPagamento(item.consignacaoId, {
               valor,
               formaPagamento: formaPagamento || 'DINHEIRO',
@@ -368,15 +375,15 @@ class DashboardPage {
             } catch (closeError) {
               console.warn('[Central Conta Corrente] fecharPrestacao:', closeError);
             }
-            notify('Recebimento registrado. Dívida quitada — cliente removido da fila.', 'success');
+            notifySuccess('RECEBIMENTO_QUITADO');
           } else {
-            notify('Recebimento parcial registrado na Conta Corrente Comercial.', 'success');
+            notifySuccess('RECEBIMENTO_PARCIAL');
           }
 
           await this._loadData();
         } catch (error) {
           const msg = mensagemErroOperacional(error.message, 'pagamento');
-          notify(msg, 'error');
+          notifyError(msg);
           if (/QUITADA/i.test(error.message || '')) {
             await this._loadData();
           }

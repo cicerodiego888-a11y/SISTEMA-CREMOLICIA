@@ -41,5 +41,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   salvarModoEstacao: (config) => ipcRenderer.invoke('rede-salvar-modo-estacao', config),
   obterHostnameEstacao: () => ipcRenderer.invoke('rede-obter-hostname'),
   estaEmModoClienteRemoto: () => ipcRenderer.invoke('rede-esta-em-modo-cliente'),
-  obterServidorRemoto: () => destinoClienteRemoto
+  obterServidorRemoto: () => destinoClienteRemoto,
+
+  testarServidorPdv: (config) => ipcRenderer.invoke('pdv-setup-testar-servidor', config),
+  conectarServidorPdv: (config) => ipcRenderer.invoke('pdv-setup-conectar', config),
+  usarServidorLocalPdv: () => ipcRenderer.invoke('pdv-setup-usar-local')
 });

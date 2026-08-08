@@ -7,6 +7,7 @@
  */
 
 const EtiquetaDTO = require('../dto/EtiquetaDTO');
+const ComercialPrecoResolver = require('../../../modules/comercial/preco/ComercialPrecoResolver');
 
 class EtiquetaMapper {
   /**
@@ -18,7 +19,7 @@ class EtiquetaMapper {
       layout: dados.layout ?? 'padrao',
       plu: dados.plu ?? dados.codigo ?? dados.produto_id ?? null,
       descricao: dados.nome ?? dados.descricao ?? '',
-      preco: dados.preco_venda ?? dados.preco ?? null,
+      preco: ComercialPrecoResolver.obterPrecoVenda(dados),
       validade: dados.data_validade ?? dados.validade ?? null,
       formatoCodigoBarras: dados.formatoCodigoBarras ?? 'EAN13',
       extras: {}

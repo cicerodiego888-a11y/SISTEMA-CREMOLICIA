@@ -1,6 +1,7 @@
 'use strict';
 
 const db = require('../../database');
+const { publicarEventoPdvArMfe } = require('../../motores/motor-financeiro/adapters');
 
 const SUBQUERY_VENDAS_CANCELADAS = `
   SELECT id FROM vendas
@@ -158,7 +159,9 @@ async function cancelarFinanceiroVenda(vendaId, opcoes = {}) {
   const observacao = opcoes.observacao || `Cancelado automaticamente pela venda #${vendaId}`;
 
   if (opcoes.gerenciarTransacao === false) {
-    return executarCancelamentoFinanceiro(vendaId, observacao);
+    const resultado = await executarCancelamentoFinanceiro(vendaId, observacao);
+    emitirCancelamentoPdvAr(vendaId);
+    return resultado;
   }
 
   await dbRun('BEGIN IMMEDIATE');
@@ -166,6 +169,7 @@ async function cancelarFinanceiroVenda(vendaId, opcoes = {}) {
   try {
     const resultado = await executarCancelamentoFinanceiro(vendaId, observacao);
     await dbRun('COMMIT');
+    emitirCancelamentoPdvAr(vendaId);
     return resultado;
   } catch (err) {
     try {
@@ -175,6 +179,20 @@ async function cancelarFinanceiroVenda(vendaId, opcoes = {}) {
     }
     throw err;
   }
+}
+
+/** MFE-05.1 — SALE_CANCELLED via bridge PDV (flag OFF = no-op) */
+function emitirCancelamentoPdvAr(vendaId) {
+  Promise.resolve(publicarEventoPdvArMfe(db, {
+    tipo: 'venda_cancelada',
+    eventType: 'SALE_CANCELLED',
+    venda_id: vendaId,
+    valor: 0,
+    persistirTitulo: false,
+    idempotencyKey: `pdv-ar:cancel:${vendaId}`
+  })).catch((err) => {
+    console.error('[MFE-05.1] SALE_CANCELLED:', err?.message || err);
+  });
 }
 
 /**

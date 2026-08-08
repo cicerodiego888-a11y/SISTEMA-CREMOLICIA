@@ -29,6 +29,7 @@ const PAGE_LOADERS = {
   usuarios: () => import('./pages/usuarios.js'),
   estoque: () => import('./pages/estoque.js'),
   compras: () => import('./pages/compras.js'),
+  'central-entradas': () => import('./pages/central-entradas.js'),
   comercial: () => import('./pages/comercial.js'),
   financeiro: () => import('./pages/financeiro.js'),
   fiscal: () => import('./pages/fiscal.js'),
@@ -37,29 +38,46 @@ const PAGE_LOADERS = {
   pdv: () => import('./pages/pdv.js'),
   perfil: () => import('./pages/perfil.js'),
   configuracoes: () => import('./pages/configuracoes.js'),
+  equipamentos: () => import('./pages/equipamentos.js'),
+  relatorios: () => import('./pages/relatorios.js'),
   mais: null
 };
 
 const META = {
   dashboard: { title: 'Início', subtitle: 'Seu dia', nav: 'dashboard' },
-  cadastros: { title: 'Cadastros', subtitle: 'ERP', nav: 'cadastros' },
-  clientes: { title: 'Clientes', subtitle: 'Cadastros', nav: 'cadastros' },
-  fornecedores: { title: 'Fornecedores', subtitle: 'Cadastros', nav: 'cadastros' },
-  produtos: { title: 'Produtos', subtitle: 'Cadastros', nav: 'cadastros' },
-  categorias: { title: 'Categorias', subtitle: 'Cadastros', nav: 'cadastros' },
-  usuarios: { title: 'Usuários', subtitle: 'Cadastros', nav: 'cadastros' },
+  cadastros: { title: 'Cadastros', subtitle: 'ERP', nav: 'mais' },
+  clientes: { title: 'Clientes', subtitle: 'Cadastros', nav: 'clientes' },
+  fornecedores: { title: 'Fornecedores', subtitle: 'Cadastros', nav: 'mais' },
+  produtos: { title: 'Produtos', subtitle: 'Cadastros', nav: 'mais' },
+  categorias: { title: 'Categorias', subtitle: 'Cadastros', nav: 'mais' },
+  usuarios: { title: 'Usuários', subtitle: 'Cadastros', nav: 'mais' },
   estoque: { title: 'Estoque', subtitle: 'Operacional', nav: 'mais' },
   compras: { title: 'Compras', subtitle: 'Operações', nav: 'mais' },
-  comercial: { title: 'Comercial', subtitle: 'Motor Comercial', nav: 'comercial' },
-  financeiro: { title: 'Financeiro', subtitle: 'Operacional', nav: 'financeiro' },
+  'central-entradas': { title: 'Central Entradas', subtitle: 'NF / MIIP', nav: 'mais' },
+  comercial: { title: 'Comercial', subtitle: 'Motor Comercial', nav: 'mais' },
+  financeiro: { title: 'Financeiro', subtitle: 'Operacional', nav: 'mais' },
   fiscal: { title: 'Fiscal', subtitle: 'Operacional', nav: 'mais' },
   caixas: { title: 'Caixas', subtitle: 'MultiCaixa', nav: 'mais' },
   auditoria: { title: 'Auditoria', subtitle: 'Sistema', nav: 'mais' },
-  pdv: { title: 'PDV', subtitle: 'Mobile', nav: 'mais' },
+  pdv: { title: 'Vender', subtitle: 'PDV Mobile', nav: 'pdv' },
   perfil: { title: 'Perfil', subtitle: 'Conta', nav: 'mais' },
   configuracoes: { title: 'Ajustes', subtitle: 'Preferências', nav: 'mais' },
+  equipamentos: { title: 'Equipamentos', subtitle: 'Sistema', nav: 'mais' },
+  relatorios: { title: 'Relatórios', subtitle: 'Análises', nav: 'mais' },
   mais: { title: 'Mais', subtitle: 'Módulos', nav: 'mais' }
 };
+
+function resolveBottomNav(parsed) {
+  const base = parsed.name;
+  if (base === 'pdv') {
+    const tab = parsed.parts?.[1];
+    if (tab === 'caixa') return 'pdv/caixa';
+    if (tab === 'vendas' || tab === 'venda') return 'pdv/vendas';
+    return 'pdv';
+  }
+  if (base === 'clientes') return 'clientes';
+  return (META[base] && META[base].nav) || 'mais';
+}
 
 const state = {
   path: 'dashboard',
@@ -241,8 +259,22 @@ function syncChrome(parsed) {
   const subtitle = document.getElementById('mobile-page-subtitle');
   const deep = parsed.parts && parsed.parts.length > 1;
   if (title) {
-    if (parsed.parts?.[1] === 'novo' || parsed.parts?.[1] === 'nova') title.textContent = 'Novo';
-    else if (parsed.parts?.[2] === 'prestacao') title.textContent = 'Prestação';
+    if (parsed.parts?.[1] === 'clientes' && (parsed.parts?.[2] === 'novo' || parsed.parts?.[2] === 'nova')) {
+      title.textContent = 'Cliente Consignado';
+    } else if (parsed.parts?.[1] === 'clientes' && parsed.parts?.[3] === 'editar') {
+      title.textContent = 'Editar comercial';
+    } else if (parsed.parts?.[1] === 'clientes' && parsed.parts?.[2]) {
+      title.textContent = 'Cliente 360';
+    } else if (parsed.parts?.[1] === 'clientes') {
+      title.textContent = 'Clientes comerciais';
+    } else if (parsed.parts?.[1] === 'prestacao') {
+      title.textContent = 'Prestação de Contas';
+    } else if (parsed.parts?.[1] === 'novo' || parsed.parts?.[1] === 'nova') {
+      title.textContent = 'Novo';
+    } else if (parsed.parts?.[2] === 'comprovante') title.textContent = 'Resumo da Entrega';
+    else if (parsed.parts?.[2] === 'prestacao' && parsed.parts?.[3] === 'grade') {
+      title.textContent = 'Grade de retornos';
+    } else if (parsed.parts?.[2] === 'prestacao') title.textContent = 'Prestação';
     else if (parsed.parts?.[2] === 'editar') title.textContent = 'Editar';
     else if (deep) title.textContent = 'Detalhe';
     else title.textContent = meta.title;
@@ -251,23 +283,35 @@ function syncChrome(parsed) {
 
   document.querySelectorAll('.cds-mobile-nav-item').forEach((btn) => {
     const route = btn.getAttribute('data-route');
-    btn.classList.toggle('is-active', route === meta.nav);
+    btn.classList.toggle('is-active', route === resolveBottomNav(parsed));
   });
   document.querySelectorAll('#mobile-drawer [data-route]').forEach((btn) => {
-    btn.classList.toggle('is-active', btn.getAttribute('data-route') === base);
+    const route = btn.getAttribute('data-route') || '';
+    const full = parsed.path || base;
+    btn.classList.toggle(
+      'is-active',
+      route === full || (route === base && !full.includes('/'))
+    );
   });
 }
 
 async function renderMais(root) {
   const items = [
+    { route: 'produtos', label: 'Produtos', ic: 'box', hint: 'Catálogo e consulta' },
+    { route: 'cadastros', label: 'Cadastros', ic: 'users', hint: 'Clientes, produtos, usuários' },
+    { route: 'comercial', label: 'Comercial', ic: 'store', hint: 'Consignação e prestações' },
+    { route: 'financeiro', label: 'Financeiro', ic: 'coins', hint: 'Contas e baixas' },
     { route: 'estoque', label: 'Estoque', ic: 'warehouse', hint: 'Saldos, validade e ajustes' },
-    { route: 'compras', label: 'Compras', ic: 'inbox', hint: 'Entradas e cancelamento' },
-    { route: 'fiscal', label: 'Fiscal', ic: 'receipt', hint: 'NFC-e, DANFE e cancelamento' },
+    { route: 'compras', label: 'Compras', ic: 'inbox', hint: 'Multi-item, MCC e devolução' },
+    { route: 'central-entradas', label: 'Central Entradas', ic: 'inbox', hint: 'XML, sync, MIIP' },
+    { route: 'fiscal', label: 'Fiscal', ic: 'receipt', hint: 'NFC-e, config, DANFE' },
+    { route: 'relatorios', label: 'Relatórios', ic: 'id', hint: 'Comercial, financeiro, estoque' },
     { route: 'caixas', label: 'Caixas / Terminais', ic: 'coins', hint: 'MultiCaixa e terminais' },
     { route: 'pdv', label: 'PDV', ic: 'cart', hint: 'Caixa, venda e NFC-e' },
+    { route: 'equipamentos', label: 'Equipamentos', ic: 'cog', hint: 'Config e diagnóstico' },
     { route: 'auditoria', label: 'Auditoria', ic: 'id', hint: 'Eventos do sistema' },
     { route: 'perfil', label: 'Perfil', ic: 'user', hint: 'Conta e sessão' },
-    { route: 'configuracoes', label: 'Configurações', ic: 'cog', hint: 'Empresa, terminal e tema' }
+    { route: 'configuracoes', label: 'Configurações', ic: 'cog', hint: 'Empresa, TEF, MIDP, licença' }
   ].filter((i) => canAccessRoute(i.route));
 
   if (!items.length) {
@@ -462,7 +506,7 @@ function bindShell() {
 
 function registerPwaStub() {
   if (!('serviceWorker' in navigator)) return;
-  navigator.serviceWorker.register('/apps/mobile/sw.js?v=2.4.9-icon2').catch(() => {});
+  navigator.serviceWorker.register('/apps/mobile/sw.js?v=2.5.3-rcm923').catch(() => {});
 }
 
 function paintShellIcons() {
@@ -479,12 +523,17 @@ function paintShellIcons() {
     mais: 'more',
     estoque: 'warehouse',
     compras: 'inbox',
+    'central-entradas': 'inbox',
     fiscal: 'receipt',
     caixas: 'coins',
     auditoria: 'id',
     pdv: 'cart',
+    'pdv/caixa': 'coins',
+    'pdv/vendas': 'receipt',
     perfil: 'user',
-    configuracoes: 'cog'
+    configuracoes: 'cog',
+    equipamentos: 'cog',
+    relatorios: 'id'
   };
 
   document.querySelectorAll('#mobile-bottom-nav [data-route]').forEach((btn) => {

@@ -16,7 +16,9 @@ const {
   buildClienteResumo,
   buildConferenciaResumo,
   formatCurrency,
-  formatDate
+  formatOrigemPreco,
+  rotuloLinhaItem,
+  rotuloTabelaItem
 } = require('./prepararEntregaMappers');
 
 class PrepararEntregaView {
@@ -150,11 +152,7 @@ class PrepararEntregaView {
       } else {
         const clienteBar = document.createElement('div');
         clienteBar.className = 'cds-preparar-entrega__cliente-bar';
-        clienteBar.innerHTML = `
-          <span><strong>${state.clienteProfile.nome}</strong></span>
-          <span>Limite: ${formatCurrency(state.clienteProfile.limiteDisponivel)}</span>
-          <span>Saldo: ${formatCurrency(state.clienteProfile.saldo)}</span>
-        `;
+        clienteBar.innerHTML = `<span><strong>${state.clienteProfile.nome}</strong></span>`;
         wrap.appendChild(clienteBar);
       }
     }
@@ -171,8 +169,6 @@ class PrepararEntregaView {
     wrap.appendChild(lipSimHost);
 
     wrap.appendChild(PrepararEntregaView._renderAtalhosTeclado());
-
-    wrap.appendChild(PrepararEntregaView._renderResumoCompactoGrade(state));
 
     const gradeHost = document.createElement('div');
     gradeHost.className = 'cds-preparar-entrega__grade';
@@ -206,7 +202,7 @@ class PrepararEntregaView {
 
   static _renderGradeItens(state, ctx) {
     const table = document.createElement('div');
-    table.className = 'cds-preparar-entrega__grade-tabela';
+    table.className = 'cds-preparar-entrega__grade-tabela cds-preparar-entrega__grade-tabela--snapshot';
 
     const head = document.createElement('div');
     head.className = 'cds-preparar-entrega__grade-head';
@@ -220,6 +216,8 @@ class PrepararEntregaView {
     `;
     table.appendChild(head);
 
+    const tabelaOp = state.operacaoResumo?.tabelaPreco || null;
+
     state.data.itens.forEach((item, index) => {
       const row = document.createElement('div');
       row.className = `cds-preparar-entrega__grade-row${state.focusedItemIndex === index ? ' cds-preparar-entrega__grade-row--focus' : ''}`;
@@ -227,7 +225,11 @@ class PrepararEntregaView {
 
       const prodCell = document.createElement('div');
       prodCell.className = 'cds-preparar-entrega__grade-produto';
-      prodCell.innerHTML = `<strong>${item.produto}</strong>${item.codigo ? `<small>${item.codigo}</small>` : ''}`;
+      prodCell.innerHTML = `
+        <strong>${item.produto}</strong>
+        ${item.codigo ? `<small>${item.codigo}</small>` : ''}
+        ${PrepararEntregaView._htmlSnapshotItem(item, tabelaOp)}
+      `;
       row.appendChild(prodCell);
 
       const qtyInput = document.createElement('input');
@@ -246,9 +248,16 @@ class PrepararEntregaView {
       qtyInput.addEventListener('change', () => ctx.onItemQtyChange(index, qtyInput.value));
       row.appendChild(qtyInput);
 
-      const preco = document.createElement('span');
-      preco.textContent = formatCurrency(item.preco);
-      row.appendChild(preco);
+      const precoCell = document.createElement('div');
+      precoCell.className = 'cds-preparar-entrega__grade-preco';
+      const ucLabel = item.unidadeComercial ? ` / ${item.unidadeComercial}` : '';
+      precoCell.innerHTML = `
+        <span>${formatCurrency(item.preco)}${ucLabel}</span>
+        ${item.precoFallback
+          ? '<small class="cds-preparar-entrega__preco-seguranca">Utilizando Preço de Segurança</small>'
+          : ''}
+      `;
+      row.appendChild(precoCell);
 
       const total = document.createElement('span');
       total.className = 'cds-preparar-entrega__grade-total';
@@ -284,7 +293,91 @@ class PrepararEntregaView {
       table.appendChild(row);
     });
 
+    // RCM-8.5 — Detalhes / Comparar Tabelas
+    table.addEventListener('click', (ev) => {
+      const detalheBtn = ev.target.closest('.cds-btn-detalhe-precificacao');
+      const compararBtn = ev.target.closest('.cds-btn-comparar-tabelas');
+      if (!detalheBtn && !compararBtn) return;
+      ev.preventDefault();
+      const idx = Number(
+        (detalheBtn || compararBtn).closest('.cds-preparar-entrega__grade-row')?.dataset?.index
+      );
+      const item = state.data.itens[idx];
+      if (!item) return;
+      if (detalheBtn) {
+        PrepararEntregaView.abrirDetalhesPrecificacao(item, 'CONSIGNADO');
+        return;
+      }
+      const pid = Number(compararBtn.dataset.produtoId || item.produtoId);
+      if (typeof ctx.onCompararTabelas === 'function') {
+        ctx.onCompararTabelas(pid, item);
+      } else if (ctx.api) {
+        PrepararEntregaView.abrirCompararTabelas(ctx.api, pid, item);
+      }
+    });
+
     return table;
+  }
+
+  /** Snapshot discreto da precificação (RCM-6.1 / RCM-7.5 / RCM-8.5) */
+  static _htmlSnapshotItem(item, tabelaOp = null) {
+    const linha = rotuloLinhaItem(item);
+    const tabela = rotuloTabelaItem(item, tabelaOp);
+    const uc = item.unidadeComercial || '—';
+    const origem = formatOrigemPreco(item.precoOrigem, !!item.precoFallback);
+    return `
+      <div class="cds-item-snapshot" aria-label="Snapshot da precificação">
+        <span><em>Linha de Precificação</em> ${linha}</span>
+        <span><em>Tabela de Preços</em> ${tabela}</span>
+        <span><em>UC</em> ${uc}</span>
+        <span><em>Origem</em> ${origem}</span>
+        <span class="cds-item-snapshot__acoes">
+          <button type="button" class="cds-link-btn cds-btn-detalhe-precificacao" data-produto-id="${item.produtoId || ''}">Detalhes</button>
+          <button type="button" class="cds-link-btn cds-btn-comparar-tabelas" data-produto-id="${item.produtoId || ''}">Comparar Tabelas</button>
+        </span>
+      </div>
+    `;
+  }
+
+  static abrirDetalhesPrecificacao(item, operacao = 'CONSIGNADO') {
+    const linha = item.linhaComercialDescricao || item.linhaComercialCodigo
+      || (item.linhaComercialId ? ('#' + item.linhaComercialId) : 'Produto sem Linha');
+    const msg =
+      'Detalhes da Precificação\n\n' +
+      'Produto: ' + (item.produto || item.nome || '') + '\n' +
+      'Tabela: ' + (item.tabelaPrecoNome || item.tabelaPrecoId || '—') + '\n' +
+      'Linha: ' + linha + '\n' +
+      'Unidade: ' + (item.unidadeComercial || '—') + '\n' +
+      'Preço: ' + formatCurrency(Number(item.preco || item.precoUnitario || 0)) + '\n' +
+      'Origem: ' + formatOrigemPreco(item.precoOrigem, !!item.precoFallback) + '\n' +
+      'Operação: ' + operacao + '\n' +
+      'Resolver: Motor Oficial';
+    window.alert(msg);
+  }
+
+  static async abrirCompararTabelas(api, produtoId, item) {
+    if (!api || !produtoId) {
+      window.alert('Produto inválido para comparação.');
+      return;
+    }
+    try {
+      const res = await api.compararTabelasPrecificacao({ produtoId: Number(produtoId) });
+      const linhas = (res.comparacoes || []).map((c) => {
+        const preco = c.preco != null
+          ? formatCurrency(Number(c.preco)) + ' / ' + (c.unidade_comercial || '')
+          : '—';
+        return (c.canal_nome || c.canal) + ': ' + preco;
+      }).join('\n');
+      window.alert(
+        'Comparar Tabelas (informativo)\n\n' +
+        'Produto: ' + ((res.produto && res.produto.nome) || (item && item.produto) || produtoId) + '\n' +
+        'Tabela atual: ' + ((item && (item.tabelaPrecoNome || 'Consignação')) || 'Consignação') + '\n\n' +
+        linhas +
+        '\n\nNão altera a tabela da operação.'
+      );
+    } catch (err) {
+      window.alert(err.message || 'Falha ao comparar tabelas');
+    }
   }
 
   static renderConferencia(state, ctx) {
@@ -323,15 +416,37 @@ class PrepararEntregaView {
     wrap.appendChild(resumo);
 
     if (state.data.itens.length) {
+      const tabelaOp = state.operacaoResumo?.tabelaPreco || null;
       const lista = document.createElement('div');
-      lista.className = 'cds-preparar-entrega__conferencia-itens';
+      lista.className = 'cds-preparar-entrega__conferencia-itens cds-preparar-entrega__conferencia-itens--snapshot';
+      lista.innerHTML = `
+        <div class="cds-preparar-entrega__conferencia-itens-head">
+          <span>Produto</span>
+          <span>Linha de Precificação</span>
+          <span>Tabela de Preços</span>
+          <span>UC</span>
+          <span>Preço</span>
+          <span>Origem</span>
+          <span>Quantidade</span>
+          <span>Total</span>
+        </div>
+      `;
       state.data.itens.forEach((item) => {
         const linha = document.createElement('div');
         linha.className = 'cds-preparar-entrega__conferencia-linha';
+        const origem = formatOrigemPreco(item.precoOrigem, !!item.precoFallback);
+        const fallbackHint = item.precoFallback
+          ? '<small class="cds-preparar-entrega__preco-seguranca">Preço de Segurança</small>'
+          : '';
         linha.innerHTML = `
-          <span>${item.produto}</span>
-          <span>${item.quantidade} un.</span>
-          <span>${formatCurrency(item.quantidade * item.preco)}</span>
+          <span>${item.produto}${fallbackHint}</span>
+          <span>${rotuloLinhaItem(item)}</span>
+          <span>${rotuloTabelaItem(item, tabelaOp)}</span>
+          <span>${item.unidadeComercial || '—'}</span>
+          <span>${formatCurrency(item.preco)}</span>
+          <span>${origem}</span>
+          <span>${item.quantidade}</span>
+          <span>${formatCurrency((item.quantidade || 0) * (item.preco || 0))}</span>
         `;
         lista.appendChild(linha);
       });
@@ -398,34 +513,6 @@ class PrepararEntregaView {
     return wrap;
   }
 
-  static _renderResumoCompactoGrade(state) {
-    const painel = state.lipSimulacao?.painelProjetado
-      || buildPainelResumo(state.data.itens, state.clienteProfile || {});
-    const bar = document.createElement('div');
-    bar.className = 'cds-preparar-entrega__resumo-grade';
-    bar.id = 'prep-resumo-grade';
-    const saldoCls = PrepararEntregaView._classeDestaqueSaldo(painel.destaqueSaldoRestante);
-    bar.innerHTML = `
-      <span class="cds-preparar-entrega__resumo-grade-item">
-        <label>Itens:</label>
-        <strong data-resumo-itens>${painel.quantidadeItens}</strong>
-      </span>
-      <span class="cds-preparar-entrega__resumo-grade-item">
-        <label>Quantidade:</label>
-        <strong data-resumo-quantidade>${painel.quantidadeTotal}</strong>
-      </span>
-      <span class="cds-preparar-entrega__resumo-grade-item cds-preparar-entrega__resumo-grade-item--total">
-        <label>Valor Total:</label>
-        <strong data-resumo-valor>${formatCurrency(painel.valorTotal)}</strong>
-      </span>
-      <span class="cds-preparar-entrega__resumo-grade-item cds-preparar-entrega__resumo-grade-item--saldo ${saldoCls}">
-        <label>Crédito Restante:</label>
-        <strong data-resumo-saldo>${painel.saldoRestanteExibicao}</strong>
-      </span>
-    `;
-    return bar;
-  }
-
   static _classeDestaqueSaldo(destaque) {
     if (destaque === 'critico') return 'cds-preparar-entrega__destaque--critico';
     if (destaque === 'alerta') return 'cds-preparar-entrega__destaque--alerta';
@@ -444,148 +531,84 @@ class PrepararEntregaView {
         <div><label>Produto</label><strong>${simulacao.produto}</strong></div>
         <div><label>Quantidade</label><strong>${simulacao.quantidade}</strong></div>
         <div><label>Valor da inclusão</label><strong>${simulacao.valorInclusaoExibicao}</strong></div>
-        <div><label>Novo valor da entrega</label><strong>${formatCurrency(painel.valorTotal)}</strong></div>
-        <div><label>Crédito após entrega</label><strong>${painel.creditoAposEntregaExibicao || painel.creditoDisponivelExibicao}</strong></div>
-        <div><label>Utilização</label><strong>${painel.percentualUtilizadoTexto}</strong></div>
+        <div><label>Valor desta Entrega</label><strong>${formatCurrency(painel.valorTotal)}</strong></div>
+        <div><label>Saldo após Entrega</label><strong>${painel.creditoAposEntregaExibicao || painel.creditoDisponivelExibicao}</strong></div>
+        <div><label>Utilização</label><strong>${painel.percentualLimiteExibicao || painel.percentualUtilizadoTexto}</strong></div>
       </div>
     `;
     return host;
   }
 
-  static _renderSecaoPainel(titulo) {
-    const sec = document.createElement('div');
-    sec.className = 'cds-preparar-entrega__painel-secao';
-    if (titulo) {
-      const h = document.createElement('div');
-      h.className = 'cds-preparar-entrega__painel-secao-titulo';
-      h.textContent = titulo;
-      sec.appendChild(h);
-    }
-    return sec;
-  }
-
-  static _renderBarraUtilizacao(painel) {
-    const wrap = document.createElement('div');
-    wrap.className = 'cds-preparar-entrega__utilizacao';
-
-    const faixa = painel.faixaInfo || { emoji: '', label: '' };
-    const header = document.createElement('div');
-    header.className = 'cds-preparar-entrega__utilizacao-header';
-    header.innerHTML = `<span>${faixa.emoji} ${faixa.label}</span>`;
-    const pctLabel = document.createElement('strong');
-    pctLabel.textContent = painel.percentualUtilizadoTexto || painel.percentualLimiteExibicao;
-    header.appendChild(pctLabel);
-    wrap.appendChild(header);
-
-    const track = document.createElement('div');
-    track.className = 'cds-preparar-entrega__utilizacao-track';
-    track.setAttribute('role', 'progressbar');
-    track.setAttribute('aria-valuemin', '0');
-    track.setAttribute('aria-valuemax', '100');
-    track.setAttribute('aria-valuenow', String(Math.min(painel.percentualLimite || 0, 100)));
-
-    const fill = document.createElement('div');
-    const larguraBarra = painel.percentualLimite != null
-      ? Math.min(Math.max(painel.percentualLimite, 0), 100)
-      : 0;
-    fill.className = `cds-preparar-entrega__utilizacao-fill cds-preparar-entrega__utilizacao-fill--${painel.faixaUtilizacao}`;
-    fill.style.width = `${larguraBarra}%`;
-    track.appendChild(fill);
-    wrap.appendChild(track);
-
-    return wrap;
-  }
-
-  static _renderMensagemInteligente(painel) {
+  /**
+   * RCM-7.5 — Resumo Financeiro único (substitui strip + painel lateral duplicados).
+   */
+  static renderResumoFinanceiro(painel = {}) {
     const box = document.createElement('div');
-    box.className = `cds-preparar-entrega__mensagem cds-preparar-entrega__mensagem--${painel.mensagemNivel || 'info'}`;
-    box.setAttribute('role', 'status');
-    box.textContent = painel.mensagemInteligente || '';
+    box.className = 'cds-resumo-financeiro';
+    box.setAttribute('role', 'region');
+    box.setAttribute('aria-label', 'Resumo Financeiro');
+
+    const pct = painel.percentualLimite != null
+      ? Math.min(Math.max(Number(painel.percentualLimite), 0), 100)
+      : 0;
+    const pctLabel = painel.percentualLimiteExibicao || '—';
+    const limite = Number(painel.limiteComercial) > 0
+      ? formatCurrency(painel.limiteComercial)
+      : (painel.creditoDisponivelExibicao || formatCurrency(painel.limiteDisponivel || 0));
+
+    box.innerHTML = `
+      <div class="cds-resumo-financeiro__titulo">Resumo Financeiro</div>
+      <div class="cds-resumo-financeiro__grid">
+        <div class="cds-resumo-financeiro__item">
+          <span class="cds-resumo-financeiro__label">Limite Comercial</span>
+          <strong class="cds-resumo-financeiro__value" data-fin-limite>${limite}</strong>
+        </div>
+        <div class="cds-resumo-financeiro__item">
+          <span class="cds-resumo-financeiro__label">Valor desta Entrega</span>
+          <strong class="cds-resumo-financeiro__value" data-fin-valor>${formatCurrency(painel.valorTotal || 0)}</strong>
+        </div>
+        <div class="cds-resumo-financeiro__item">
+          <span class="cds-resumo-financeiro__label">Saldo após Entrega</span>
+          <strong class="cds-resumo-financeiro__value" data-fin-saldo>${painel.saldoRestanteExibicao || '—'}</strong>
+        </div>
+        <div class="cds-resumo-financeiro__item cds-resumo-financeiro__item--utilizacao">
+          <span class="cds-resumo-financeiro__label">Utilização <strong data-fin-pct>${pctLabel}</strong></span>
+          <div class="cds-resumo-financeiro__bar" role="progressbar"
+               aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}">
+            <div class="cds-resumo-financeiro__bar-fill cds-resumo-financeiro__bar-fill--${painel.faixaUtilizacao || 'neutro'}"
+                 data-fin-fill style="width:${pct}%"></div>
+          </div>
+        </div>
+      </div>
+    `;
     return box;
   }
 
-  static renderPainelLateral(state) {
-    const painel = state.lipSimulacao?.painelProjetado
-      || buildPainelResumo(state.data.itens, state.clienteProfile || {});
-    const simulando = Boolean(state.lipSimulacao);
-    const container = document.createElement('aside');
-    container.className = `cds-preparar-entrega__painel${simulando ? ' cds-preparar-entrega__painel--simulando' : ''}`;
-    container.id = 'prep-painel-operacional';
+  static atualizarResumoFinanceiroDom(host, painel = {}) {
+    if (!host) return;
+    const limiteEl = host.querySelector('[data-fin-limite]');
+    const valorEl = host.querySelector('[data-fin-valor]');
+    const saldoEl = host.querySelector('[data-fin-saldo]');
+    const pctEl = host.querySelector('[data-fin-pct]');
+    const fillEl = host.querySelector('[data-fin-fill]');
+    const barEl = host.querySelector('.cds-resumo-financeiro__bar');
 
-    container.innerHTML = '<h3>Assistente Operacional</h3>';
+    const limite = Number(painel.limiteComercial) > 0
+      ? formatCurrency(painel.limiteComercial)
+      : (painel.creditoDisponivelExibicao || formatCurrency(painel.limiteDisponivel || 0));
+    const pct = painel.percentualLimite != null
+      ? Math.min(Math.max(Number(painel.percentualLimite), 0), 100)
+      : 0;
 
-    const clienteSec = PrepararEntregaView._renderSecaoPainel('Cliente');
-    const clienteNome = document.createElement('div');
-    clienteNome.className = 'cds-preparar-entrega__painel-cliente-nome';
-    clienteNome.textContent = painel.clienteNome;
-    clienteSec.appendChild(clienteNome);
-    container.appendChild(clienteSec);
-
-    const creditoSec = PrepararEntregaView._renderSecaoPainel('Crédito Disponível');
-    const creditoValor = document.createElement('div');
-    creditoValor.className = 'cds-preparar-entrega__painel-hero';
-    creditoValor.innerHTML = `<strong data-painel-credito>${
-      Number(painel.valorTotal) > 0
-        ? (painel.creditoAposEntregaExibicao || painel.creditoDisponivelExibicao)
-        : painel.creditoDisponivelExibicao
-    }</strong>`;
-    creditoSec.appendChild(creditoValor);
-    if (painel.percentualLimite != null) {
-      creditoSec.appendChild(PrepararEntregaView._renderBarraUtilizacao(painel));
+    if (limiteEl) limiteEl.textContent = limite;
+    if (valorEl) valorEl.textContent = formatCurrency(painel.valorTotal || 0);
+    if (saldoEl) saldoEl.textContent = painel.saldoRestanteExibicao || '—';
+    if (pctEl) pctEl.textContent = painel.percentualLimiteExibicao || '—';
+    if (fillEl) {
+      fillEl.style.width = `${pct}%`;
+      fillEl.className = `cds-resumo-financeiro__bar-fill cds-resumo-financeiro__bar-fill--${painel.faixaUtilizacao || 'neutro'}`;
     }
-    container.appendChild(creditoSec);
-
-    const numsSec = PrepararEntregaView._renderSecaoPainel('');
-    const gridNums = document.createElement('div');
-    gridNums.className = 'cds-preparar-entrega__painel-grid';
-    [
-      { label: 'Limite Comercial', value: formatCurrency(painel.limiteComercial), cls: '' },
-      {
-        label: 'Valor da Entrega',
-        value: formatCurrency(painel.valorTotal),
-        cls: 'cds-preparar-entrega__painel-campo--destaque'
-      },
-      {
-        label: 'Saldo Restante',
-        value: painel.saldoRestanteExibicao,
-        cls: `cds-preparar-entrega__painel-campo--saldo ${PrepararEntregaView._classeDestaqueSaldo(painel.destaqueSaldoRestante)}`
-      }
-    ].forEach((campo) => {
-      const cell = document.createElement('div');
-      cell.className = `cds-preparar-entrega__painel-campo ${campo.cls}`.trim();
-      cell.innerHTML = `<label>${campo.label}</label><strong>${campo.value}</strong>`;
-      gridNums.appendChild(cell);
-    });
-    numsSec.appendChild(gridNums);
-    container.appendChild(numsSec);
-
-    const itensSec = PrepararEntregaView._renderSecaoPainel('');
-    const gridItens = document.createElement('div');
-    gridItens.className = 'cds-preparar-entrega__painel-grid cds-preparar-entrega__painel-grid--compacto';
-    [
-      { label: 'Itens', value: String(painel.quantidadeItens) },
-      { label: 'Quantidade Total', value: String(painel.quantidadeTotal) },
-      { label: 'Valor Médio por Item', value: painel.valorMedioItemExibicao }
-    ].forEach((campo) => {
-      const cell = document.createElement('div');
-      cell.className = 'cds-preparar-entrega__painel-campo';
-      cell.innerHTML = `<label>${campo.label}</label><strong>${campo.value}</strong>`;
-      gridItens.appendChild(cell);
-    });
-    itensSec.appendChild(gridItens);
-    container.appendChild(itensSec);
-
-    const sitSec = PrepararEntregaView._renderSecaoPainel('Situação');
-    sitSec.appendChild(PrepararEntregaView._renderMensagemInteligente(painel));
-    if (simulando) {
-      const simTag = document.createElement('p');
-      simTag.className = 'cds-preparar-entrega__painel-sim-tag';
-      simTag.textContent = 'Exibindo projeção antes de confirmar a inclusão.';
-      sitSec.appendChild(simTag);
-    }
-    container.appendChild(sitSec);
-
-    return container;
+    if (barEl) barEl.setAttribute('aria-valuenow', String(pct));
   }
 }
 

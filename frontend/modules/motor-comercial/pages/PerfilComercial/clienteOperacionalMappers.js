@@ -33,14 +33,19 @@ function groupPerfisByCliente(perfis = []) {
   const mapa = new Map();
 
   perfis.forEach((perfil) => {
-    const clienteId = perfil.clienteId || perfil.id;
-    if (!clienteId) return;
+    // Nunca usar perfil.id como fallback — colide com clienteId de outro cliente.
+    const clienteId = perfil.clienteId != null ? Number(perfil.clienteId) : null;
+    if (!Number.isFinite(clienteId) || clienteId <= 0) return;
 
     if (!mapa.has(clienteId)) {
       const mestre = perfil.clienteMestre || (typeof perfil.cliente === 'object' ? perfil.cliente : null);
+      const nome = perfil.clienteNome
+        || (typeof perfil.cliente === 'string' ? perfil.cliente : null)
+        || mestre?.nome
+        || `Cliente #${clienteId}`;
       mapa.set(clienteId, {
         clienteId,
-        nome: perfil.clienteNome || perfil.cliente || `Cliente #${clienteId}`,
+        nome,
         telefone: perfil.telefone || mestre?.telefone || '',
         cidade: extrairCidade(mestre || {}, perfil),
         documento: perfil.cpfCnpj || mestre?.documento || mestre?.cpf_cnpj || '',
@@ -54,7 +59,7 @@ function groupPerfisByCliente(perfis = []) {
 
     const grupo = mapa.get(clienteId);
     grupo.perfis.push(perfil);
-    if ((perfil.limiteComercial ?? 0) >= (grupo.perfilPrincipal.limiteComercial ?? 0)) {
+    if ((perfil.limiteComercial ?? perfil.limite ?? 0) >= (grupo.perfilPrincipal.limiteComercial ?? grupo.perfilPrincipal.limite ?? 0)) {
       grupo.perfilPrincipal = perfil;
     }
   });

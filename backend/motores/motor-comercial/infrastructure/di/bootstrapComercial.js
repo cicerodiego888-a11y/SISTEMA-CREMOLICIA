@@ -61,13 +61,16 @@ function _bootstrapRepositories(container, deps) {
   const consignacaoItemRepository = factory.criarConsignacaoItemRepository();
   const movimentacaoComercialRepository = factory.criarMovimentacaoComercialRepository();
   const movimentacaoPerfilRepository = factory.criarMovimentacaoPerfilRepository();
+  const PrestacaoRateioPerdaRepository = require('../../repositories/PrestacaoRateioPerdaRepository');
+  const rateioPerdaRepository = new PrestacaoRateioPerdaRepository(deps.db);
 
   Object.assign(container, {
     perfilComercialRepository,
     consignacaoRepository,
     consignacaoItemRepository,
     movimentacaoComercialRepository,
-    movimentacaoPerfilRepository
+    movimentacaoPerfilRepository,
+    rateioPerdaRepository
   });
 
   return {
@@ -75,7 +78,8 @@ function _bootstrapRepositories(container, deps) {
     consignacaoRepository,
     consignacaoItemRepository,
     movimentacaoComercialRepository,
-    movimentacaoPerfilRepository
+    movimentacaoPerfilRepository,
+    rateioPerdaRepository
   };
 }
 

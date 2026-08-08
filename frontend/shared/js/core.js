@@ -352,15 +352,56 @@ $(document).ajaxError(function (event, xhr, settings) {
     }
 });
 
+const LOGO_PADRAO_CDS = '/shared/img/logo-cds-sistemas.png';
+
 function renderSidebarBrandPadrao() {
     const brandContent = document.getElementById('sidebar-brand-content') || document.getElementById('sidebar-brand');
     if (!brandContent) return;
 
-    const modulo = window.CDS_MODULE === 'pdv' ? 'PDV' : 'ERP';
-    brandContent.innerHTML = `
-        <h5 class="text-white">CDS</h5>
-        <small class="text-muted">${modulo}</small>
-    `;
+    const img = document.createElement('img');
+    img.src = LOGO_PADRAO_CDS;
+    img.alt = 'CDS Sistemas';
+    img.className = 'img-fluid';
+    img.style.cssText = 'max-height: 110px; object-fit: contain;';
+    img.onerror = () => {
+        const modulo = window.CDS_MODULE === 'pdv' ? 'PDV' : 'ERP';
+        brandContent.innerHTML = `
+            <h5 class="text-white">CDS</h5>
+            <small class="text-muted">${modulo}</small>
+        `;
+        if (typeof atualizarBarraModoFiscalSidebar === 'function') {
+            atualizarBarraModoFiscalSidebar();
+        }
+    };
+
+    brandContent.innerHTML = '';
+    brandContent.appendChild(img);
+
+    if (typeof atualizarBarraModoFiscalSidebar === 'function') {
+        atualizarBarraModoFiscalSidebar();
+    }
+}
+
+function aplicarLogoSidebar(logoUrl) {
+    const brandContent = document.getElementById('sidebar-brand-content') || document.getElementById('sidebar-brand');
+    if (!brandContent) return;
+
+    const img = document.createElement('img');
+    img.alt = 'Logo da empresa';
+    img.className = 'img-fluid';
+    img.style.cssText = 'max-height: 110px; object-fit: contain;';
+    img.onerror = () => {
+        if (img.dataset.fallbackTried === '1') {
+            renderSidebarBrandPadrao();
+            return;
+        }
+        img.dataset.fallbackTried = '1';
+        img.src = LOGO_PADRAO_CDS;
+    };
+    img.src = logoUrl || LOGO_PADRAO_CDS;
+
+    brandContent.innerHTML = '';
+    brandContent.appendChild(img);
 
     if (typeof atualizarBarraModoFiscalSidebar === 'function') {
         atualizarBarraModoFiscalSidebar();
@@ -414,21 +455,10 @@ async function carregarLogoSidebar() {
             ? `${API_URL.replace('/api', '')}${logoPath}`
             : logoPath;
 
-        brandContent.innerHTML = `
-            <img
-                src="${logoUrl}"
-                alt="Logo da empresa"
-                class="img-fluid"
-                style="max-height: 110px; object-fit: contain;"
-            >
-        `;
+        aplicarLogoSidebar(logoUrl);
     } catch (error) {
         console.error('Erro ao carregar logo da sidebar:', error);
         renderSidebarBrandPadrao();
-    }
-
-    if (typeof atualizarBarraModoFiscalSidebar === 'function') {
-        atualizarBarraModoFiscalSidebar();
     }
 }
 

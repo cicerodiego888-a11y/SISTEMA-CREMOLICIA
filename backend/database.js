@@ -160,6 +160,8 @@ function aplicarAlteracoesPosCriacao() {
   aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN valor_nao_fiscal REAL DEFAULT 0`);
   aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN modo_venda TEXT DEFAULT 'peso'`);
   aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN tipo_venda TEXT DEFAULT 'PESO'`);
+  aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN quantidade_bolas INTEGER`);
+  aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN forma_comercializacao TEXT`);
 
   // Adicionar colunas faltantes na tabela configuracoes
   aplicarAlteracaoSegura('configuracoes', `ALTER TABLE configuracoes ADD COLUMN fiscal_emitente_logradouro TEXT DEFAULT ''`);
@@ -215,7 +217,27 @@ function aplicarAlteracoesPosCriacao() {
     `ALTER TABLE produtos ADD COLUMN saldo_nao_fiscal REAL DEFAULT 0`,
     `ALTER TABLE produtos ADD COLUMN permite_venda_unidade INTEGER DEFAULT 0`,
     `ALTER TABLE produtos ADD COLUMN peso_medio_unidade REAL DEFAULT 0`,
-    `ALTER TABLE produtos ADD COLUMN preco_unidade REAL DEFAULT 0`
+    `ALTER TABLE produtos ADD COLUMN preco_unidade REAL DEFAULT 0`,
+    `ALTER TABLE produtos ADD COLUMN tabela_preco_id INTEGER`,
+    `ALTER TABLE produtos ADD COLUMN forma_comercializacao TEXT DEFAULT 'UNIDADE'`,
+    `ALTER TABLE produtos ADD COLUMN unidade_venda TEXT`,
+    `ALTER TABLE produtos ADD COLUMN quantidade_bolas REAL DEFAULT 0`,
+    `ALTER TABLE produtos ADD COLUMN peso_medio_bola REAL DEFAULT 0`,
+    `ALTER TABLE produtos ADD COLUMN forma_personalizada_nome TEXT`,
+    `ALTER TABLE produtos ADD COLUMN forma_personalizada_unidade TEXT`,
+    `ALTER TABLE produtos ADD COLUMN participa_atacado INTEGER DEFAULT 1`,
+    `ALTER TABLE produtos ADD COLUMN bolas_min INTEGER`,
+    `ALTER TABLE produtos ADD COLUMN bolas_max INTEGER`,
+    `ALTER TABLE produtos ADD COLUMN linha_comercial_id INTEGER`,
+    `ALTER TABLE categorias ADD COLUMN linha_comercial_id INTEGER`,
+    `ALTER TABLE categorias ADD COLUMN codigo TEXT`,
+    `ALTER TABLE categorias ADD COLUMN casquinha_bolas_min INTEGER DEFAULT 1`,
+    `ALTER TABLE categorias ADD COLUMN casquinha_bolas_max INTEGER DEFAULT 4`,
+    `ALTER TABLE categorias ADD COLUMN casquinha_permitir_repetir INTEGER DEFAULT 1`,
+    `ALTER TABLE linhas_comerciais ADD COLUMN categoria_origem_id INTEGER`,
+    `ALTER TABLE casquinha_sabores ADD COLUMN codigo TEXT`,
+    `ALTER TABLE casquinha_sabores ADD COLUMN cor TEXT`,
+    `ALTER TABLE casquinha_sabores ADD COLUMN descricao TEXT`
   ];
 
   const alteracoesCompras = [
@@ -296,7 +318,8 @@ function aplicarAlteracoesPosCriacao() {
     `ALTER TABLE vendas ADD COLUMN desconto_autorizado_por TEXT`,
     `ALTER TABLE vendas ADD COLUMN desconto_autorizado_em DATETIME`,
     `ALTER TABLE vendas ADD COLUMN valor_fiscal REAL DEFAULT 0`,
-    `ALTER TABLE vendas ADD COLUMN valor_nao_fiscal REAL DEFAULT 0`
+    `ALTER TABLE vendas ADD COLUMN valor_nao_fiscal REAL DEFAULT 0`,
+    `ALTER TABLE vendas ADD COLUMN canal_venda TEXT DEFAULT 'VAREJO'`
   ];
 
   const alteracoesContasReceber = [
@@ -2084,6 +2107,21 @@ async function finalizarBootstrapAposSchema() {
 
     const Muc = require('./motores/muc');
     await Muc.bootstrapMucSchema(db);
+
+    const Uc01 = require('./motores/unidades-comercializacao');
+    await Uc01.bootstrapUnidadesComercializacaoSchema(db);
+
+    const Mcc = require('./motores/motor-conversao-comercial');
+    await Mcc.bootstrapMccSchema(db);
+
+    const MotorEstoque = require('./motores/motor-estoque');
+    await MotorEstoque.bootstrapMotorEstoqueSchema(db);
+
+    const MotorFinanceiro = require('./motores/motor-financeiro');
+    await MotorFinanceiro.bootstrapMotorFinanceiroSchema(db);
+
+    const ComercialV2 = require('./modules/comercial');
+    await ComercialV2.bootstrapComercialV2Schema(db);
 
     const { executarBootstrap } = require('./lib/DatabaseBootstrapService');
     await executarBootstrap(db, { migrationsJaExecutadas: true });

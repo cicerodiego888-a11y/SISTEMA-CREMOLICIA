@@ -234,7 +234,7 @@ describe('RFC-02 Homologação Recovery Framework', () => {
 
       const loaded = await resumePrepararEntrega(501, { api, projectionApi: projectionOk() });
       expect(loaded.exists).toBe(true);
-      expect(loaded.error.operationalMessage).toBe('Esta operação foi removida.');
+      expect(loaded.error.operationalMessage).toMatch(/removida|não está mais disponível/i);
       expect(listPendingMotorComercial().some((p) => String(p.entityId) === '501')).toBe(true);
 
       const src = require('fs').readFileSync(

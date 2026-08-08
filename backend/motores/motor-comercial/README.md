@@ -4,6 +4,12 @@
 **Versão:** `O-13-homologacao`  
 **API:** `/api/v1/comercial`
 
+## Precificação (cadastros comerciais)
+
+Categoria e **Política Comercial** são conceitos independentes (Sprint A-1).  
+O Motor Comercial operacional não cria política a partir de categoria.  
+Ver `ADR_A1_POLITICA_COMERCIAL.md` e `docs/A1_POLITICA_COMERCIAL.md`.
+
 ## Objetivo
 
 Motor de domínio para operações comerciais:

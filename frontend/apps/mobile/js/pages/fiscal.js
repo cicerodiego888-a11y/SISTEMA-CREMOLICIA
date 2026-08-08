@@ -20,9 +20,9 @@ import {
   countLabel,
   icon
 } from '../ui.js';
-import { fieldHtml, promptSheet, actionBarHtml } from '../forms.js';
+import { fieldHtml, formCardHtml, collectForm, promptSheet, actionBarHtml, cadastroSectionHtml } from '../forms.js';
 import { showToast } from '../toast.js';
-import { canDoAction } from '../permissions.js';
+import { canDoAction, isAdmin } from '../permissions.js';
 import { shareTextAsFile } from '../native.js';
 
 function situacaoNota(n) {
@@ -64,6 +64,7 @@ export async function renderFiscal(root) {
           <div class="cds-row" style="margin-top:10px"><span>Ambiente</span><strong>${escapeHtml(asText(config.ambiente || config.modo || config.modo_fiscal, '—'))}</strong></div>
           <div class="cds-row"><span>Série NFC-e</span><strong>${escapeHtml(asText(config.serie_nfce || config.serie, '—'))}</strong></div>
         ` : ''}
+        <button type="button" class="cds-mobile-btn cds-mobile-btn--secondary" data-go="fiscal/config" style="margin-top:10px;width:100%">Configuração fiscal</button>
       </article>
 
       ${canDoAction('emitir_nfce') ? `
@@ -230,9 +231,107 @@ export async function renderDetail(root, id) {
   }
 }
 
+export async function renderConfig(root) {
+  root.innerHTML = loadingHtml('Configuração fiscal…');
+  try {
+    let config = {};
+    try {
+      config = await window.CDSApi.get('fiscal/config') || {};
+    } catch (e) {
+      config = await window.CDSApi.get('configuracoes/fiscal').catch(() => ({}));
+    }
+
+    root.innerHTML = `
+      ${backBarHtml('Fiscal')}
+      <h2 class="cds-page-title" style="font-size:1.15rem;margin:8px 0">Configuração fiscal</h2>
+      <p class="cds-muted">PUT /api/fiscal/config — mesmas chaves do Desktop.</p>
+      ${formCardHtml('Emissão', [
+        cadastroSectionHtml('Ambiente e série'),
+        `<label class="cds-field"><span>Ambiente</span>
+          <select name="ambiente" class="cds-field__input">
+            <option value="homologacao" ${(config.ambiente || config.modo) === 'homologacao' ? 'selected' : ''}>Homologação</option>
+            <option value="producao" ${(config.ambiente || config.modo) === 'producao' ? 'selected' : ''}>Produção</option>
+          </select>
+        </label>`,
+        fieldHtml({ name: 'serie_nfce', label: 'Série NFC-e', value: config.serie_nfce || config.serie || '1' }),
+        fieldHtml({ name: 'serie_nfe', label: 'Série NF-e', value: config.serie_nfe || '' }),
+        fieldHtml({ name: 'numero_nfce', label: 'Próximo nº NFC-e', value: config.numero_nfce || config.proximo_numero || '', inputmode: 'numeric' }),
+        fieldHtml({ name: 'csc_id', label: 'CSC ID', value: config.csc_id || config.id_csc || '' }),
+        fieldHtml({ name: 'csc', label: 'CSC', value: config.csc || config.csc_token || '', type: 'password' }),
+        fieldHtml({ name: 'razao_social', label: 'Razão social emitente', value: config.razao_social || '' }),
+        fieldHtml({ name: 'cnpj', label: 'CNPJ', value: config.cnpj || '', inputmode: 'numeric' }),
+        fieldHtml({ name: 'ie', label: 'IE', value: config.ie || '' })
+      ].join(''), isAdmin() || canDoAction('emitir_nfce')
+        ? `<button type="submit" class="cds-mobile-btn">Salvar</button>`
+        : '<p class="cds-muted">Sem permissão para editar.</p>')}
+
+      ${sectionTitleHtml('Certificado A1')}
+      <article class="cds-card">
+        <p class="cds-muted">Upload multipart — POST /api/fiscal/certificado/upload</p>
+        <input type="file" id="fis-cert" accept=".pfx,.p12,application/x-pkcs12" style="width:100%;margin:8px 0">
+        ${fieldHtml({ name: 'senha_cert', label: 'Senha do certificado', type: 'password' })}
+        <button type="button" class="cds-mobile-btn cds-mobile-btn--secondary" id="fis-cert-up" style="width:100%">Enviar certificado</button>
+        <button type="button" class="cds-mobile-btn cds-mobile-btn--ghost" id="fis-cert-test" style="width:100%;margin-top:8px">Testar certificado</button>
+      </article>
+    `;
+    bindBack(root);
+
+    root.querySelector('#cds-form')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (!isAdmin() && !canDoAction('emitir_nfce')) return;
+      const d = collectForm(e.target);
+      try {
+        await window.CDSApi.put('fiscal/config', d);
+        showToast('Configuração fiscal salva.', 'success');
+      } catch (err) {
+        showToast(err.message || 'Falha ao salvar', 'error');
+      }
+    });
+
+    root.querySelector('#fis-cert-up')?.addEventListener('click', async () => {
+      const file = root.querySelector('#fis-cert')?.files?.[0];
+      const senha = root.querySelector('[name="senha_cert"]')?.value || '';
+      if (!file) {
+        showToast('Selecione o arquivo .pfx', 'warning');
+        return;
+      }
+      const fd = new FormData();
+      fd.append('certificado', file);
+      fd.append('senha', senha);
+      try {
+        const base = window.CDSApi.resolveApiBase();
+        const res = await fetch(`${base}/fiscal/certificado/upload`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${localStorage.getItem('token') || ''}` },
+          body: fd
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.error || 'Upload falhou');
+        showToast('Certificado enviado.', 'success');
+      } catch (err) {
+        showToast(err.message || 'Falha no upload', 'error');
+      }
+    });
+
+    root.querySelector('#fis-cert-test')?.addEventListener('click', async () => {
+      try {
+        await window.CDSApi.post('fiscal/config/certificado/testar', {});
+        showToast('Certificado OK.', 'success');
+      } catch (err) {
+        showToast(err.message || 'Falha no teste', 'error');
+      }
+    });
+  } catch (err) {
+    root.innerHTML = `${backBarHtml('Fiscal')}${errorHtml(err.message, err.status)}`;
+    bindBack(root);
+  }
+}
+
 export async function render(root, parsed) {
-  if (parsed?.parts?.[1]) return renderDetail(root, parsed.parts[1]);
+  const sub = parsed?.parts?.[1];
+  if (sub === 'config') return renderConfig(root);
+  if (sub) return renderDetail(root, sub);
   return renderFiscal(root);
 }
 
-export default { render, renderDetail, title: 'Fiscal', subtitle: 'Operacional' };
+export default { render, renderDetail, renderConfig, title: 'Fiscal', subtitle: 'Operacional' };

@@ -39,7 +39,8 @@ async function sincronizarCreditoComercial(uow, eventos, consignacao, options = 
   const perfil = await uow.perfilComercial.buscarPorId(perfilComercialId);
   const metricas = CreditoComercialService.calcular({
     limiteComercial: Number(perfil?.limiteComercial ?? 0),
-    movimentacoes
+    movimentacoes,
+    perdaAssumidaCliente: Number(options.perdaAssumidaCliente || 0)
   });
 
   // 1 sync de cache — única escrita de saldo_aberto

@@ -25,6 +25,7 @@ const {
 } = require('./prestacaoOperacaoHelpers');
 const { sincronizarCacheConsignacao } = require('../../services/projections/ledgerCacheSync');
 const { sincronizarCreditoComercial } = require('../../services/sincronizarCreditoComercial');
+const { resolverQuantidadeBaseMcc } = require('../../services/mccQuantidadeComercial');
 
 class RegistrarVendaPrestacaoUseCase extends ConsignacaoWriteUseCase {
   constructor(deps = {}) {
@@ -44,7 +45,7 @@ class RegistrarVendaPrestacaoUseCase extends ConsignacaoWriteUseCase {
   }
 
   async processar(entrada) {
-    const quantidade = Number(entrada.quantidade);
+    const quantidadeInformada = Number(entrada.quantidade);
     const correlationId = entrada.correlationId ?? gerarCorrelationId();
     const origem = entrada.origem ?? 'USUARIO';
 
@@ -54,15 +55,26 @@ class RegistrarVendaPrestacaoUseCase extends ConsignacaoWriteUseCase {
 
       const item = await obterItemPrestacao(uow, consignacao, entrada);
       const saldo = calcularSaldoItem(item);
-      if (quantidade > saldo) {
+      if (quantidadeInformada > saldo) {
         throw new QuantidadeSuperiorAoSaldoError({
           consignacaoId: consignacao.id,
           itemId: item.id,
           saldo,
-          quantidade
+          quantidade: quantidadeInformada
         });
       }
 
+      const mccQty = await resolverQuantidadeBaseMcc(uow, {
+        produtoId: item.produtoId,
+        quantidade: quantidadeInformada,
+        unidadeOrigem: entrada.unidadeComercial || entrada.unidadeOrigem || item.unidadeComercial || item.unidade,
+        consignacaoId: consignacao.id,
+        operacao: 'VENDA_PRESTACAO',
+        usuarioId: entrada.usuarioId
+      });
+
+      const quantidade = quantidadeInformada;
+      const quantidadeBase = mccQty.quantidadeBase;
       const valorVenda = quantidade * Number(item.precoUnitario ?? 0);
       const novaQtdVendida = Number(item.quantidadeVendida ?? 0) + quantidade;
       const itens = await uow.consignacaoItem.listarPorConsignacao(consignacao.id);
@@ -74,7 +86,7 @@ class RegistrarVendaPrestacaoUseCase extends ConsignacaoWriteUseCase {
         grupo,
         itens,
         { ...totaisAtuais, totalVendido: totaisAtuais.totalVendido + valorVenda },
-        { operacao: 'VENDA_PRESTACAO', itemId: item.id, quantidade }
+        { operacao: 'VENDA_PRESTACAO', itemId: item.id, quantidade, mcc: mccQty.auditoria }
       );
 
       const movimentacao = await registrarMovimentacaoComercial(uow, {
@@ -87,8 +99,9 @@ class RegistrarVendaPrestacaoUseCase extends ConsignacaoWriteUseCase {
         snapshot,
         usuarioId: entrada.usuarioId ?? null,
         valor: valorVenda,
-        quantidade,
-        motivo: entrada.motivo ?? 'Venda na prestação de contas'
+        quantidade: quantidadeBase,
+        motivo: entrada.motivo ?? 'Venda na prestação de contas',
+        detalhes: mccQty.auditoria ? { mcc: mccQty.auditoria } : null
       });
 
       const itemAtualizado = await uow.consignacaoItem.atualizar(item.id, {
@@ -97,10 +110,6 @@ class RegistrarVendaPrestacaoUseCase extends ConsignacaoWriteUseCase {
       });
 
       const consignacaoAtualizada = await sincronizarCacheConsignacao(uow, consignacao.id);
-
-      // STAB-06: efeitos financeiros da venda oficial ficam no núcleo criarVenda.
-      // Ledger comercial permanece; não enfileirar receita espelhada (venda paralela).
-      // Outbox infra intacta — apenas deixamos de publicar este evento nesta UC.
 
       enfileirarEvento(eventos, EVENTOS_DOMINIO.VENDA_PRESTACAO_REGISTRADA, consignacao.id, {
         consignacao: consignacaoAtualizada,
@@ -120,7 +129,8 @@ class RegistrarVendaPrestacaoUseCase extends ConsignacaoWriteUseCase {
         consignacao: consignacaoAtualizada,
         item: itemAtualizado,
         movimentacao,
-        correlationId
+        correlationId,
+        mcc: mccQty.auditoria
       };
     });
   }

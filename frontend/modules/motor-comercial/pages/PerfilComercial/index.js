@@ -332,12 +332,20 @@ class PerfilComercialPage {
     }
 
     filtered.forEach((cliente) => {
+      const clienteId = Number(cliente.clienteId);
       host.appendChild(ClienteOperacionalCard.create(cliente, {
         formatCurrency: (v) => this._formatCurrency(v),
-        onAbrir: (c) => navigate(`/clientes/${c.clienteId}`),
-        onEditar: (c) => navigate(`/clientes/${c.clienteId}/editar`),
-        onHistorico: (c) => navigate(`/clientes/${c.clienteId}#historico`),
-        onContaCorrente: (c) => navigate(buildRouteWithCliente360Context('/conta-corrente', c.clienteId, { clienteNome: c.nome })),
+        onAbrir: (c) => {
+          const id = Number(c?.clienteId || clienteId);
+          if (!Number.isFinite(id) || id <= 0) {
+            notify('Cliente inválido: ID não encontrado.', 'error');
+            return;
+          }
+          navigate(`/clientes/${id}`);
+        },
+        onEditar: (c) => navigate(`/clientes/${Number(c?.clienteId || clienteId)}/editar`),
+        onHistorico: (c) => navigate(`/clientes/${Number(c?.clienteId || clienteId)}#historico`),
+        onContaCorrente: (c) => navigate(buildRouteWithCliente360Context('/conta-corrente', Number(c?.clienteId || clienteId), { clienteNome: c.nome })),
         onDesativar: (c) => this._desativarCliente(c),
         onExcluir: (c) => this._excluirCliente(c)
       }));
@@ -461,14 +469,62 @@ class PerfilComercialPage {
     }
   }
 
-  async _resolvePerfil(id) {
-    try {
-      return await this.api.obterPerfil(id);
-    } catch {
-      const { items } = await this.api.listarPerfis({ clienteId: id });
-      if (items?.length) return items[0];
+  /**
+   * Resolve o painel a partir de `/clientes/:id`.
+   * O `:id` é SEMPRE o clienteId do ERP (SSOT do nome/cadastro).
+   *
+   * Bug real no banco: perfil.id=3 é do Cícero, enquanto Francisco é cliente.id=3.
+   * Por isso NUNCA chamar obterPerfil(routeId).
+   */
+  async _resolvePerfil(clienteIdRota) {
+    const clienteId = Number(clienteIdRota);
+    if (!Number.isFinite(clienteId) || clienteId <= 0) {
       throw new Error('Cliente não encontrado.');
     }
+
+    // 1) ERP primeiro — identidade oficial
+    const clienteErp = await fetchErp(`/clientes/${clienteId}`);
+    if (!clienteErp || !clienteErp.id) {
+      throw new Error('Cliente não encontrado.');
+    }
+
+    // 2) Perfis comerciais deste cliente (filtro por cliente_id, nunca por perfil.id)
+    const { items } = await this.api.listarPerfis({ clienteId: Number(clienteErp.id), pageSize: 50 });
+    const perfisDoCliente = (items || []).filter((p) => Number(p.clienteId) === Number(clienteErp.id));
+
+    let perfilEscolhido = null;
+    if (perfisDoCliente.length) {
+      perfilEscolhido = perfisDoCliente.find((p) => {
+        const tipo = String(p.perfilTipo || p.tipoPerfil || '').toUpperCase();
+        return tipo.includes('CONSIGN');
+      }) || perfisDoCliente[0];
+    }
+
+    // 3) Identidade SEMPRE do ERP — impede abrir Cícero ao clicar em Francisco
+    return {
+      ...(perfilEscolhido || {}),
+      id: perfilEscolhido?.id ?? null,
+      clienteId: Number(clienteErp.id),
+      clienteNome: clienteErp.nome,
+      cliente: {
+        ...(typeof perfilEscolhido?.cliente === 'object' && perfilEscolhido.cliente
+          ? perfilEscolhido.cliente
+          : {}),
+        id: Number(clienteErp.id),
+        nome: clienteErp.nome,
+        documento: clienteErp.cpf_cnpj || null,
+        telefone: clienteErp.telefone || null,
+        email: clienteErp.email || null,
+        cidade: clienteErp.cidade || null,
+        uf: clienteErp.uf || null
+      },
+      telefone: clienteErp.telefone || perfilEscolhido?.telefone || '',
+      cpfCnpj: clienteErp.cpf_cnpj || perfilEscolhido?.cpfCnpj || '',
+      perfilTipo: perfilEscolhido?.perfilTipo || null,
+      status: perfilEscolhido?.status || 'ATIVO',
+      bloqueado: !!perfilEscolhido?.bloqueado,
+      ativo: perfilEscolhido?.ativo !== false
+    };
   }
 
   async _loadCentralOperacoes(silent = false) {
@@ -497,7 +553,9 @@ class PerfilComercialPage {
       ] = await Promise.all([
         this.api.listarPerfis({ clienteId, pageSize: 50 }).catch(() => ({ items: [] })),
         this.projectionApi.obterSituacaoCliente({ clienteId }).catch(() => ({})),
-        this.api.obterScorePerfil(perfilId).catch(() => ({})),
+        perfilId
+          ? this.api.obterScorePerfil(perfilId).catch(() => ({}))
+          : Promise.resolve({}),
         this.api.listarConsignacoes({ clienteId }).catch(() => ({ items: [] })),
         this.projectionApi.obterProjecaoPendencias({ clienteId }).catch(() => ({})),
         this.projectionApi.obterProjecaoContaCorrente({ clienteId }).catch(() => ({})),

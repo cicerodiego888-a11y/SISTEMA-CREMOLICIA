@@ -1,8 +1,10 @@
 /**
  * CDS Mobile RC2.1 — Fluxo Configurações
  */
-import { escapeHtml, errorHtml, sectionTitleHtml, asText, loadingHtml } from '../ui.js';
+import { escapeHtml, errorHtml, sectionTitleHtml, asText, loadingHtml, bindGo, backBarHtml, bindBack } from '../ui.js';
 import { showToast } from '../toast.js';
+import { fieldHtml, formCardHtml, collectForm, confirmSheet } from '../forms.js';
+import { isAdmin } from '../permissions.js';
 import {
   CDS_MOBILE_VERSION_LABEL,
   CDS_MOBILE_VERSION,
@@ -153,8 +155,19 @@ export async function renderConfiguracoes(root) {
       ${sectionTitleHtml('Modo fiscal')}
       <article class="cds-card">
         <div class="cds-row"><span>Modo</span><strong>${escapeHtml(modoFiscal)}</strong></div>
-        <p class="cds-muted" style="margin-bottom:0">Emissão/cancelamento via Motor Fiscal nas rotas oficiais (PDV / Comercial).</p>
+        <p class="cds-muted" style="margin-bottom:8px">Emissão/cancelamento via Motor Fiscal nas rotas oficiais (PDV / Comercial).</p>
+        <button type="button" class="cds-mobile-btn cds-mobile-btn--secondary" data-go="fiscal/config" style="width:100%">Configuração fiscal completa</button>
       </article>
+
+      ${sectionTitleHtml('Administração')}
+      <div class="cds-quick-grid" style="grid-template-columns:1fr 1fr">
+        <button type="button" class="cds-quick" data-go="configuracoes/midp">MIDP</button>
+        <button type="button" class="cds-quick" data-go="configuracoes/tef">TEF</button>
+        <button type="button" class="cds-quick" data-go="configuracoes/licenca">Licença</button>
+        <button type="button" class="cds-quick" data-go="equipamentos">Equipamentos</button>
+        <button type="button" class="cds-quick" data-go="central-entradas">Central NF</button>
+        <button type="button" class="cds-quick" data-go="relatorios">Relatórios</button>
+      </div>
 
       ${sectionTitleHtml('Tema')}
       <article class="cds-card">
@@ -204,6 +217,8 @@ export async function renderConfiguracoes(root) {
         <button type="button" class="cds-mobile-btn" id="cfg-logout" style="width:100%">Logout</button>
       </article>
     `;
+
+    bindGo(root);
 
     root.querySelectorAll('[data-theme]').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -281,4 +296,163 @@ export async function renderConfiguracoes(root) {
   }
 }
 
-export default { render: renderConfiguracoes, title: 'Configurações', subtitle: 'Preferências' };
+export async function renderMidp(root) {
+  root.innerHTML = loadingHtml('MIDP…');
+  try {
+    let cfg = {};
+    try {
+      cfg = await window.CDSApi.get('configuracoes-avancadas') || {};
+    } catch (e) {
+      cfg = {};
+    }
+    const ativado = cfg.midp_ativado === true || cfg.midp_ativado === 1 || cfg.midp_ativado === 'true'
+      || cfg.midpAtivado === true;
+
+    root.innerHTML = `
+      ${backBarHtml('Configurações')}
+      <h2 class="cds-page-title" style="font-size:1.15rem;margin:8px 0">MIDP</h2>
+      <p class="cds-muted">Mesma política do Desktop: On = PreservarDinheiro; Off = legado.</p>
+      <article class="cds-card">
+        <div class="cds-row"><span>Status</span><strong>${ativado ? 'Ativado' : 'Desativado'}</strong></div>
+        <label class="cds-check" style="display:flex;gap:10px;align-items:center;margin:12px 0">
+          <input type="checkbox" id="midp-on" ${ativado ? 'checked' : ''} ${isAdmin() ? '' : 'disabled'}>
+          <span>MIDP ativado</span>
+        </label>
+        ${isAdmin()
+          ? '<button type="button" class="cds-mobile-btn" id="midp-save" style="width:100%">Salvar</button>'
+          : '<p class="cds-muted">Somente administrador pode alterar.</p>'}
+      </article>
+    `;
+    bindBack(root);
+    root.querySelector('#midp-save')?.addEventListener('click', async () => {
+      const on = !!root.querySelector('#midp-on')?.checked;
+      try {
+        await window.CDSApi.post('configuracoes-avancadas', { ...cfg, midp_ativado: on });
+        showToast('MIDP atualizado.', 'success');
+      } catch (err) {
+        showToast(err.message || 'Falha ao salvar MIDP', 'error');
+      }
+    });
+  } catch (err) {
+    root.innerHTML = `${backBarHtml('Configurações')}${errorHtml(err.message, err.status)}`;
+    bindBack(root);
+  }
+}
+
+export async function renderTef(root) {
+  root.innerHTML = loadingHtml('TEF…');
+  try {
+    let cfg = {};
+    let status = null;
+    try { cfg = await window.CDSApi.get('tef/configuracao') || {}; } catch (e) { cfg = {}; }
+    try { status = await window.CDSApi.get('tef/status'); } catch (e) { status = null; }
+
+    root.innerHTML = `
+      ${backBarHtml('Configurações')}
+      <h2 class="cds-page-title" style="font-size:1.15rem;margin:8px 0">TEF</h2>
+      <p class="cds-muted">Pinpad físico: ◐ limitação mobile — pagamento TEF via API quando disponível.</p>
+      <article class="cds-card">
+        <div class="cds-row"><span>Status</span><strong>${escapeHtml(asText(status?.status || status?.mensagem || '—'))}</strong></div>
+      </article>
+      ${formCardHtml('Configuração', [
+        fieldHtml({ name: 'provedor', label: 'Provedor', value: cfg.provedor || cfg.provider || '' }),
+        fieldHtml({ name: 'empresa', label: 'Empresa / código', value: cfg.empresa || cfg.codigo_empresa || '' }),
+        fieldHtml({ name: 'terminal', label: 'Terminal', value: cfg.terminal || cfg.terminal_id || '' }),
+        fieldHtml({ name: 'ativo', label: 'Ativo (1/0)', value: cfg.ativo ?? 1, inputmode: 'numeric' })
+      ].join(''), isAdmin()
+        ? `<button type="submit" class="cds-mobile-btn">Salvar</button>
+           <button type="button" class="cds-mobile-btn cds-mobile-btn--secondary" id="tef-test" style="margin-top:8px;width:100%">Testar</button>`
+        : '<p class="cds-muted">Somente admin.</p>')}
+    `;
+    bindBack(root);
+    root.querySelector('#cds-form')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (!isAdmin()) return;
+      const d = collectForm(e.target);
+      try {
+        await window.CDSApi.put('tef/configuracao', d).catch(() =>
+          window.CDSApi.post('tef/configuracao', d));
+        showToast('TEF salvo.', 'success');
+      } catch (err) {
+        showToast(err.message || 'Falha TEF', 'error');
+      }
+    });
+    root.querySelector('#tef-test')?.addEventListener('click', async () => {
+      try {
+        await window.CDSApi.post('tef/testar', {});
+        showToast('Teste TEF OK.', 'success');
+      } catch (err) {
+        showToast(err.message || 'Falha no teste TEF', 'error');
+      }
+    });
+  } catch (err) {
+    root.innerHTML = `${backBarHtml('Configurações')}${errorHtml(err.message, err.status)}`;
+    bindBack(root);
+  }
+}
+
+export async function renderLicenca(root) {
+  root.innerHTML = loadingHtml('Licença…');
+  try {
+    const [lic, hist] = await Promise.all([
+      window.CDSApi.get('licenca').catch(() => null),
+      window.CDSApi.get('licenca/historico').catch(() => [])
+    ]);
+    const historico = Array.isArray(hist) ? hist : (hist?.data || []);
+
+    root.innerHTML = `
+      ${backBarHtml('Configurações')}
+      <h2 class="cds-page-title" style="font-size:1.15rem;margin:8px 0">Licenciamento</h2>
+      <article class="cds-card">
+        <div class="cds-row"><span>Status</span><strong>${escapeHtml(asText(lic?.status || lic?.situacao || '—'))}</strong></div>
+        <div class="cds-row"><span>Plano</span><strong>${escapeHtml(asText(lic?.plano || lic?.produto || '—'))}</strong></div>
+        <div class="cds-row"><span>Validade</span><strong>${escapeHtml(asText(lic?.validade || lic?.expira_em || '—'))}</strong></div>
+      </article>
+      ${isAdmin() ? formCardHtml('Ativar', [
+        fieldHtml({ name: 'chave', label: 'Chave de licença', required: true })
+      ].join(''), `<button type="submit" class="cds-mobile-btn">Ativar</button>`) : ''}
+      ${sectionTitleHtml('Histórico')}
+      <div>
+        ${historico.length
+          ? historico.slice(0, 20).map((h) => `
+              <article class="cds-card">
+                <strong>${escapeHtml(asText(h.acao || h.evento || 'Evento'))}</strong>
+                <p class="cds-muted">${escapeHtml(asText(h.data || h.created_at || ''))}</p>
+              </article>
+            `).join('')
+          : '<p class="cds-muted">Sem histórico</p>'}
+      </div>
+    `;
+    bindBack(root);
+    root.querySelector('#cds-form')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const d = collectForm(e.target);
+      const ok = await confirmSheet({
+        title: 'Ativar licença',
+        message: 'Confirma ativação com esta chave?',
+        confirmLabel: 'Ativar'
+      });
+      if (!ok) return;
+      try {
+        await window.CDSApi.post('licenca/ativar', d);
+        showToast('Licença ativada.', 'success');
+        renderLicenca(root);
+      } catch (err) {
+        showToast(err.message || 'Falha ao ativar', 'error');
+      }
+    });
+  } catch (err) {
+    root.innerHTML = `${backBarHtml('Configurações')}${errorHtml(err.message, err.status)}`;
+    bindBack(root);
+  }
+}
+
+export async function render(root, parsed) {
+  const sub = parsed?.parts?.[1];
+  if (sub === 'midp') return renderMidp(root);
+  if (sub === 'tef') return renderTef(root);
+  if (sub === 'licenca') return renderLicenca(root);
+  return renderConfiguracoes(root);
+}
+
+export default { render, renderConfiguracoes, title: 'Configurações', subtitle: 'Preferências' };

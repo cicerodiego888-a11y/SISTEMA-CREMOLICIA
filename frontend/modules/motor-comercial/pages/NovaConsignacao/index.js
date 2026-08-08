@@ -72,8 +72,31 @@ const {
   resolveEntityId,
   RecoveryManager
 } = require('../../recovery');
+const {
+  ErrorMessages,
+  RecoveryMessages: CatalogRecovery,
+  ConfirmMessages,
+  notifySuccess,
+  notifyError,
+  notifyWarning,
+  notifyInfo,
+  notifyRecovery,
+  loadingText
+} = require('../../messages');
 
 const REFRESH_CLIENTE_DEBOUNCE = 320;
+
+/** RCM-7.2.1 — Canal da Operação na consignação (prioridade absoluta sobre Tipo Comercial) */
+const CANAL_OPERACAO_CONSIGNACAO = 'CONSIGNADO';
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 class NovaConsignacaoPage {
   constructor(routeParams = {}, routeQuery = {}) {
@@ -107,6 +130,7 @@ class NovaConsignacaoPage {
       data: new Date().toISOString().split('T')[0],
       dataPrevista: '',
       observacoes: '',
+      canalVenda: CANAL_OPERACAO_CONSIGNACAO,
       itens: []
     };
 
@@ -114,6 +138,12 @@ class NovaConsignacaoPage {
     this.clienteBusca = '';
     this.clienteResultados = [];
     this.clienteSearchTimeout = null;
+    /** RCM-7.4 — resumo visual da operação (não altera resolução de preço) */
+    this.operacaoResumo = {
+      tipoComercial: null,
+      canalOperacao: CANAL_OPERACAO_CONSIGNACAO,
+      tabelaPreco: null
+    };
     this.dirtyState = DirtyState.create(this.data);
     this.loading = { profile: false, saving: false };
     this.lipInstance = null;
@@ -201,24 +231,24 @@ class NovaConsignacaoPage {
         }
 
         if (options.notifyResume) {
-          notify('Operação retomada automaticamente.', 'info');
+          notifyInfo('OPERACAO_RETOMADA');
         }
         return;
       }
     } catch (error) {
-      notify(operationalMessage(error), 'warning');
+      notifyRecovery(operationalMessage(error));
       return;
     }
 
     if (RecoveryManager.isDraftEntityId(consignacaoId)) {
-      notify(operationalMessage('A operação não pode mais ser retomada.'), 'warning');
+      notifyRecovery(CatalogRecovery.RETOMADA_INDISPONIVEL);
       return;
     }
 
     try {
       await this._loadConsignacaoRascunho(consignacaoId);
     } catch (error) {
-      notify(operationalMessage(error), 'warning');
+      notifyError('CONSIGNACAO_CARREGAR', error);
     }
   }
 
@@ -238,7 +268,7 @@ class NovaConsignacaoPage {
 
   async _applyRecoveredConsignacao(entity, checkpoint = {}) {
     if (String(entity.status || '').toUpperCase() !== 'RASCUNHO') {
-      notify('Somente rascunhos podem ser editados.', 'warning');
+      notifyWarning('SOMENTE_RASCUNHO');
       return;
     }
 
@@ -313,10 +343,16 @@ class NovaConsignacaoPage {
     bodyInner.id = 'preparar-entrega-shell';
 
     const credit = document.createElement('div');
-    credit.id = 'preparar-entrega-credit-strip';
-    credit.className = 'cds-preparar-entrega__credit-strip';
+    credit.id = 'preparar-entrega-resumo-financeiro';
+    credit.className = 'cds-preparar-entrega__resumo-financeiro-host';
     credit.hidden = true;
     bodyInner.appendChild(credit);
+
+    const statusHost = document.createElement('div');
+    statusHost.id = 'preparar-entrega-operacao-resumo';
+    statusHost.className = 'cds-preparar-entrega__operacao-resumo';
+    bodyInner.appendChild(statusHost);
+    this._renderOperacaoResumo();
 
     const stepperHost = document.createElement('div');
     stepperHost.id = 'preparar-entrega-stepper';
@@ -348,7 +384,7 @@ class NovaConsignacaoPage {
 
     this._setupExitConfirmation();
     this._bindKeyboardShortcuts();
-    this._refreshCreditStrip();
+    this._refreshResumoFinanceiroUnico();
 
     if (this._isProdutosStep()) {
       setTimeout(() => this._mountLip(), 0);
@@ -445,20 +481,29 @@ class NovaConsignacaoPage {
   }
 
   _refreshCreditStrip() {
-    const strip = document.getElementById('preparar-entrega-credit-strip');
-    if (!strip) return;
+    this._refreshResumoFinanceiroUnico();
+  }
+
+  /**
+   * RCM-7.5 — único painel financeiro (sem strip/crédito duplicados).
+   */
+  _refreshResumoFinanceiroUnico() {
+    const host = document.getElementById('preparar-entrega-resumo-financeiro');
+    if (!host) return;
     if (this.concluido || this.currentStep < 1 || !this.data.clienteId) {
-      strip.hidden = true;
-      strip.innerHTML = '';
+      host.hidden = true;
+      host.innerHTML = '';
       return;
     }
-    const painel = this._getPainelLimite();
-    strip.hidden = false;
-    strip.innerHTML = `
-      <span>Crédito disponível: <strong>${painel.creditoDisponivelExibicao || formatCurrency(painel.limiteDisponivel || 0)}</strong></span>
-      <span>Valor da entrega: <strong>${formatCurrency(painel.valorTotal || 0)}</strong></span>
-      <span>Saldo restante: <strong>${painel.saldoRestanteExibicao || '—'}</strong></span>
-    `;
+    const painel = this.lipSimulacao?.painelProjetado || this._getPainelLimite();
+    host.hidden = false;
+    const existing = host.querySelector('.cds-resumo-financeiro');
+    if (existing) {
+      PrepararEntregaView.atualizarResumoFinanceiroDom(host, painel);
+    } else {
+      host.innerHTML = '';
+      host.appendChild(PrepararEntregaView.renderResumoFinanceiro(painel));
+    }
   }
 
   _getPainelLimite() {
@@ -558,7 +603,8 @@ class NovaConsignacaoPage {
       focusedItemIndex: this.focusedItemIndex,
       documentoCriado: this.documentoCriado,
       voltarLabel: this._getVoltarConclusaoLabel(),
-      lipSimulacao: this.lipSimulacao
+      lipSimulacao: this.lipSimulacao,
+      operacaoResumo: this.operacaoResumo
     };
   }
 
@@ -574,6 +620,8 @@ class NovaConsignacaoPage {
       onItemObsChange: (i, v) => this._updateItemObs(i, v),
       onItemDuplicar: (i) => this._duplicateItem(i),
       onItemRemover: (i) => this._removeItem(i),
+      api: this.api,
+      onCompararTabelas: (pid, item) => PrepararEntregaView.abrirCompararTabelas(this.api, pid, item),
       onDocumentoExternoChange: (v) => {
         this.data.documentoExterno = v;
         this.dirtyState.updateValues(this.data);
@@ -621,7 +669,7 @@ class NovaConsignacaoPage {
     try {
       this.clienteResultados = await buscarClientesErp(query);
       if (!this.clienteResultados.length && !silent) {
-        notify('Nenhum cliente encontrado.', 'warning');
+        notifyWarning(ErrorMessages.CLIENTE_BUSCA_VAZIA);
       }
     } catch (error) {
       if (!silent) notify(error.message, 'error');
@@ -657,7 +705,7 @@ class NovaConsignacaoPage {
     try {
       const cliente = await buscarClientePorIdErp(clienteId);
       if (!cliente) {
-        notify('Cliente não encontrado.', 'warning');
+        notifyWarning(ErrorMessages.CLIENTE_NAO_ENCONTRADO);
         return;
       }
       await this._applyClientePerfil(cliente);
@@ -682,6 +730,11 @@ class NovaConsignacaoPage {
     this.clienteProfile = null;
     this.clienteResultados = [];
     this.clienteBusca = '';
+    this.operacaoResumo = {
+      tipoComercial: null,
+      canalOperacao: CANAL_OPERACAO_CONSIGNACAO,
+      tabelaPreco: null
+    };
     this.data.clienteId = null;
     this.data.perfilComercialId = null;
     this.data.cliente = null;
@@ -734,6 +787,8 @@ class NovaConsignacaoPage {
       cidade: cliente.cidade || cliente.municipio || '—',
       capacidades: extrairCapacidadesDosPerfis(items),
       perfilComercial: perfil.perfilTipo || 'CONSIGNADO',
+      tipoComercialCodigo: cliente.tipo_comercial_codigo || null,
+      tipoComercialDescricao: cliente.tipo_comercial_descricao || null,
       limiteComercial: Number(perfil.limiteComercial ?? situacao?.limiteComercial ?? 0),
       // STAB-02: crédito exclusivo da API (CreditoComercialService) — sem fallback local
       limiteDisponivel: Number(situacao?.creditoDisponivel ?? situacao?.limiteDisponivel ?? 0),
@@ -744,12 +799,44 @@ class NovaConsignacaoPage {
       situacao: situacao?.situacao || (perfil.bloqueado ? 'BLOQUEADO' : 'ATIVO')
     };
 
+    this.operacaoResumo.tipoComercial = cliente.tipo_comercial_descricao
+      || cliente.tipo_comercial_codigo
+      || null;
+    this.operacaoResumo.canalOperacao = CANAL_OPERACAO_CONSIGNACAO;
+
     this.data.clienteId = Number(cliente.id);
     this.data.perfilComercialId = Number(perfil.id);
     this.data.cliente = cliente.nome;
     this.dirtyState.updateValues(this.data);
     this._scheduleAutosave();
     this._updateSidebar();
+    this._renderOperacaoResumo();
+  }
+
+  /**
+   * RCM-7.2.1 / RCM-7.5 — canal_manual = CONSIGNADO tem prioridade absoluta.
+   * Não exibe aviso ao selecionar cliente: Tipo Comercial (ex.: Consumidor Final)
+   * não precisa incluir CONSIGNADO para a operação de consignação seguir.
+   * Diagnóstico opt-in: localStorage CDS_AVISO_CONSIGNACAO_CANAL = '1'
+   */
+  async _validarCanalConsignadoTipoComercial(clienteId) {
+    const avisoAtivo = typeof localStorage !== 'undefined'
+      && localStorage.getItem('CDS_AVISO_CONSIGNACAO_CANAL') === '1';
+    if (!avisoAtivo || !clienteId) return;
+    try {
+      const res = await this.api.validarCanalTipoComercial({
+        cliente_id: clienteId,
+        canal: 'CONSIGNADO'
+      });
+      if (res && res.permitido === false) {
+        notifyWarning(
+          `Tipo Comercial (${res.tipo_comercial_codigo || '—'}) não inclui o canal CONSIGNADO. `
+          + 'A consignação segue com canal CONSIGNADO, mas revise o cadastro do Tipo.'
+        );
+      }
+    } catch (_err) {
+      /* validação soft — não bloqueia o fluxo */
+    }
   }
 
   _mountLip() {
@@ -817,21 +904,27 @@ class NovaConsignacaoPage {
     const existente = this.data.itens.find((item) => Number(item.produtoId) === Number(produto.id));
     if (existente) {
       existente.quantidade = Number(existente.quantidade || 0) + Math.max(1, Number(quantidade) || 1);
+      if (existente.categoriaId == null && produto.categoria_id != null) {
+        existente.categoriaId = produto.categoria_id;
+      }
     } else {
       this.data.itens.push({
         produtoId: produto.id,
         produto: produto.nome || produto.descricao,
         codigo: produto.codigo || produto.codigo_barras || '',
         quantidade: Math.max(1, Number(quantidade) || 1),
-        preco: Number(produto.preco ?? produto.preco_venda ?? 0),
+        preco: Number(produto.preco ?? produto.precoVenda ?? 0),
+        categoriaId: produto.categoria_id ?? produto.categoriaId ?? null,
         observacao: ''
       });
     }
 
     this.dirtyState.updateValues(this.data);
-    this._refreshProdutosView();
-    this._scheduleAutosave();
-    if (this.lipInstance) this.lipInstance.focus();
+    this._recalcularPrecosCanalVenda().finally(() => {
+      this._refreshProdutosView();
+      this._scheduleAutosave();
+      if (this.lipInstance) this.lipInstance.focus();
+    });
   }
 
   _updateItemQty(index, value, { refreshGrade = true } = {}) {
@@ -839,12 +932,124 @@ class NovaConsignacaoPage {
     if (!this.data.itens[index]) return;
     this.data.itens[index].quantidade = q;
     this.dirtyState.updateValues(this.data);
-    this._scheduleAutosave();
-    if (refreshGrade) {
-      this._refreshProdutosView();
-    } else {
-      this._refreshResumoFinanceiro();
+    this._recalcularPrecosCanalVenda().finally(() => {
+      this._scheduleAutosave();
+      if (refreshGrade) {
+        this._refreshProdutosView();
+      } else {
+        this._refreshResumoFinanceiro();
+      }
+    });
+  }
+
+  /**
+   * RCM-04.5 / RCM-7.2.1 — canal_manual = CONSIGNADO (prioridade absoluta).
+   * Nunca exibe/usa canal do Tipo Comercial nesta operação.
+   */
+  async _recalcularPrecosCanalVenda() {
+    this.data.canalVenda = CANAL_OPERACAO_CONSIGNACAO;
+    this.operacaoResumo.canalOperacao = CANAL_OPERACAO_CONSIGNACAO;
+
+    if (!Array.isArray(this.data.itens) || this.data.itens.length === 0) {
+      this.operacaoResumo.tabelaPreco = null;
+      this._renderOperacaoResumo();
+      return;
     }
+    try {
+      // canal_manual via body.canal — NÃO enviar cliente_id (evita Tipo Comercial)
+      const res = await this.api.resolverPrecosVenda(this.data.itens, {
+        canal: CANAL_OPERACAO_CONSIGNACAO,
+        documento: 'consignacao'
+      });
+      this.data.canalVenda = CANAL_OPERACAO_CONSIGNACAO;
+      const mapa = new Map((res?.itens || []).map((row) => [Number(row.produto_id), row]));
+      let tabelaNome = null;
+      this.data.itens.forEach((item) => {
+        const row = mapa.get(Number(item.produtoId));
+        if (!row || row.erro) return;
+        const preco = Number(row.preco_venda);
+        if (Number.isFinite(preco) && preco >= 0) {
+          item.preco = preco;
+        }
+        const uc = row.unidade_comercial || row.unidadeComercial;
+        if (uc) item.unidadeComercial = String(uc).trim().toUpperCase();
+        if (row.linha_comercial_id != null) item.linhaComercialId = Number(row.linha_comercial_id);
+        if (row.tabela_preco_id != null) item.tabelaPrecoId = Number(row.tabela_preco_id);
+        item.canalVenda = CANAL_OPERACAO_CONSIGNACAO;
+        item.precoOrigem = row.preco_origem || null;
+        item.precoFallback = !!row.preco_fallback;
+        const linhaObj = row.linhaComercial || row.linha_comercial || null;
+        item.linhaComercialDescricao = linhaObj?.descricao
+          || row.linha_comercial_descricao
+          || item.linhaComercialDescricao
+          || null;
+        item.linhaComercialCodigo = linhaObj?.codigo
+          || row.linha_comercial_codigo
+          || item.linhaComercialCodigo
+          || null;
+        if (row.tabela_preco_nome || row.tabelaPrecoNome) {
+          item.tabelaPrecoNome = row.tabela_preco_nome || row.tabelaPrecoNome;
+        }
+        if (!tabelaNome && item.tabelaPrecoNome) {
+          tabelaNome = item.tabelaPrecoNome;
+        }
+      });
+      this.operacaoResumo.tabelaPreco = tabelaNome || this.operacaoResumo.tabelaPreco;
+      this._renderOperacaoResumo();
+    } catch (err) {
+      console.warn('[RCM-7.2.1] Falha ao resolver preços (canal CONSIGNADO):', err?.message || err);
+      this.data.canalVenda = CANAL_OPERACAO_CONSIGNACAO;
+      this._renderOperacaoResumo();
+    }
+  }
+
+  /**
+   * RCM-7.5 — card Operação (Cliente · Tipo · Tabela · Status congelado).
+   */
+  _renderOperacaoResumo() {
+    const host = document.getElementById('preparar-entrega-operacao-resumo');
+    if (!host) return;
+
+    const visivel = this._isProdutosStep() || this.currentStep >= 1;
+    host.hidden = !visivel;
+    if (!visivel) return;
+
+    const cliente = this.clienteProfile?.nome || this.data.cliente || '—';
+    const tipo = this.operacaoResumo?.tipoComercial
+      || this.clienteProfile?.tipoComercialDescricao
+      || this.clienteProfile?.tipoComercialCodigo
+      || '—';
+    const tabela = this.operacaoResumo?.tabelaPreco || '—';
+    const temItens = Array.isArray(this.data.itens) && this.data.itens.length > 0;
+    const status = temItens ? 'Precificação Congelada' : 'Aguardando itens';
+
+    host.innerHTML = `
+      <div class="cds-operacao-resumo cds-operacao-resumo--card" role="status" aria-label="Resumo da operação">
+        <div class="cds-operacao-resumo__item">
+          <span class="cds-operacao-resumo__label">Operação</span>
+          <span class="cds-operacao-resumo__value">Consignação</span>
+        </div>
+        <div class="cds-operacao-resumo__item">
+          <span class="cds-operacao-resumo__label">Cliente</span>
+          <span class="cds-operacao-resumo__value">${escapeHtml(cliente)}</span>
+        </div>
+        <div class="cds-operacao-resumo__item">
+          <span class="cds-operacao-resumo__label">Tipo Comercial</span>
+          <span class="cds-operacao-resumo__value">${escapeHtml(tipo)}</span>
+        </div>
+        <div class="cds-operacao-resumo__item">
+          <span class="cds-operacao-resumo__label">Tabela de Preços</span>
+          <span class="cds-operacao-resumo__value">${escapeHtml(tabela)}</span>
+        </div>
+        <div class="cds-operacao-resumo__item">
+          <span class="cds-operacao-resumo__label">Status</span>
+          <span class="cds-operacao-resumo__value cds-operacao-resumo__value--status">
+            ${temItens ? '<span class="cds-operacao-resumo__check" aria-hidden="true">✔</span>' : ''}
+            ${escapeHtml(status)}
+          </span>
+        </div>
+      </div>
+    `;
   }
 
   _refreshResumoFinanceiro() {
@@ -871,26 +1076,8 @@ class NovaConsignacaoPage {
   }
 
   _refreshPainelFinanceiroDom() {
-    this._refreshCreditStrip();
-
-    const painel = this.lipSimulacao?.painelProjetado
-      || buildPainelResumo(this.data.itens, this.clienteProfile || {});
-
-    const resumoEl = document.getElementById('prep-resumo-grade');
-    if (resumoEl) {
-      const itensEl = resumoEl.querySelector('[data-resumo-itens]');
-      const qtdEl = resumoEl.querySelector('[data-resumo-quantidade]');
-      const valorEl = resumoEl.querySelector('[data-resumo-valor]');
-      const saldoEl = resumoEl.querySelector('[data-resumo-saldo]');
-      const saldoWrap = resumoEl.querySelector('.cds-preparar-entrega__resumo-grade-item--saldo');
-      if (itensEl) itensEl.textContent = String(painel.quantidadeItens);
-      if (qtdEl) qtdEl.textContent = String(painel.quantidadeTotal);
-      if (valorEl) valorEl.textContent = formatCurrency(painel.valorTotal);
-      if (saldoEl) saldoEl.textContent = painel.saldoRestanteExibicao;
-      if (saldoWrap) {
-        saldoWrap.className = `cds-preparar-entrega__resumo-grade-item cds-preparar-entrega__resumo-grade-item--saldo ${PrepararEntregaView._classeDestaqueSaldo(painel.destaqueSaldoRestante)}`.trim();
-      }
-    }
+    this._refreshResumoFinanceiroUnico();
+    this._renderOperacaoResumo();
   }
 
   _updateItemObs(index, value) {
@@ -911,6 +1098,7 @@ class NovaConsignacaoPage {
       observacao: item.observacao || ''
     });
     this.dirtyState.updateValues(this.data);
+    await this._recalcularPrecosCanalVenda();
     this._refreshProdutosView();
     this._scheduleAutosave();
   }
@@ -923,7 +1111,7 @@ class NovaConsignacaoPage {
       try {
         await withLoading('Removendo item...', () => this.api.removerItem(this.consignacaoId, item.itemId));
       } catch (error) {
-        notify('Erro ao remover item: ' + error.message, 'error');
+        notifyError('CONSIGNACAO_ITEM_REMOVER', error);
         return;
       }
     }
@@ -931,6 +1119,7 @@ class NovaConsignacaoPage {
     this.data.itens.splice(index, 1);
     this.focusedItemIndex = -1;
     this.dirtyState.updateValues(this.data);
+    await this._recalcularPrecosCanalVenda();
     this._refreshProdutosView();
     this._scheduleAutosave();
   }
@@ -1028,6 +1217,7 @@ class NovaConsignacaoPage {
     }
 
     this._refreshCreditStrip();
+    this._renderOperacaoResumo();
 
     if (this._isProdutosStep()) {
       setTimeout(() => this._mountLip(), 0);
@@ -1079,7 +1269,7 @@ class NovaConsignacaoPage {
     try {
       const consignacao = await carregarConsignacaoCompleta(this.api, this.projectionApi, consignacaoId);
       if (String(consignacao.status || '').toUpperCase() !== 'RASCUNHO') {
-        notify('Somente rascunhos podem ser editados.', 'warning');
+        notifyWarning('SOMENTE_RASCUNHO');
         return;
       }
 
@@ -1117,7 +1307,7 @@ class NovaConsignacaoPage {
       this.dirtyState.setInitialValues({ ...this.data });
       this._updateWizard();
     } catch (error) {
-      notify(operationalMessage(error), 'error');
+      notifyError('CONSIGNACAO_CARREGAR', error);
     }
   }
 
@@ -1129,6 +1319,19 @@ class NovaConsignacaoPage {
     } catch (_error) {
       this.data.documentoPreview = 'CONS-(ao salvar)';
     }
+  }
+
+  /**
+   * Extrai ID oficial da resposta de criarConsignacao (já unwrapped pela API).
+   * @private
+   */
+  _extractCreatedConsignacao(created) {
+    if (!created || typeof created !== 'object') return null;
+    if (created.id != null) return created;
+    if (created.consignacao && created.consignacao.id != null) return created.consignacao;
+    if (created.dados?.consignacao?.id != null) return created.dados.consignacao;
+    if (created.dados?.id != null) return created.dados;
+    return null;
   }
 
   async _persistConsignacao() {
@@ -1145,7 +1348,10 @@ class NovaConsignacaoPage {
     let consignacaoId = this.consignacaoId;
     if (!consignacaoId) {
       const created = await this.api.criarConsignacao(payload);
-      const consignacao = created.consignacao || created;
+      const consignacao = this._extractCreatedConsignacao(created);
+      if (!consignacao || consignacao.id == null) {
+        throw new Error(ErrorMessages.CONSIGNACAO_ID_AUSENTE);
+      }
       consignacaoId = consignacao.id;
       this.consignacaoId = consignacaoId;
       this.data.documentoNumero = consignacao.documento?.numero || consignacao.documento || this.data.documentoPreview;
@@ -1164,9 +1370,16 @@ class NovaConsignacaoPage {
         produtoId: item.produtoId,
         quantidade: Number(item.quantidade),
         precoUnitario: Number(item.preco),
+        unidadeComercial: item.unidadeComercial || null,
+        linhaComercialId: item.linhaComercialId ?? null,
+        tabelaPrecoId: item.tabelaPrecoId ?? null,
+        canalVenda: CANAL_OPERACAO_CONSIGNACAO,
+        precoOrigem: item.precoOrigem || null,
+        precoFallback: !!item.precoFallback,
         usuarioId: getUsuarioId()
       });
-      const savedItems = await this.api.obterConsignacao(consignacaoId).then((c) => c.itens || []);
+      const cons = await this.api.obterConsignacao(consignacaoId);
+      const savedItems = Array.isArray(cons?.itens) ? cons.itens : [];
       const saved = savedItems.find((i) => Number(i.produtoId) === Number(item.produtoId));
       if (saved) item.itemId = saved.id;
       item.persistido = true;
@@ -1192,17 +1405,17 @@ class NovaConsignacaoPage {
 
   async _saveDraft() {
     if (!this.data.clienteId || !this.data.perfilComercialId) {
-      notify('Selecione um cliente antes de salvar.', 'warning');
+      notifyWarning('SELECIONE_CLIENTE_SALVAR');
       return;
     }
 
     this.loading.saving = true;
     try {
-      await withLoading('Salvando rascunho...', () => this._persistConsignacao());
+      await withLoading(loadingText('SALVANDO_RASCUNHO'), () => this._persistConsignacao());
       this.dirtyState.setInitialValues({ ...this.data });
-      notify('Rascunho salvo.', 'success');
+      notifySuccess('CONSIGNACAO_RASCUNHO_SALVO');
     } catch (error) {
-      notify(operationalMessage(error), 'error');
+      notifyError('CONSIGNACAO_SALVAR_RASCUNHO', error);
     } finally {
       this.loading.saving = false;
       this._updateWizard();
@@ -1217,8 +1430,13 @@ class NovaConsignacaoPage {
     }
 
     this.loading.saving = true;
+    let consignacaoId = null;
     try {
-      const consignacaoId = await withLoading('Preparando entrega...', () => this._persistConsignacao());
+      consignacaoId = await withLoading(loadingText('CRIANDO_CONSIGNACAO'), () => this._persistConsignacao());
+      if (consignacaoId == null) {
+        throw new Error(ErrorMessages.CONSIGNACAO_ID_AUSENTE);
+      }
+
       this.dirtyState.setInitialValues({ ...this.data });
       this.documentoCriado = this.data.documentoNumero || this.data.documentoPreview;
       this.consignacaoId = consignacaoId;
@@ -1226,16 +1444,31 @@ class NovaConsignacaoPage {
       this.currentStep = 3;
       this.steps[2].state = 'completed';
       this.steps[3].state = 'current';
-      savePrepararEntrega(this, RecoveryStatus.AGUARDANDO_CONFIRMACAO);
-      saveEntrega(consignacaoId, {
-        itens: this.data.itens.map((item) => ({ ...item })),
-        clienteId: this.data.clienteId,
-        from: Operations.PREPARAR_ENTREGA
-      }, RecoveryStatus.AGUARDANDO_CONFIRMACAO);
+
+      try {
+        savePrepararEntrega(this, RecoveryStatus.AGUARDANDO_CONFIRMACAO);
+        saveEntrega(consignacaoId, {
+          itens: this.data.itens.map((item) => ({ ...item })),
+          clienteId: this.data.clienteId,
+          from: Operations.PREPARAR_ENTREGA
+        }, RecoveryStatus.AGUARDANDO_CONFIRMACAO);
+      } catch (_recoveryError) {
+        /* checkpoint não pode impedir o fluxo oficial */
+      }
+
       this._destroyLip();
-      this._updateWizard();
+      notifySuccess('CONSIGNACAO_CRIADA');
+      try {
+        await navigate(this._buildEntregaPath());
+      } catch (_navError) {
+        notifyRecovery('CONSIGNACAO_CRIADA_ENTREGA_FALHOU');
+      }
     } catch (error) {
-      notify(operationalMessage(error), 'error');
+      if (consignacaoId != null) {
+        notifyRecovery('CONSIGNACAO_CRIADA_ENTREGA_FALHOU');
+      } else {
+        notifyError('CONSIGNACAO_CRIAR', error);
+      }
     } finally {
       this.loading.saving = false;
     }
@@ -1276,10 +1509,7 @@ class NovaConsignacaoPage {
 
   async _handleCancel() {
     if (this.dirtyState.isDirty()) {
-      const confirmed = await confirmDialog({
-        title: 'Cancelar',
-        message: 'Existem alterações não salvas. Deseja sair?'
-      });
+      const confirmed = await confirmDialog(ConfirmMessages.SAIR_WIZARD);
       if (!confirmed) return;
     }
     await navigate(resolveBackPath(this.navigationContext, '/consignacoes'));

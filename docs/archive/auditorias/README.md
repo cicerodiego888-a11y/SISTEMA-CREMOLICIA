@@ -1,71 +1,36 @@
-# Arquivo de auditorias históricas — Motor Comercial RC1
+# Arquivo de auditorias históricas
 
-Documentação de sprint / forense / relatórios temporários **preservada e unificada** após a limpeza controlada do RC1.
+Documentação de sprint / forense / checklists **preservada** após consolidação na raiz.
 
-Os arquivos soltos foram consolidados em **um compilado por área**. O conteúdo integral permanece (sumário + seções por fonte original). Histórico reversível via git.
-
-**Não pertence a este archive:** ADRs (`ADR-*.md`), roadmaps, changelogs, DS-001, arquitetura permanente (`FIN_01_*`, etc.), auditorias runtime de MIIP/bootstrap/migração.
+**Índice oficial (raiz):** [`AUDITORIA_INDEX.md`](../../AUDITORIA_INDEX.md) — 6 consolidados.
 
 ---
 
-## Compilados
+## Pastas (pós 2026-07-30)
 
-| Pasta | Arquivo |
-|-------|---------|
-| [comercial/](comercial/) | [COMPILADO_COMERCIAL.md](comercial/COMPILADO_COMERCIAL.md) |
-| [fiscal/](fiscal/) | [COMPILADO_FISCAL.md](fiscal/COMPILADO_FISCAL.md) |
-| [compras/](compras/) | Reservada (vazia no RC1) |
-| [ux/](ux/) | [COMPILADO_UX.md](ux/COMPILADO_UX.md) |
-| [sprint/](sprint/) | [COMPILADO_SPRINT.md](sprint/COMPILADO_SPRINT.md) |
-
----
-
-## Conteúdo por área
-
-### Motor Comercial / STAB-04 / STAB-06 / STAB-06.6 / STAB-07.1
-
-→ [comercial/COMPILADO_COMERCIAL.md](comercial/COMPILADO_COMERCIAL.md)  
-→ [comercial/AUDITORIA_STAB07_1.md](comercial/AUDITORIA_STAB07_1.md) (fase 1 — consolidação Resumo)  
-→ [comercial/AUDITORIA_STAB07_2.md](comercial/AUDITORIA_STAB07_2.md) (fase 2 — Central Operacional)
-
-Inclui Prestação, crédito, ledger, recovery, STAB-04/06/06.3, forense 06.5, pricing, clientes, etc.
-
-### Motor Fiscal
-
-→ [fiscal/COMPILADO_FISCAL.md](fiscal/COMPILADO_FISCAL.md)
-
-NFC-e, timeout SEFAZ, emitir UI forense.
-
-### UX
-
-→ [ux/COMPILADO_UX.md](ux/COMPILADO_UX.md)
-
-UX-10…21, Central, SmartSearch, Electron.
-
-### Sprint / STAB / Relatórios
-
-→ [sprint/COMPILADO_SPRINT.md](sprint/COMPILADO_SPRINT.md)
-
-STAB_01…04 e RELATORIO_*.
-
-### Compras
-
-Pasta [compras/](compras/) reservada — nenhum relatório dedicado no RC1.
+| Pasta | Conteúdo |
+|-------|----------|
+| [mcc/](mcc/) | Homologação MCC, MCC-03/04, COM-01, EST-MCC-01, FIS-01 |
+| [mfe/](mfe/) | MFE-01…07 (+ 05.1 / 05.2) |
+| [ux-cadastro/](ux-cadastro/) | Forenses + UX-PROD / MASTER / fluxo operador |
+| [pdv/](pdv/) | PDV-01, modal UC, PDV-UC-02, final STAB-PDV |
+| [midp/](midp/) | Diagnóstico MIDP → NFC-e RC3.0.1 |
+| [comercial/](comercial/) | STAB-07.1…07.5 + COMPILADO_COMERCIAL |
+| [fiscal/](fiscal/) | COMPILADO_FISCAL (RC1) |
+| [ux/](ux/) | COMPILADO_UX (RC1) |
+| [sprint/](sprint/) | COMPILADO_SPRINT (RC1) |
 
 ---
 
-## Cronologia (síntese)
+## Consolidados na raiz (use estes)
 
-1. **STAB-01 / STAB-03** — temas, autorização, build pipeline, release  
-2. **STAB-04** — grade consistente + forense persistência  
-3. **UX-10…20** — Central, Prestação Locator, Workspace  
-4. **STAB-06** — Venda Oficial unificada  
-5. **STAB-06.3** — Emitir NFC-e na Prestação  
-6. **STAB-06.5 / 06.6** — forense → integridade → SSOT → consolidação → hardening RC1  
-7. **RC1** — code freeze (`ADR-COMERCIAL-001.md` na raiz)
+| Arquivo | Substitui |
+|---------|-----------|
+| `AUDITORIA_MCC.md` | MCC enterprise + checklists MCC/COM/EST/FIS |
+| `AUDITORIA_MFE.md` | MFE01…07 |
+| `AUDITORIA_UX_CADASTRO.md` | Enterprise/visual/minimalista + UX-PROD/MASTER + fluxo |
+| `AUDITORIA_PDV.md` | PDV01 + modal UC + UC02 + final |
+| `AUDITORIA_STAB07.md` | STAB07_1…5 (raiz) |
+| `AUDITORIA_MIDP.md` | MIDP_NFCE_RC301 + follow-up 3.8D.3.2 |
 
-Cada compilado tem **sumário com âncoras** para a fonte original (nome do `.md` antigo).
-
----
-
-*Arquivado e unificado em 2026-07-14 — limpeza controlada pós-RC1.*
+Histórico reversível via git.
