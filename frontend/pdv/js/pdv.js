@@ -4112,14 +4112,21 @@ function atualizarCarrinho() {
     }
 }
 
+function parseDecimalPdv(valor) {
+    if (valor == null || valor === '') return 0;
+    if (typeof valor === 'number') return Number.isFinite(valor) ? valor : 0;
+    const n = parseFloat(String(valor).trim().replace(/\s/g, '').replace(',', '.'));
+    return Number.isFinite(n) ? n : 0;
+}
+
 function calcularSubtotal() {
     return carrinho.reduce((acc, item) => acc + Number(item.subtotal || 0), 0);
 }
 
 function calcularTotalValor() {
     const subtotal = calcularSubtotal();
-    const desconto = parseFloat($('#descontoPdv').val()) || 0;
-    const acrescimo = parseFloat($('#acrescimoPdv').val()) || 0;
+    const desconto = parseDecimalPdv($('#descontoPdv').val());
+    const acrescimo = parseDecimalPdv($('#acrescimoPdv').val());
     return Math.max(0, subtotal - desconto + acrescimo);
 }
 
@@ -4433,9 +4440,10 @@ function abrirModalDecisaoFiscal(skipPagamento = false) {
         return;
     }
 
-    const desconto = parseFloat($('#descontoPdv').val()) || 0;
+    const desconto = parseDecimalPdv($('#descontoPdv').val());
+    const acrescimo = parseDecimalPdv($('#acrescimoPdv').val());
     const subtotal = calcularSubtotal();
-    const total = Math.round((Math.max(0, subtotal - desconto)) * 100) / 100;
+    const total = Math.round((Math.max(0, subtotal - desconto + acrescimo)) * 100) / 100;
 
     if (total <= 0) {
         showNotification('O total final da venda é inválido.', 'warning');
@@ -4977,9 +4985,10 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
         }
     }
 
-    const desconto = parseFloat($('#descontoPdv').val()) || 0;
+    const desconto = parseDecimalPdv($('#descontoPdv').val());
+    const acrescimo = parseDecimalPdv($('#acrescimoPdv').val());
     const subtotal = calcularSubtotal();
-    const total = Math.round((Math.max(0, subtotal - desconto)) * 100) / 100;
+    const total = Math.round((Math.max(0, subtotal - desconto + acrescimo)) * 100) / 100;
 
     if (total <= 0) {
         showNotification('O total final da venda é inválido.', 'warning');
@@ -4991,8 +5000,10 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
         cliente_nome: clienteSelecionado?.nome || vendaPrazoInfo?.cliente_nome || null,
         forma_pagamento: pagamentosMistos.length > 1 ? "misto" : formaPagamento,
         desconto,
+        acrescimo,
         total,
         canal_venda: canalVendaPdv || 'VAREJO',
+        origem_pdv: 'PDV_DESKTOP',
         emitir_fiscal: false,
         cpf_cnpj_nota: null,
         pagamentos: pagamentosMistos.length > 0 ? pagamentosMistos : [

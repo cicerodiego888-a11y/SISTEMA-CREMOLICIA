@@ -44,7 +44,8 @@ import {
   fetchDanfeHtml as fetchDanfeHtmlCupom,
   montarHtmlCupomNaoFiscal,
   mostrarCupomNoCelular,
-  mostrarCupomAposEmissao
+  mostrarCupomAposEmissao,
+  mostrarCupomAposVenda
 } from '../cupom.js';
 import {
   sincronizarModoFiscalDoServidor,
@@ -57,7 +58,22 @@ import {
 const CART_KEY = 'cds-mobile-pdv-cart';
 /** RCM-05.13 — resumo financeiro inicia recolhido */
 let pdvResumoExpandido = false;
+/** Lock anti-duplo clique durante POST /vendas (não durante sheet de pagamento). */
+let pdvFinalizandoVenda = false;
 const META_KEY = 'cds-mobile-pdv-meta';
+
+function setFinalizarBusyUi(busy) {
+  const btn = document.getElementById('pdv-pay');
+  if (!btn) return;
+  const isBusy = !!busy;
+  btn.disabled = isBusy || btn.dataset.gateDisabled === '1';
+  btn.setAttribute('aria-busy', isBusy ? 'true' : 'false');
+  btn.classList.toggle('is-disabled', btn.disabled);
+  const label = btn.querySelector('.cds-pdv-sticky__pay-label');
+  if (label) {
+    label.textContent = isBusy ? 'Finalizando…' : 'Finalizar';
+  }
+}
 
 /** RCM-9.2.2.1 — devolve o foco ao campo de pesquisa (scanner / digitação contínua) */
 function refocusPdvSearch(searchEl) {
@@ -205,6 +221,15 @@ function montarItensResolver(cart) {
     forma_comercializacao: i.forma_comercializacao || null,
     unidade_comercial: i.unidade_comercial || null
   }));
+}
+
+function numeroValido(...vals) {
+  for (const v of vals) {
+    if (v === null || v === undefined || v === '') continue;
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return NaN;
 }
 
 /**
@@ -619,9 +644,18 @@ function paintCart(root, aberto, opts = {}) {
           <span class="cds-pdv-sticky__total-label">TOTAL${canal ? ` · ${escapeHtml(canal)}` : ''}${Number.isFinite(itensComerciais) ? ` · ${escapeHtml(String(itensComerciais))} itens` : ''}</span>
           <strong class="cds-pdv-sticky__total-value">${escapeHtml(formatMoney(total))}</strong>
         </div>
-        <button type="button" class="cds-mobile-btn cds-pdv-sticky__pay" id="pdv-pay" ${!cart.length || !aberto ? 'disabled' : ''}>
-          ${icon('cart')} Finalizar
-        </button>
+        <div class="cds-pdv-sticky__pay-hit" id="pdv-pay-hit" role="presentation">
+          <button
+            type="button"
+            class="cds-mobile-btn cds-pdv-sticky__pay${!cart.length || !aberto || pdvFinalizandoVenda ? ' is-disabled' : ''}"
+            id="pdv-pay"
+            data-gate-disabled="${!cart.length || !aberto ? '1' : '0'}"
+            ${!cart.length || !aberto || pdvFinalizandoVenda ? 'disabled' : ''}
+            aria-busy="${pdvFinalizandoVenda ? 'true' : 'false'}"
+          >
+            ${icon('cart')} <span class="cds-pdv-sticky__pay-label">${pdvFinalizandoVenda ? 'Finalizando…' : 'Finalizar'}</span>
+          </button>
+        </div>
       </div>
       <button type="button" class="cds-pdv-sticky__toggle" id="pdv-resumo-toggle" aria-expanded="${pdvResumoExpandido ? 'true' : 'false'}">
         ${pdvResumoExpandido ? '▼ Recolher' : '▲ Expandir'}
@@ -701,14 +735,31 @@ function paintCart(root, aberto, opts = {}) {
     paintCart(root, aberto);
   });
 
-  sticky?.querySelector('#pdv-pay')?.addEventListener('click', () => iniciarPagamento(root, aberto));
+  // Hit-area recebe toque mesmo com botão :disabled → feedback sem return silencioso
+  sticky?.querySelector('#pdv-pay-hit')?.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    if (pdvFinalizandoVenda) {
+      showToast('Finalizando venda...', 'info');
+      return;
+    }
+    if (!aberto) {
+      showToast('Abra o caixa antes de finalizar a venda.', 'warning');
+      return;
+    }
+    const cartNow = loadCart();
+    if (!cartNow.length) {
+      showToast('Adicione pelo menos um produto para finalizar a venda.', 'warning');
+      return;
+    }
+    iniciarPagamento(root, aberto);
+  });
 }
 
 async function tryTef(forma, valor) {
   try {
     await window.CDSApi.get('tef/status');
   } catch (e) {
-    showToast('TEF indisponível neste dispositivo. Use PIX, dinheiro ou cartão não-fiscal.', 'warning');
+    showToast('TEF indisponível neste terminal. Use PIX, dinheiro ou cartão.', 'warning');
     return null;
   }
   try {
@@ -717,48 +768,125 @@ async function tryTef(forma, valor) {
       valor
     }));
   } catch (err) {
-    showToast(err.message || 'Falha no TEF.', 'error');
+    showToast(err.message || 'Falha no TEF. Tente outra forma de pagamento.', 'error');
     return null;
   }
 }
 
 async function iniciarPagamento(root, aberto) {
+  if (pdvFinalizandoVenda) {
+    showToast('Finalizando venda...', 'info');
+    return;
+  }
   if (!aberto) {
-    showToast('Abra o caixa antes de vender.', 'warning');
+    showToast('Abra o caixa antes de finalizar a venda.', 'warning');
     return;
   }
   const cart = loadCart();
-  if (!cart.length) return;
-  const { total, desconto } = cartTotals(cart);
+  if (!cart.length) {
+    showToast('Adicione pelo menos um produto para finalizar a venda.', 'warning');
+    return;
+  }
+  const { total } = cartTotals(cart);
+  let formaEscolhida = '';
 
-  openBottomSheet({
+  const sheet = openBottomSheet({
     title: 'Forma de pagamento',
+    panelClass: 'cds-sheet__panel--pay',
     bodyHtml: `
       <p class="cds-muted">Total ${escapeHtml(formatMoney(total))}</p>
       <p class="cds-fiscal-pay-hint">${isModoFiscalAtivo() ? '🟢 FISCAL — NFC-e conforme módulo oficial' : '⚪ NÃO FISCAL — sem emissão'}</p>
-      <div class="cds-pay-grid">
-        <button type="button" class="cds-mobile-btn" data-pay="dinheiro">Dinheiro</button>
-        <button type="button" class="cds-mobile-btn" data-pay="pix">PIX</button>
-        <button type="button" class="cds-mobile-btn" data-pay="cartao">Cartão</button>
-        <button type="button" class="cds-mobile-btn cds-mobile-btn--secondary" data-pay="tef">TEF</button>
+      <p class="cds-pay-hint">Toque na forma e confirme.</p>
+      <div class="cds-pay-grid" role="group" aria-label="Formas de pagamento">
+        <button type="button" class="cds-mobile-btn cds-pay-opt" data-pay="dinheiro">Dinheiro</button>
+        <button type="button" class="cds-mobile-btn cds-pay-opt" data-pay="pix">PIX</button>
+        <button type="button" class="cds-mobile-btn cds-pay-opt" data-pay="cartao_debito">Débito</button>
+        <button type="button" class="cds-mobile-btn cds-pay-opt" data-pay="cartao_credito">Crédito</button>
+        <button type="button" class="cds-mobile-btn cds-mobile-btn--secondary cds-pay-opt" data-pay="tef">TEF</button>
       </div>
+    `,
+    actionsHtml: `
+      <button type="button" class="cds-mobile-btn cds-mobile-btn--secondary" data-sheet-close>Cancelar</button>
+      <button type="button" class="cds-mobile-btn" data-pay-confirm disabled>Confirmar</button>
     `
   });
 
-  document.querySelectorAll('#cds-mobile-sheet [data-pay]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      const forma = btn.getAttribute('data-pay');
-      // RCM-9.2.5 — mesmo contrato Desktop F12 (não checkbox paralelo)
-      const emitir = emitirFiscalDaVendaAtual();
-      closeBottomSheet();
-      await finalizarVenda({ forma, emitir, total, desconto, cart });
+  const confirmBtn = sheet.querySelector('[data-pay-confirm]');
+  const marcarEscolha = (forma, origemBtn) => {
+    formaEscolhida = forma || '';
+    sheet.querySelectorAll('[data-pay]').forEach((b) => {
+      b.classList.toggle('is-selected', b === origemBtn);
     });
+    if (confirmBtn) confirmBtn.disabled = !formaEscolhida;
+  };
+
+  const confirmarPagamento = async () => {
+    if (pdvFinalizandoVenda) {
+      showToast('Finalizando venda...', 'info');
+      return;
+    }
+    const forma = formaEscolhida;
+    if (!forma) {
+      showToast('Selecione uma forma de pagamento.', 'warning');
+      return;
+    }
+    const emitir = emitirFiscalDaVendaAtual();
+    const cartAtual = loadCart();
+    if (!cartAtual.length) {
+      showToast('Adicione pelo menos um produto para finalizar a venda.', 'warning');
+      closeBottomSheet();
+      return;
+    }
+    const totais = cartTotals(cartAtual);
+    closeBottomSheet();
+    await finalizarVenda({
+      forma,
+      emitir,
+      total: totais.total,
+      desconto: totais.desconto,
+      cart: cartAtual,
+      root,
+      aberto
+    });
+  };
+
+  sheet.addEventListener('click', (ev) => {
+    const payBtn = ev.target.closest('[data-pay]');
+    if (payBtn && sheet.contains(payBtn)) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      marcarEscolha(payBtn.getAttribute('data-pay'), payBtn);
+      return;
+    }
+    if (ev.target.closest('[data-pay-confirm]')) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      confirmarPagamento();
+    }
   });
 }
 
-async function finalizarVenda({ forma, emitir, total, desconto, cart }) {
+async function finalizarVenda({ forma, emitir, total, desconto, cart, root, aberto }) {
+  if (pdvFinalizandoVenda) {
+    showToast('Finalizando venda...', 'info');
+    return;
+  }
+
+  if (!Array.isArray(cart) || !cart.length) {
+    showToast('Adicione pelo menos um produto para finalizar a venda.', 'warning');
+    return;
+  }
+  if (aberto === false) {
+    showToast('Abra o caixa antes de finalizar a venda.', 'warning');
+    return;
+  }
+  if (!forma) {
+    showToast('Selecione uma forma de pagamento.', 'warning');
+    return;
+  }
+
   try {
-    let formaFinal = forma === 'tef' ? 'cartao' : forma;
+    let formaFinal = forma === 'tef' ? 'cartao_credito' : forma;
     let tefPayload = null;
     if (forma === 'tef') {
       tefPayload = await tryTef('credito', total);
@@ -767,6 +895,7 @@ async function finalizarVenda({ forma, emitir, total, desconto, cart }) {
     }
 
     let valorRecebido = total;
+    let troco = 0;
     if (formaFinal === 'dinheiro') {
       const data = await promptSheet({
         title: 'Dinheiro',
@@ -784,21 +913,39 @@ async function finalizarVenda({ forma, emitir, total, desconto, cart }) {
         showToast('Valor recebido insuficiente.', 'warning');
         return;
       }
+      troco = Number((valorRecebido - total).toFixed(2));
     }
 
-    const itens = cart.map((i) => ({
-      produto_id: i.id,
-      quantidade: Number(i.qtd),
-      preco_unitario: Number(i.preco),
-      desconto_percentual: 0,
-      tipo_venda: i.tipo_venda || 'PESO',
-      forma_comercializacao: i.forma_comercializacao || null,
-      unidade_comercial: i.unidade_comercial || null,
-      quantidade_bolas: i.quantidade_bolas != null ? Number(i.quantidade_bolas) : null,
-      sabores: Array.isArray(i.sabores) ? i.sabores : undefined,
-      kit_id: i.kit_id || null,
-      kit_itens: Array.isArray(i.kit_itens) ? i.kit_itens : undefined
-    }));
+    // Lock apenas na gravação (não no sheet intermediário de pagamento)
+    pdvFinalizandoVenda = true;
+    setFinalizarBusyUi(true);
+    showToast('Finalizando venda...', 'info');
+
+    const itens = cart.map((i) => {
+      const preco = numeroValido(i.preco, i.preco_unitario, i.preco_venda);
+      const qtd = numeroValido(i.qtd, i.quantidade);
+      return {
+        produto_id: i.id,
+        quantidade: qtd,
+        preco_unitario: preco,
+        desconto_percentual: 0,
+        tipo_venda: i.tipo_venda || 'PESO',
+        forma_comercializacao: i.forma_comercializacao || null,
+        unidade_comercial: i.unidade_comercial || null,
+        quantidade_bolas: i.quantidade_bolas != null ? Number(i.quantidade_bolas) : null,
+        sabores: Array.isArray(i.sabores) ? i.sabores : undefined,
+        kit_id: i.kit_id || null,
+        kit_itens: Array.isArray(i.kit_itens) ? i.kit_itens : undefined
+      };
+    });
+    if (itens.some((it) => !Number.isFinite(it.preco_unitario) || it.preco_unitario < 0)) {
+      showToast('Preço do item não encontrado. Remova o produto e adicione de novo.', 'error');
+      return;
+    }
+    if (itens.some((it) => !Number.isFinite(it.quantidade) || it.quantidade <= 0)) {
+      showToast('Quantidade do item inválida. Ajuste o carrinho e tente novamente.', 'warning');
+      return;
+    }
 
     const preview = await window.CDSApi.post(
       'vendas/pre-calcular-distribuicao',
@@ -806,91 +953,153 @@ async function finalizarVenda({ forma, emitir, total, desconto, cart }) {
     );
     const valorFiscal = Number(preview?.valor_fiscal ?? preview?.total_fiscal ?? (emitir ? total : 0));
     const valorNaoFiscal = Number(preview?.valor_nao_fiscal ?? preview?.total_nao_fiscal ?? (emitir ? 0 : total));
-    const itensDist = Array.isArray(preview?.itens) ? preview.itens : itens;
+    const distList = Array.isArray(preview?.itens) ? preview.itens : [];
 
     const payload = getTerminalRequestBody({
-      itens: itensDist.map((it, idx) => {
-        const qtd = Number(it.quantidade != null ? it.quantidade : it.qtd);
-        const preco = Number(it.preco_unitario != null ? it.preco_unitario : it.preco);
-        const subtotalCalc = Number.isFinite(Number(it.subtotal))
-          ? Number(it.subtotal)
+      itens: itens.map((orig, idx) => {
+        const dist = distList[idx] || {};
+        const qtd = numeroValido(
+          orig.quantidade,
+          dist.quantidade,
+          dist.qtd,
+          Number(dist.quantidade_fiscal || 0) + Number(dist.quantidade_nao_fiscal || 0)
+        );
+        const preco = numeroValido(orig.preco_unitario, dist.preco_unitario, dist.preco);
+        const subtotalCalc = Number.isFinite(Number(dist.subtotal))
+          ? Number(dist.subtotal)
           : Number(((Number.isFinite(qtd) ? qtd : 0) * (Number.isFinite(preco) ? preco : 0)).toFixed(2));
         return {
-          produto_id: it.produto_id || it.id,
+          produto_id: orig.produto_id,
           quantidade: qtd,
           preco_unitario: preco,
           subtotal: subtotalCalc,
-          desconto_percentual: it.desconto_percentual || 0,
-          item_fiscal: it.item_fiscal,
-          quantidade_fiscal: it.quantidade_fiscal,
-          quantidade_nao_fiscal: it.quantidade_nao_fiscal,
-          valor_fiscal: it.valor_fiscal,
-          valor_nao_fiscal: it.valor_nao_fiscal,
-          forma_comercializacao: it.forma_comercializacao || itens[idx]?.forma_comercializacao || null,
-          unidade_comercial: it.unidade_comercial || itens[idx]?.unidade_comercial || null,
-          kit_id: it.kit_id || itens[idx]?.kit_id || null,
-          kit_itens: it.kit_itens || itens[idx]?.kit_itens || undefined,
-          sabores: it.sabores || itens[idx]?.sabores || undefined,
-          quantidade_bolas: it.quantidade_bolas != null ? it.quantidade_bolas : itens[idx]?.quantidade_bolas
+          desconto_percentual: orig.desconto_percentual || 0,
+          item_fiscal: dist.item_fiscal,
+          quantidade_fiscal: dist.quantidade_fiscal,
+          quantidade_nao_fiscal: dist.quantidade_nao_fiscal,
+          valor_fiscal: dist.valor_fiscal,
+          valor_nao_fiscal: dist.valor_nao_fiscal,
+          forma_comercializacao: orig.forma_comercializacao || dist.forma_comercializacao || null,
+          unidade_comercial: orig.unidade_comercial || dist.unidade_comercial || null,
+          kit_id: orig.kit_id || dist.kit_id || null,
+          kit_itens: orig.kit_itens || dist.kit_itens || undefined,
+          sabores: orig.sabores || dist.sabores || undefined,
+          quantidade_bolas: orig.quantidade_bolas != null ? orig.quantidade_bolas : dist.quantidade_bolas,
+          tipo_venda: orig.tipo_venda
         };
       }),
       total,
       desconto,
       forma_pagamento: formaFinal,
       valor_recebido: valorRecebido,
-      emitir_fiscal: emitir && valorFiscal > 0,
+      troco,
+      canal_venda: String(loadMeta().canal || 'VAREJO').toUpperCase(),
+      origem_pdv: 'PDV_MOBILE',
+      emitir_fiscal: !!emitir,
       valor_fiscal: valorFiscal,
       valor_nao_fiscal: valorNaoFiscal,
       pagamentos: [{
         forma_pagamento: formaFinal,
         valor: total,
-        tipo_recebimento: valorFiscal > 0 && valorNaoFiscal <= 0 ? 'fiscal' : (valorFiscal > 0 ? 'fiscal' : 'nao_fiscal'),
+        tipo_recebimento: emitir ? 'fiscal' : 'nao_fiscal',
         ...(tefPayload ? { tef: tefPayload } : {})
       }]
     });
 
     const resp = await window.CDSApi.post('vendas', payload);
-    const vendaId = resp?.venda_id || resp?.id || resp?.vendaId || resp?.venda?.id;
+    const vendaBody = resp?.data && typeof resp.data === 'object' && !Array.isArray(resp.data)
+      ? { ...resp, ...resp.data }
+      : resp;
+    const vendaId = vendaBody?.venda_id || vendaBody?.id || vendaBody?.vendaId || vendaBody?.venda?.id;
+    const valorFiscalVenda = Number(
+      vendaBody?.valor_fiscal ?? valorFiscal
+    );
 
-    if (resp?.status_pagamento === 'aguardando_nao_fiscal' && vendaId) {
+    if (vendaBody?.status_pagamento === 'aguardando_nao_fiscal' && vendaId) {
       await window.CDSApi.post(
         `vendas/${vendaId}/pagamento-nao-fiscal`,
         getTerminalRequestBody({
           forma_pagamento: formaFinal,
-          valor: valorNaoFiscal || total,
+          valor: Number(vendaBody?.valor_nao_fiscal ?? valorNaoFiscal) || total,
           valor_recebido: valorRecebido
         })
       );
     }
 
-    if (emitir && vendaId && valorFiscal > 0 && canDoAction('emitir_nfce')) {
-      try {
-        await window.CDSApi.post(`fiscal/emitir/venda/${vendaId}`, {});
-        showToast(`Venda #${vendaId} · NFC-e emitida.`, 'success');
-      } catch (nfErr) {
-        showToast(`Venda #${vendaId} ok. NFC-e: ${nfErr.message || 'falha'}`, 'warning');
-      }
-    } else {
-      showToast(vendaId ? `Venda #${vendaId} finalizada.` : 'Venda finalizada.', 'success');
-    }
-
+    // Só limpa carrinho após confirmação da API
     saveCart([]);
     saveMeta({});
-    window.CDSMobile?.navigate?.('pdv/vendas', { replace: true });
+
+    let emitirRaw = null;
+    if (emitir && vendaId && valorFiscalVenda > 0) {
+      try {
+        emitirRaw = await window.CDSApi.post(
+          `fiscal/emitir/venda/${vendaId}`,
+          {},
+          null,
+          { timeoutMs: 180000 }
+        );
+        const stNf = String(emitirRaw?.status || emitirRaw?.fiscal?.status || '').toLowerCase();
+        if (stNf === 'autorizada' || emitirRaw?.success === true || emitirRaw?.danfeHtml) {
+          showToast(`Venda finalizada com sucesso. #${vendaId} · NFC-e emitida.`, 'success');
+        } else if (stNf === 'sem_itens_fiscais') {
+          showToast(`Venda #${vendaId} finalizada. Sem itens fiscais para NFC-e.`, 'info');
+        } else {
+          showToast(
+            'Venda registrada, mas a emissão fiscal precisa de atenção.'
+              + (emitirRaw?.message ? ` (${emitirRaw.message})` : ''),
+            'warning'
+          );
+        }
+      } catch (nfErr) {
+        showToast(
+          'Venda registrada, mas a emissão fiscal precisa de atenção.'
+            + (nfErr?.message ? ` (${nfErr.message})` : ''),
+          'warning'
+        );
+      }
+    } else {
+      const trocoMsg = formaFinal === 'dinheiro' && troco > 0
+        ? ` Troco: ${formatMoney(troco)}.`
+        : '';
+      const fiscalPendente = emitir && vendaId && !(valorFiscalVenda > 0);
+      showToast(
+        (vendaId
+          ? `Venda finalizada com sucesso. #${vendaId}.`
+          : 'Venda finalizada com sucesso.')
+          + trocoMsg
+          + (fiscalPendente ? ' Sem saldo fiscal nos itens — NFC-e não emitida.' : ''),
+        fiscalPendente ? 'info' : 'success'
+      );
+    }
+
+    if (vendaId) {
+      try {
+        await mostrarCupomAposVenda(vendaId, emitirRaw);
+      } catch (cupomErr) {
+        showToast(cupomErr?.message || 'Não foi possível abrir o cupom.', 'warning');
+      }
+    }
+
+    if (root && typeof aberto === 'boolean') {
+      paintCart(root, aberto);
+    }
+
+    window.CDSMobile?.navigate?.('pdv', { replace: true });
   } catch (err) {
-    const msg = String(err?.message || '');
+    const msg = String(err?.message || '').trim();
     if (err?.status === 401 || err?.status === 403 || /sessão expirou|sessao expirou/i.test(msg)) {
       showToast('Sua sessão expirou. Entre novamente para continuar.', 'error');
-    } else if (!err?.status || err.status === 0 || err.status === 408) {
-      showToast(
-        msg || 'Não foi possível finalizar a venda. O carrinho foi preservado.',
-        'error'
-      );
+    } else if (msg) {
+      showToast(`${msg} O carrinho foi preservado.`, 'error');
     } else {
-      showToast(
-        (msg ? `${msg} ` : '') + 'O carrinho foi preservado.',
-        'error'
-      );
+      showToast('Não foi possível finalizar a venda. Tente novamente. O carrinho foi preservado.', 'error');
+    }
+  } finally {
+    pdvFinalizandoVenda = false;
+    setFinalizarBusyUi(false);
+    if (root && typeof aberto === 'boolean') {
+      try { paintCart(root, aberto); } catch (_) { /* ignore */ }
     }
   }
 }
@@ -1245,7 +1454,11 @@ async function renderVendasTab(root) {
           title: `Venda #${asText(v.id)}`,
           value: formatMoney(v.total ?? v.valor_total ?? 0),
           status: v.status || (v.cancelada ? 'cancelada' : 'ok'),
-          meta: [formatDateTime(v.data || v.created_at || v.criado_em), asText(v.forma_pagamento, '')].filter(Boolean)
+          meta: [
+            formatDateTime(v.data || v.created_at || v.criado_em),
+            asText(v.forma_pagamento, ''),
+            String(v.origem_pdv || '').toUpperCase() === 'PDV_MOBILE' ? 'PDV Mobile' : ''
+          ].filter(Boolean)
         })).join('')
       : emptyHtml('Nenhuma venda recente');
     bindGo(list);
@@ -1271,6 +1484,7 @@ async function renderVendaDetalhe(root, id) {
         <div class="cds-row"><span>Venda</span><strong>#${escapeHtml(asText(v.id || id))}</strong></div>
         <div class="cds-row"><span>Total</span><strong>${escapeHtml(formatMoney(v.total ?? v.valor_total ?? 0))}</strong></div>
         <div class="cds-row"><span>Pagamento</span><strong>${escapeHtml(asText(v.forma_pagamento, '—'))}</strong></div>
+        <div class="cds-row"><span>Origem</span><strong>${escapeHtml(String(v.origem_pdv || '').toUpperCase() === 'PDV_MOBILE' ? 'PDV Mobile' : (v.origem_pdv === 'PDV_DESKTOP' ? 'PDV Desktop' : asText(v.origem_pdv, '—')))}</strong></div>
         <div class="cds-row"><span>Status</span><strong>${escapeHtml(asText(v.status, '—'))}</strong></div>
       </article>
       ${sectionTitleHtml('Itens')}
@@ -1312,7 +1526,7 @@ async function renderVendaDetalhe(root, id) {
 
     root.querySelector('#vd-nfce')?.addEventListener('click', async () => {
       try {
-        const raw = await window.CDSApi.post(`fiscal/emitir/venda/${id}`, {});
+        const raw = await window.CDSApi.post(`fiscal/emitir/venda/${id}`, {}, null, { timeoutMs: 180000 });
         await mostrarCupomAposEmissao(raw, { vendaIdFallback: id });
       } catch (err) {
         // Mesmo com erro de emissão, tenta exibir cupom não fiscal se a venda existir

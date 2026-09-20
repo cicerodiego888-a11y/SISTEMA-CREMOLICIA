@@ -60,6 +60,15 @@ const routes = [
     }
   },
   {
+    path: '/consignacoes/:id/entrega-complementar',
+    name: 'entrega-complementar',
+    component: 'EntregaComplementar',
+    meta: {
+      title: 'Entrega Complementar',
+      requiresAuth: true
+    }
+  },
+  {
     path: '/consignacoes/:id/comprovante',
     name: 'comprovante-entrega',
     component: 'ComprovanteEntrega',

@@ -3,7 +3,6 @@
  * Sem regras de negócio: só UI + fetch do DANFE oficial.
  */
 import { escapeHtml } from './formatters.js';
-import { openBottomSheet, closeBottomSheet } from './forms.js';
 import { shareTextAsFile } from './native.js';
 import { showToast } from './toast.js';
 
@@ -69,22 +68,30 @@ OBRIGADO PELA PREFERÊNCIA!
 
 export function mostrarCupomNoCelular(html, { title = 'Cupom', fileName = 'cupom.html' } = {}) {
   return new Promise((resolve) => {
-    const sheet = openBottomSheet({
-      title,
-      bodyHtml: `
-        <div class="cds-cupom-viewer">
-          <iframe class="cds-cupom-viewer__frame" id="cds-cupom-frame" title="${escapeHtml(title)}"></iframe>
-        </div>
-      `,
-      actionsHtml: `
+    document.getElementById('cds-cupom-overlay')?.remove();
+    const el = document.createElement('div');
+    el.id = 'cds-cupom-overlay';
+    el.className = 'cds-cupom-overlay';
+    el.setAttribute('role', 'dialog');
+    el.setAttribute('aria-modal', 'true');
+    el.setAttribute('aria-label', title);
+    el.innerHTML = `
+      <div class="cds-cupom-overlay__bar">
+        <strong class="cds-cupom-overlay__title">${escapeHtml(title)}</strong>
+        <button type="button" class="cds-cupom-overlay__x" data-cupom-close aria-label="Fechar">×</button>
+      </div>
+      <div class="cds-cupom-overlay__body">
+        <iframe class="cds-cupom-overlay__frame" id="cds-cupom-frame" title="${escapeHtml(title)}"></iframe>
+      </div>
+      <div class="cds-cupom-overlay__actions">
         <button type="button" class="cds-mobile-btn cds-mobile-btn--secondary" data-cupom-share>Compartilhar</button>
         <button type="button" class="cds-mobile-btn" data-cupom-close>Fechar</button>
-      `
-    });
-    const panel = sheet.querySelector('.cds-sheet__panel');
-    if (panel) panel.classList.add('cds-sheet__panel--cupom');
+      </div>
+    `;
+    document.body.appendChild(el);
+    document.body.classList.add('is-overlay-open');
 
-    const frame = sheet.querySelector('#cds-cupom-frame');
+    const frame = el.querySelector('#cds-cupom-frame');
     try {
       const doc = frame.contentDocument || frame.contentWindow?.document;
       doc.open();
@@ -95,12 +102,16 @@ export function mostrarCupomNoCelular(html, { title = 'Cupom', fileName = 'cupom
     }
 
     const finish = () => {
-      closeBottomSheet();
+      el.remove();
+      if (!document.querySelector('.cds-mobile-drawer.is-open') && !document.getElementById('cds-mobile-sheet')) {
+        document.body.classList.remove('is-overlay-open');
+      }
       resolve();
     };
-    sheet.querySelector('[data-cupom-close]')?.addEventListener('click', finish);
-    sheet.querySelector('[data-sheet-close]')?.addEventListener('click', finish);
-    sheet.querySelector('[data-cupom-share]')?.addEventListener('click', async () => {
+    el.querySelectorAll('[data-cupom-close]').forEach((btn) => {
+      btn.addEventListener('click', finish);
+    });
+    el.querySelector('[data-cupom-share]')?.addEventListener('click', async () => {
       try {
         await shareTextAsFile(fileName, html, 'text/html');
       } catch (err) {
@@ -111,17 +122,34 @@ export function mostrarCupomNoCelular(html, { title = 'Cupom', fileName = 'cupom
 }
 
 function unwrapEmitPayload(raw) {
-  const data = raw?.data && typeof raw.data === 'object' ? raw.data : raw;
-  const faturamento = data?.faturamento || {};
-  const fiscal = data?.fiscal || {};
+  const data = raw?.data && typeof raw.data === 'object' && !Array.isArray(raw.data)
+    ? { ...raw, ...raw.data }
+    : (raw || {});
+  const faturamento = data.faturamento && typeof data.faturamento === 'object'
+    ? data.faturamento
+    : {};
+  const nested = data.fiscal && typeof data.fiscal === 'object' ? data.fiscal : {};
+  const fiscal = {
+    ...data,
+    ...nested,
+    danfeHtml: nested.danfeHtml || data.danfeHtml || nested.danfe_html || data.danfe_html,
+    status: nested.status || data.status || nested.situacao || data.situacao,
+    vendaId: nested.vendaId || nested.venda_id || data.vendaId || data.venda_id
+  };
   return {
     data,
     faturamento,
     fiscal,
     vendaId: Number(
-      faturamento.vendaId || data?.vendaId || fiscal.vendaId || fiscal.venda_id || 0
+      faturamento.vendaId
+      || fiscal.vendaId
+      || data.vendaId
+      || data.venda_id
+      || 0
     ) || null,
-    situacao: String(faturamento.situacaoFiscal || fiscal.status || fiscal.situacao || '').toUpperCase()
+    situacao: String(
+      faturamento.situacaoFiscal || fiscal.status || fiscal.situacao || data.status || ''
+    ).toUpperCase()
   };
 }
 
@@ -209,9 +237,36 @@ export async function mostrarCupomAposEmissao(raw, { vendaIdFallback = null, cli
   return { tipo: 'indisponivel', vendaId };
 }
 
+/** Após gravar a venda no PDV Mobile: DANFE se houver, senão comprovante na tela. */
+export async function mostrarCupomAposVenda(vendaId, emitirRaw = null) {
+  if (!vendaId) return { tipo: 'indisponivel', vendaId: null };
+  if (emitirRaw) {
+    const r = await mostrarCupomAposEmissao(emitirRaw, { vendaIdFallback: vendaId });
+    if (r?.tipo === 'fiscal' || r?.tipo === 'nao_fiscal') return r;
+  }
+  try {
+    const danfe = await fetchDanfeHtml(vendaId);
+    if (danfe && danfe.length > 80 && /html|danfe|nfc|cupom/i.test(danfe)) {
+      await mostrarCupomNoCelular(danfe, {
+        title: 'Cupom fiscal',
+        fileName: `danfe-venda-${vendaId}.html`
+      });
+      return { tipo: 'fiscal', vendaId };
+    }
+  } catch (e) { /* comprovante não fiscal */ }
+  const venda = await carregarVenda(vendaId);
+  const html = montarHtmlCupomNaoFiscal(vendaId, venda || {});
+  await mostrarCupomNoCelular(html, {
+    title: 'Cupom',
+    fileName: `cupom-venda-${vendaId}.html`
+  });
+  return { tipo: 'nao_fiscal', vendaId };
+}
+
 export default {
   fetchDanfeHtml,
   montarHtmlCupomNaoFiscal,
   mostrarCupomNoCelular,
-  mostrarCupomAposEmissao
+  mostrarCupomAposEmissao,
+  mostrarCupomAposVenda
 };

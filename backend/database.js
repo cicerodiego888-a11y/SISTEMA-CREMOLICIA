@@ -319,7 +319,8 @@ function aplicarAlteracoesPosCriacao() {
     `ALTER TABLE vendas ADD COLUMN desconto_autorizado_em DATETIME`,
     `ALTER TABLE vendas ADD COLUMN valor_fiscal REAL DEFAULT 0`,
     `ALTER TABLE vendas ADD COLUMN valor_nao_fiscal REAL DEFAULT 0`,
-    `ALTER TABLE vendas ADD COLUMN canal_venda TEXT DEFAULT 'VAREJO'`
+    `ALTER TABLE vendas ADD COLUMN canal_venda TEXT DEFAULT 'VAREJO'`,
+    `ALTER TABLE vendas ADD COLUMN origem_pdv TEXT`
   ];
 
   const alteracoesContasReceber = [

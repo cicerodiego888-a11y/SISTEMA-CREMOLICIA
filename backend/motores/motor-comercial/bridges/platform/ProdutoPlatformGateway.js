@@ -82,10 +82,19 @@ class ProdutoPlatformGateway {
     if (produtoId == null) return false;
     const row = await dbGet(
       this._db,
-      'SELECT ativo FROM produtos WHERE id = ?',
+      `SELECT
+         COALESCE(p.ativo, 1) AS ativo,
+         p.categoria_id,
+         COALESCE(c.ativo, 1) AS categoria_ativa
+       FROM produtos p
+       LEFT JOIN categorias c ON c.id = p.categoria_id
+       WHERE p.id = ?`,
       [produtoId]
     );
-    return Number(row?.ativo ?? 0) === 1;
+    if (!row) return false;
+    if (Number(row.ativo) !== 1) return false;
+    if (row.categoria_id != null && Number(row.categoria_ativa) !== 1) return false;
+    return true;
   }
 
   /**

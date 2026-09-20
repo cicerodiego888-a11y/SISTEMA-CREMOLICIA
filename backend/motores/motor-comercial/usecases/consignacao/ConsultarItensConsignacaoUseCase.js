@@ -15,7 +15,7 @@ class ConsultarItensConsignacaoUseCase extends ConsignacaoReadUseCase {
   }
 
   async processar(entrada) {
-    await this._obterConsignacaoOuFalhar(entrada.consignacaoId);
+    await this._obterConsignacaoOuFalhar(entrada.consignacaoId, entrada.clienteId);
 
     const itens = await this._consignacaoItemRepository.listarPorConsignacao(
       entrada.consignacaoId,

@@ -95,45 +95,52 @@ class ConsignacaoRepository extends BaseRepository {
     });
   }
 
-  async listar(filtros = {}) {
-    return this._executar(async () => {
-      const sql = this._obterSql();
-      await sql.whenReady();
+  _aplicarFiltrosListagem(queryBase, filtros = {}) {
+    let query = queryBase;
+    const params = [];
 
-      // RCM-04.B — JOIN clientes para nome/documento/telefone na listagem (SSOT)
-      let query = `
-        SELECT c.*,
-          cl.nome AS cliente_nome,
-          cl.cpf_cnpj AS cliente_documento,
-          cl.telefone AS cliente_telefone,
-          NULL AS cliente_fantasia
-        FROM ${ConsignacaoRepository.TABELA} c
-        LEFT JOIN clientes cl ON cl.id = c.cliente_id
-        WHERE 1=1`;
-      const params = [];
+    if (filtros.clienteId != null) {
+      query += ' AND c.cliente_id = ?';
+      params.push(filtros.clienteId);
+    }
+    if (filtros.perfilComercialId != null) {
+      query += ' AND c.perfil_comercial_id = ?';
+      params.push(filtros.perfilComercialId);
+    }
 
-      if (filtros.clienteId != null) {
-        query += ' AND c.cliente_id = ?';
-        params.push(filtros.clienteId);
-      }
-      if (filtros.perfilComercialId != null) {
-        query += ' AND c.perfil_comercial_id = ?';
-        params.push(filtros.perfilComercialId);
-      }
-      if (filtros.status) {
-        query += ' AND c.status = ?';
-        params.push(filtros.status);
-      }
-      if (filtros.documentoNumero) {
-        query += ' AND c.documento_numero = ?';
-        params.push(filtros.documentoNumero);
-      }
-      // Busca: código, nome, CPF/CNPJ, telefone, observação
-      if (filtros.busca || filtros.q) {
-        const bruto = String(filtros.busca || filtros.q).trim();
-        const termo = `%${bruto}%`;
-        const termoDigitos = `%${bruto.replace(/\D/g, '')}%`;
-        query += ` AND (
+    const statusIn = Array.isArray(filtros.statusIn)
+      ? filtros.statusIn
+      : (filtros.statusIn ? String(filtros.statusIn).split(',') : null);
+    const statusLista = (statusIn || [])
+      .map((s) => String(s || '').trim().toUpperCase())
+      .filter(Boolean);
+
+    if (statusLista.length) {
+      query += ` AND c.status IN (${statusLista.map(() => '?').join(',')})`;
+      params.push(...statusLista);
+    } else if (filtros.status) {
+      query += ' AND c.status = ?';
+      params.push(filtros.status);
+    }
+
+    if (filtros.documentoNumero) {
+      query += ' AND c.documento_numero = ?';
+      params.push(filtros.documentoNumero);
+    }
+    // RCM-8.11 — ciclo de prestação (ponteiro embutido)
+    if (filtros.prestacaoId != null && filtros.prestacaoId !== '') {
+      query += ' AND c.prestacao_id = ?';
+      params.push(String(filtros.prestacaoId));
+    }
+    if (filtros.prestacaoStatus) {
+      query += ' AND UPPER(IFNULL(c.prestacao_status, \'\')) = ?';
+      params.push(String(filtros.prestacaoStatus).toUpperCase());
+    }
+    if (filtros.busca || filtros.q) {
+      const bruto = String(filtros.busca || filtros.q).trim();
+      const termo = `%${bruto}%`;
+      const termoDigitos = `%${bruto.replace(/\D/g, '')}%`;
+      query += ` AND (
           CAST(c.id AS TEXT) LIKE ?
           OR IFNULL(c.documento_numero, '') LIKE ?
           OR IFNULL(c.observacao, '') LIKE ?
@@ -143,16 +150,56 @@ class ConsignacaoRepository extends BaseRepository {
           OR REPLACE(REPLACE(REPLACE(REPLACE(IFNULL(cl.cpf_cnpj, ''), '.', ''), '-', ''), '/', ''), ' ', '') LIKE ?
           OR REPLACE(REPLACE(REPLACE(REPLACE(IFNULL(cl.telefone, ''), '(', ''), ')', ''), '-', ''), ' ', '') LIKE ?
         )`;
-        params.push(termo, termo, termo, termo, termo, termo, termoDigitos, termoDigitos);
-      }
+      params.push(termo, termo, termo, termo, termo, termo, termoDigitos, termoDigitos);
+    }
 
-      query += ' ORDER BY c.id DESC';
+    return { query, params };
+  }
+
+  async listar(filtros = {}) {
+    return this._executar(async () => {
+      const sql = this._obterSql();
+      await sql.whenReady();
+
+      // RCM-04.B — JOIN clientes para nome/documento/telefone na listagem (SSOT)
+      const montado = this._aplicarFiltrosListagem(
+        `SELECT c.*,
+          cl.nome AS cliente_nome,
+          cl.cpf_cnpj AS cliente_documento,
+          cl.telefone AS cliente_telefone,
+          NULL AS cliente_fantasia,
+          (SELECT COUNT(*) FROM consignacoes_itens ci WHERE ci.consignacao_id = c.id) AS quantidade_itens
+        FROM ${ConsignacaoRepository.TABELA} c
+        LEFT JOIN clientes cl ON cl.id = c.cliente_id
+        WHERE 1=1`,
+        filtros
+      );
+
+      let query = `${montado.query} ORDER BY c.id DESC`;
       const pag = this._paginacao(filtros);
       query += pag.sql;
-      params.push(...pag.params);
 
-      const rows = await sql.all(query, params);
+      const rows = await sql.all(query, [...montado.params, ...pag.params]);
       return rows.map(mapConsignacaoFromRow);
+    });
+  }
+
+  /**
+   * RCM-8.5 — total da listagem sem carregar as linhas.
+   */
+  async contar(filtros = {}) {
+    return this._executar(async () => {
+      const sql = this._obterSql();
+      await sql.whenReady();
+      const montado = this._aplicarFiltrosListagem(
+        `SELECT COUNT(*) AS total
+         FROM ${ConsignacaoRepository.TABELA} c
+         LEFT JOIN clientes cl ON cl.id = c.cliente_id
+         WHERE 1=1`,
+        filtros
+      );
+      const row = await sql.get(montado.query, montado.params);
+      return Number(row?.total ?? 0);
     });
   }
 
@@ -243,6 +290,52 @@ class ConsignacaoRepository extends BaseRepository {
         [...params, id]
       );
 
+      return this.buscarPorId(id);
+    });
+  }
+
+  /**
+   * RCM-8.8 — UPDATE condicional para cancelamento concorrente seguro.
+   * @param {number|string} id
+   * @param {string} statusEsperado
+   * @param {Object} dados
+   * @returns {Promise<Object|null>} null se o status não coincidir
+   */
+  async atualizarSeStatus(id, statusEsperado, dados) {
+    return this._executar(async () => {
+      const sql = this._obterSql();
+      await sql.whenReady();
+
+      const payload = dados || {};
+      const { sets, params } = this._montarCamposUpdate(payload, MAPA_CAMPOS);
+      const { cols: embedded, meta } = expandConsignacaoEmbeddedForPatch(payload);
+
+      Object.entries(embedded).forEach(([col, val]) => {
+        sets.push(`${col} = ?`);
+        params.push(val);
+      });
+
+      this._logAtualizacaoPatch(id, payload, [
+        ...Object.keys(MAPA_CAMPOS).filter((k) => payload[k] !== undefined).map((k) => MAPA_CAMPOS[k]),
+        ...Object.keys(embedded)
+      ], meta);
+
+      if (!sets.length) {
+        const atual = await this.buscarPorId(id);
+        if (!atual || String(atual.status) !== String(statusEsperado)) return null;
+        return atual;
+      }
+
+      sets.push('updated_at = CURRENT_TIMESTAMP');
+      const result = await sql.run(
+        `UPDATE ${ConsignacaoRepository.TABELA}
+         SET ${sets.join(', ')}
+         WHERE id = ? AND status = ?`,
+        [...params, id, statusEsperado]
+      );
+
+      const changes = Number(result?.changes ?? result?.rowsAffected ?? 0);
+      if (changes < 1) return null;
       return this.buscarPorId(id);
     });
   }

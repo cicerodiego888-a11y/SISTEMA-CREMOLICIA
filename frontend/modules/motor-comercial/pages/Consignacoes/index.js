@@ -38,6 +38,12 @@ const {
   buildRouteWithCliente360Context
 } = require('../../utils/cliente360Context');
 const {
+  MOTIVOS_CANCELAMENTO,
+  podeCancelarPreparacao,
+  lerCancelamento,
+  MENSAGEM_CANCELADA_NOVA
+} = require('./cancelamentoPreparacao');
+const {
   ErrorMessages,
   ConfirmMessages,
   emptyState,
@@ -504,18 +510,52 @@ class ConsignacoesPage {
   }
 
   _createActionMenu(consignacao) {
+    const status = String(consignacao.status || '').toUpperCase();
     const actions = [
-      { label: 'Visualizar', icon: '👁️', onClick: () => this._openDrawer(consignacao) },
-      { label: 'Editar', icon: '✏️', onClick: () => this._editConsignacao(consignacao) },
-      { label: 'Entregar', icon: '📦', onClick: () => this._deliverConsignacao(consignacao) },
-      { label: 'Fechar Atendimento', icon: '💰', onClick: () => this._openPrestacao(consignacao) },
+      { label: 'Visualizar', icon: '👁️', onClick: () => this._openDrawer(consignacao) }
+    ];
+
+    if (status === 'RASCUNHO') {
+      actions.push(
+        { label: 'Editar', icon: '✏️', onClick: () => this._editConsignacao(consignacao) },
+        { label: 'Entregar', icon: '📦', onClick: () => this._deliverConsignacao(consignacao) }
+      );
+    }
+
+    if (status === 'ENTREGUE') {
+      actions.push({
+        label: '+ Adicionar produto',
+        icon: '➕',
+        onClick: () => this._abrirEntregaComplementar(consignacao)
+      });
+      actions.push({
+        label: 'Fechar Atendimento',
+        icon: '💰',
+        onClick: () => this._openPrestacao(consignacao)
+      });
+    }
+
+    if (status !== 'CANCELADA' && status !== 'RASCUNHO') {
+      // perfil / conta / timeline disponíveis para estados não cancelados
+    }
+
+    actions.push(
       { label: 'Perfil Comercial', icon: '👤', onClick: () => this._openDrawer(consignacao, 'perfil') },
       { label: 'Conta Corrente', icon: '🏦', onClick: () => this._openDrawer(consignacao, 'financeiro') },
       { label: 'Linha do Tempo', icon: '📜', onClick: () => this._openDrawer(consignacao, 'timeline') },
-      { label: 'Duplicar', icon: '📋', onClick: () => this._duplicateConsignacao(consignacao) },
-      { label: 'Cancelar', icon: '❌', onClick: () => this._cancelConsignacao(consignacao), danger: true },
-      { label: 'Imprimir', icon: '🖨️', onClick: () => this._printConsignacao(consignacao) }
-    ];
+      { label: 'Duplicar', icon: '📋', onClick: () => this._duplicateConsignacao(consignacao) }
+    );
+
+    if (podeCancelarPreparacao(consignacao)) {
+      actions.push({
+        label: 'Cancelar preparação',
+        icon: '❌',
+        onClick: () => this._cancelConsignacao(consignacao),
+        danger: true
+      });
+    }
+
+    actions.push({ label: 'Imprimir', icon: '🖨️', onClick: () => this._printConsignacao(consignacao) });
 
     return ActionMenu.create({ actions, triggerIcon: '⋮' });
   }
@@ -943,11 +983,63 @@ class ConsignacoesPage {
   _createDrawerFooter(consignacao) {
     const container = document.createElement('div');
     container.className = 'cds-consignacao-drawer__footer';
+    const status = String(consignacao.status || '').toUpperCase();
 
-    container.appendChild(Button.create({ text: 'Editar', variant: 'secondary', onClick: () => this._editConsignacao(consignacao) }));
-    container.appendChild(Button.create({ text: 'Entregar', variant: 'primary', onClick: () => this._deliverConsignacao(consignacao) }));
-    container.appendChild(Button.create({ text: 'Fechar Atendimento', variant: 'primary', onClick: () => this._openPrestacao(consignacao) }));
+    if (status === 'CANCELADA') {
+      const cancel = lerCancelamento(consignacao);
+      const info = document.createElement('p');
+      info.className = 'cds-consignacao-drawer__cancelada';
+      info.textContent = cancel?.mensagem || MENSAGEM_CANCELADA_NOVA;
+      container.appendChild(info);
+      container.appendChild(Button.create({
+        text: 'Imprimir',
+        variant: 'secondary',
+        onClick: () => this._printConsignacao(consignacao)
+      }));
+      return container;
+    }
+
+    if (status === 'RASCUNHO') {
+      container.appendChild(Button.create({ text: 'Editar', variant: 'secondary', onClick: () => this._editConsignacao(consignacao) }));
+      container.appendChild(Button.create({ text: 'Entregar', variant: 'primary', onClick: () => this._deliverConsignacao(consignacao) }));
+      container.appendChild(Button.create({
+        text: 'Cancelar preparação',
+        variant: 'danger',
+        onClick: () => this._cancelConsignacao(consignacao)
+      }));
+      return container;
+    }
+
+    if (status === 'ENTREGUE') {
+      container.appendChild(Button.create({
+        text: '+ Adicionar produto',
+        variant: 'secondary',
+        onClick: () => this._abrirEntregaComplementar(consignacao)
+      }));
+      container.appendChild(Button.create({
+        text: 'Fechar Atendimento',
+        variant: 'primary',
+        onClick: () => this._openPrestacao(consignacao)
+      }));
+    }
+
     return container;
+  }
+
+  async _abrirEntregaComplementar(consignacao) {
+    const {
+      podeAdicionarProdutoComplementar,
+      MENSAGEM_PRESTACAO_ENCERRADA
+    } = require('../EntregaComplementar/entregaComplementarMappers');
+    const check = podeAdicionarProdutoComplementar(consignacao);
+    if (!check.elegivel) {
+      notify(check.mensagem || MENSAGEM_PRESTACAO_ENCERRADA, 'warning');
+      return;
+    }
+    await navigate(routeWithActiveContext(
+      `/consignacoes/${consignacao.id}/entrega-complementar`,
+      this.navigationContext
+    ));
   }
 
   _startAutoRefresh() {
@@ -1017,6 +1109,10 @@ class ConsignacoesPage {
   }
 
   async _editConsignacao(consignacao) {
+    if (String(consignacao.status || '').toUpperCase() === 'CANCELADA') {
+      notify(MENSAGEM_CANCELADA_NOVA, 'warning');
+      return;
+    }
     if (consignacao.status !== 'RASCUNHO') {
       notify('Somente consignações em rascunho podem ser editadas.', 'warning');
       return;
@@ -1043,21 +1139,48 @@ class ConsignacoesPage {
   }
 
   async _cancelConsignacao(consignacao) {
-    if (consignacao.status !== 'RASCUNHO') {
-      notifyWarning('SOMENTE_RASCUNHO');
+    if (!podeCancelarPreparacao(consignacao)) {
+      if (String(consignacao.status || '').toUpperCase() === 'CANCELADA') {
+        notify(MENSAGEM_CANCELADA_NOVA, 'warning');
+      } else {
+        notifyWarning('SOMENTE_RASCUNHO');
+      }
       return;
     }
 
     const confirmed = await confirmDialog({
       ...ConfirmMessages.CANCELAR_CONSIGNACAO,
-      message: `Deseja cancelar a consignação ${consignacao.documento}?\nEsta ação não pode ser desfeita.`,
-      danger: true,
-      confirmLabel: 'Cancelar consignação'
+      message: `Cancelar esta consignação?\nEsta ação cancelará a preparação e a entrega não será realizada.`
     });
     if (!confirmed) return;
 
+    const motivo = await choiceDialog({
+      title: 'Motivo do cancelamento',
+      message: 'Selecione o motivo:',
+      choices: MOTIVOS_CANCELAMENTO.map((m) => ({
+        label: m.label,
+        value: m.value,
+        variant: m.value === 'OUTRO' ? 'secondary' : 'primary'
+      }))
+    });
+    if (!motivo) return;
+
+    let observacao = null;
+    if (motivo === 'OUTRO') {
+      observacao = await promptDialog({
+        title: 'Descreva o motivo',
+        label: 'Observação',
+        placeholder: 'Informe o motivo do cancelamento'
+      });
+      if (observacao == null) return;
+      observacao = String(observacao).trim() || null;
+    }
+
     try {
-      await withLoading(loadingText('CANCELANDO_CONSIGNACAO'), () => this.api.cancelarConsignacao(consignacao.id));
+      await withLoading(loadingText('CANCELANDO_CONSIGNACAO'), () => this.api.cancelarConsignacao(consignacao.id, {
+        motivo,
+        observacao
+      }));
       notifySuccess('CONSIGNACAO_CANCELADA');
       await this._loadData();
     } catch (error) {

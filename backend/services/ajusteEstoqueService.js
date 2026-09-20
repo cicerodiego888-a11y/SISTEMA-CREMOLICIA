@@ -80,9 +80,27 @@ function aplicarAjusteEstoqueProduto(db, opcoes, callback) {
     return callback(new Error('Motivo do ajuste é obrigatório.'));
   }
 
-  db.get('SELECT saldo_fiscal, saldo_nao_fiscal, controlar_validade FROM produtos WHERE id = ?', [produtoId], (getErr, produto) => {
+  db.get(
+    `SELECT
+       p.saldo_fiscal,
+       p.saldo_nao_fiscal,
+       p.controlar_validade,
+       COALESCE(p.ativo, 1) AS ativo,
+       p.categoria_id,
+       COALESCE(c.ativo, 1) AS categoria_ativa
+     FROM produtos p
+     LEFT JOIN categorias c ON c.id = p.categoria_id
+     WHERE p.id = ?`,
+    [produtoId],
+    (getErr, produto) => {
     if (getErr) return callback(getErr);
     if (!produto) return callback(new Error('Produto não encontrado.'));
+    if (Number(produto.ativo) === 0) {
+      return callback(new Error('Produto desabilitado: não é possível gerar ou ajustar estoque.'));
+    }
+    if (produto.categoria_id != null && Number(produto.categoria_ativa) === 0) {
+      return callback(new Error('Categoria desabilitada: não é possível gerar ou ajustar estoque deste produto.'));
+    }
 
     const saldoFiscalAntes = Number(produto.saldo_fiscal || 0);
     const saldoNaoFiscalAntes = Number(produto.saldo_nao_fiscal || 0);

@@ -227,7 +227,7 @@ async function listarMovimentacoesPerfil(repo, contexto) {
  * @returns {Object[]}
  */
 function filtrarConsignacoesAbertas(consignacoes) {
-  return consignacoes.filter((c) => ['ENTREGUE', 'ACERTADA'].includes(c.status));
+  return consignacoes.filter((c) => c.status === 'ENTREGUE');
 }
 
 /**

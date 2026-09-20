@@ -199,6 +199,30 @@ class DashboardPage {
       return;
     }
 
+    // RCM-8.9 — Entrega Complementar da consignação do card (nunca só por clienteId)
+    if (tipo === 'entrega-complementar') {
+      if (consignacaoId == null || consignacaoId === '') {
+        notify('Não foi possível identificar a consignação do card.', 'warning');
+        return;
+      }
+      if (this._entregaComplementarNavLock) return;
+      this._entregaComplementarNavLock = true;
+      const path = clienteId
+        ? buildRouteWithCentralTrabalhoContext(
+          `/consignacoes/${consignacaoId}/entrega-complementar`,
+          clienteId
+        )
+        : `/consignacoes/${consignacaoId}/entrega-complementar?origem=central`;
+      try {
+        navigate(path);
+      } finally {
+        setTimeout(() => {
+          this._entregaComplementarNavLock = false;
+        }, 800);
+      }
+      return;
+    }
+
     if (tipo === 'prestacao' && consignacaoId) {
       const path = clienteId
         ? buildRouteWithCentralTrabalhoContext(`/consignacoes/${consignacaoId}/prestacao`, clienteId)
@@ -275,24 +299,7 @@ class DashboardPage {
     }
 
     if (status === 'ACERTADA' || status === 'ENCERRADA') {
-      const auditoria = getOperadorAuditoria();
-      await this.api.reabrirPrestacao(consignacaoId, {
-        motivo: 'Recebimento Conta Corrente Comercial — operação diária do operador',
-        liberacaoGerencial: {
-          autorizado: true,
-          supervisorToken: null,
-          usuarioAdmin: auditoria.usuarioNome,
-          motivo: 'Recebimento Conta Corrente Comercial (sem senha gerencial — fluxo operacional)'
-        },
-        usuarioId: auditoria.usuarioId,
-        auditoriaRecebimento: {
-          tipo: 'CONTA_CORRENTE_COMERCIAL',
-          operadorId: auditoria.usuarioId,
-          operadorNome: auditoria.usuarioNome,
-          registradoEm: new Date().toISOString()
-        }
-      });
-      return this.api.obterConsignacao(consignacaoId);
+      return consignacao;
     }
 
     throw new Error(
@@ -336,7 +343,9 @@ class DashboardPage {
       formatCurrency: (v) => this._formatCurrency(v),
       onConfirm: async ({ valor, formaPagamento, observacao }) => {
         try {
-          await this._prepararRecebimentoContaCorrente(item.consignacaoId);
+          const preparada = await this._prepararRecebimentoContaCorrente(item.consignacaoId);
+          const prest = preparada?.prestacaoContasAtiva;
+          const prestAberta = Boolean(prest && String(prest.status || '').toUpperCase() === 'ABERTA');
 
           const auditoria = getOperadorAuditoria();
           const resultado = await withLoading(
@@ -366,7 +375,7 @@ class DashboardPage {
           const quitou = (Number.isFinite(saldoPos) && saldoPos <= 0)
             || (valorAberto > 0 && valorPago >= valorAberto - 0.009);
 
-          if (quitou) {
+          if (quitou && prestAberta) {
             try {
               await withLoading(
                 'Atualizando Conta Corrente...',
@@ -375,6 +384,8 @@ class DashboardPage {
             } catch (closeError) {
               console.warn('[Central Conta Corrente] fecharPrestacao:', closeError);
             }
+          }
+          if (quitou) {
             notifySuccess('RECEBIMENTO_QUITADO');
           } else {
             notifySuccess('RECEBIMENTO_PARCIAL');

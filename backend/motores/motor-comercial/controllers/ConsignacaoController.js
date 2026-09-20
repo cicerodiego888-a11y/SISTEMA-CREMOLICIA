@@ -13,6 +13,7 @@ const {
   AdicionarItemRequest,
   AlterarQuantidadeItemRequest,
   RegistrarEntregaRequest,
+  RegistrarEntregaComplementarRequest,
   RegistrarEmissaoTermoEntregaRequest,
   AbrirPrestacaoRequest,
   RegistrarDevolucaoRequest,
@@ -22,10 +23,18 @@ const {
   RegistrarCortesiaRequest,
   RegistrarPagamentoRequest,
   ConsignacaoResponse,
-  ItemConsignacaoResponse
+  ItemConsignacaoResponse,
+  CancelarConsignacaoRequest
 } = require('../http/dto');
 const ResultHttpMapper = require('../../../shared/http/mappers/ResultHttpMapper');
 const StandardResponse = require('../../../shared/http/responses/StandardResponse');
+const { consignacaoPertenceAoCliente } = require('../services/consultaConsignacaoReadOnly');
+const {
+  normalizarStatusIn,
+  resolverPaginacaoHistorico,
+  montarMetaPaginacao
+} = require('../services/historicoConsignacaoPaginacao');
+const { obterConsignacaoEmRascunho } = require('../usecases/consignacao/consignacaoUseCaseHelpers');
 const {
   registrarLogOperacaoComercial,
   extrairConsignacaoId
@@ -57,23 +66,48 @@ class ConsignacaoController {
 
   /**
    * GET /consignacoes
-   * Lista todas as consignações.
+   * Sem page/limite: listagem completa (compatível com telas existentes).
+   * Com page/limite/offset: histórico paginado (RCM-8.5).
    */
   async listar(req, res, next) {
     try {
-      const { clienteId, perfilComercialId, status, busca, q } = req.query;
-
-      const consignacaoRepository = this._container.consignacaoRepository;
-      const consignacoes = await consignacaoRepository.listar({
-        clienteId,
+      const { clienteId, cliente_id: clienteIdSnake, perfilComercialId, status, busca, q } = req.query;
+      const paginacao = resolverPaginacaoHistorico(req.query);
+      const filtros = {
+        clienteId: clienteId || clienteIdSnake,
         perfilComercialId,
         status,
+        statusIn: normalizarStatusIn(req.query.statusIn || req.query.status_in),
         busca: busca || q || null
-      });
+      };
+      if (paginacao.paginado) {
+        filtros.limite = paginacao.limite;
+        filtros.offset = paginacao.offset;
+      }
+
+      const consignacaoRepository = this._container.consignacaoRepository;
+      const consignacoes = await consignacaoRepository.listar(filtros);
+      const total = paginacao.paginado && typeof consignacaoRepository.contar === 'function'
+        ? await consignacaoRepository.contar({
+          clienteId: filtros.clienteId,
+          perfilComercialId: filtros.perfilComercialId,
+          status: filtros.status,
+          statusIn: filtros.statusIn,
+          busca: filtros.busca
+        })
+        : consignacoes.length;
+
+      const meta = paginacao.paginado
+        ? montarMetaPaginacao({
+          total,
+          page: paginacao.page,
+          pageSize: paginacao.pageSize
+        })
+        : { total };
 
       const response = StandardResponse.success(
         consignacoes.map(c => ConsignacaoResponse.toJSON(c)),
-        { total: consignacoes.length }
+        meta
       );
 
       const enriched = StandardResponse.enrich(response, req);
@@ -94,7 +128,7 @@ class ConsignacaoController {
       const consignacaoRepository = this._container.consignacaoRepository;
       const consignacao = await consignacaoRepository.buscarPorId(id);
 
-      if (!consignacao) {
+      if (!consignacao || !consignacaoPertenceAoCliente(consignacao, req.query.clienteId || req.query.cliente_id)) {
         const response = StandardResponse.notFound('Consignação não encontrada');
         const enriched = StandardResponse.enrich(response, req);
         return res.status(StandardResponse.getStatusCode(response)).json(enriched);
@@ -108,9 +142,10 @@ class ConsignacaoController {
         itens = [];
       }
 
+      const itensJson = (itens || []).map((item) => ItemConsignacaoResponse.toJSON(item)).filter(Boolean);
       const payload = {
-        ...ConsignacaoResponse.toJSON(consignacao),
-        itens: (itens || []).map((item) => ItemConsignacaoResponse.toJSON(item)).filter(Boolean)
+        ...ConsignacaoResponse.toJSON(consignacao, { itens: itensJson }),
+        itens: itensJson
       };
 
       const response = StandardResponse.success(payload);
@@ -131,6 +166,7 @@ class ConsignacaoController {
       const useCase = this._container.consultarItensConsignacaoUseCase;
       const result = await useCase.executar({
         consignacaoId: id,
+        clienteId: req.query.clienteId || req.query.cliente_id,
         produtoId: req.query.produtoId,
         limite: req.query.limite ? Number(req.query.limite) : undefined,
         offset: req.query.offset ? Number(req.query.offset) : undefined,
@@ -243,18 +279,21 @@ class ConsignacaoController {
 
   /**
    * DELETE /consignacoes/:id
-   * Cancela uma consignação em rascunho.
+   * Cancela uma consignação em rascunho (compatível; preferir POST /cancelar).
    */
   async cancelar(req, res, next) {
     try {
       const { id } = req.params;
-      const { usuarioId } = req.body;
+      const body = req.body || {};
+      const validation = CancelarConsignacaoRequest.validate(body);
+      if (validation) {
+        return responderValidacao(res, req, validation);
+      }
 
-      const inputData = {
-        consignacaoId: id,
-        usuarioId,
-        correlationId: req.correlationId
-      };
+      const inputData = CancelarConsignacaoRequest.fromJSON(body);
+      inputData.consignacaoId = id;
+      inputData.usuarioId = inputData.usuarioId || body.usuarioId || req.user?.id || null;
+      inputData.correlationId = req.correlationId;
 
       const useCase = this._container.cancelarConsignacaoRascunhoUseCase;
       const result = await useCase.executar(inputData);
@@ -271,6 +310,14 @@ class ConsignacaoController {
     } catch (error) {
       next(error);
     }
+  }
+
+  /**
+   * POST /consignacoes/:id/cancelar
+   * RCM-8.8 — Cancelamento voluntário da preparação.
+   */
+  async cancelarPreparacao(req, res, next) {
+    return this.cancelar(req, res, next);
   }
 
   /**
@@ -310,6 +357,10 @@ class ConsignacaoController {
       const observacao = req.body?.observacao != null
         ? String(req.body.observacao)
         : '';
+
+      const consignacaoRepository = this._container.consignacaoRepository;
+      const consignacao = await consignacaoRepository.buscarPorId(id);
+      obterConsignacaoEmRascunho(consignacao);
 
       const itemRepository = this._container.consignacaoItemRepository;
       const atual = await itemRepository.buscarPorId(item);
@@ -406,6 +457,88 @@ class ConsignacaoController {
       }
       const enriched = StandardResponse.enrich(response, req);
       return res.status(StandardResponse.getStatusCode(response)).json(enriched);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * POST /consignacoes/:id/entrega-complementar
+   * RCM-8.7 — Entrega Complementar (somente itens novos).
+   */
+  async registrarEntregaComplementar(req, res, next) {
+    try {
+      const { id } = req.params;
+      const inputData = RegistrarEntregaComplementarRequest.fromJSON(req.body);
+      const validation = RegistrarEntregaComplementarRequest.validate(inputData);
+      if (validation) {
+        return responderValidacao(res, req, validation);
+      }
+
+      inputData.consignacaoId = id;
+      inputData.correlationId = inputData.correlationId || req.correlationId;
+      inputData.requestId = req.requestId || null;
+
+      const useCase = this._container.registrarEntregaComplementarUseCase;
+      const result = await useCase.executar(inputData);
+
+      const response = ResultHttpMapper.map(result);
+      if (!ResultHttpMapper._isFailure(result)) {
+        await registrarLogOperacaoComercial(req, {
+          acao: 'entrega_complementar_consignacao',
+          consignacaoId: id
+        });
+      }
+      const enriched = StandardResponse.enrich(response, req);
+      return res.status(StandardResponse.getStatusCode(response)).json(enriched);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * GET /consignacoes/:id/entregas
+   * Histórico: Entrega Original + Entregas Complementares (somente leitura).
+   */
+  async consultarEntregas(req, res, next) {
+    try {
+      const { id } = req.params;
+      const consignacao = await this._container.consignacaoRepository.buscarPorId(id);
+      if (!consignacao) {
+        const response = StandardResponse.notFound('Consignação não encontrada');
+        return res.status(StandardResponse.getStatusCode(response)).json(
+          StandardResponse.enrich(response, req)
+        );
+      }
+
+      const itens = await this._container.consignacaoItemRepository.listarPorConsignacao(id);
+      const movimentacoes = await this._container.movimentacaoComercialRepository.listar({
+        consignacaoId: id
+      });
+      const {
+        montarHistoricoEntregas,
+        avaliarElegibilidadeEntregaComplementar
+      } = require('../usecases/consignacao/entregaComplementarHelpers');
+
+      const entregas = montarHistoricoEntregas(movimentacoes, itens);
+      const elegibilidade = avaliarElegibilidadeEntregaComplementar(consignacao);
+      const valorTotal = entregas.reduce((s, e) => s + Number(e.valorTotal || 0), 0);
+
+      const payload = {
+        consignacaoId: Number(id),
+        status: consignacao.status,
+        elegivelComplementar: elegibilidade.elegivel,
+        bloqueioComplementar: elegibilidade.elegivel
+          ? null
+          : { codigo: elegibilidade.codigo, mensagem: elegibilidade.mensagem },
+        entregas,
+        valorTotal
+      };
+
+      return res.status(200).json(StandardResponse.enrich(
+        StandardResponse.success(payload),
+        req
+      ));
     } catch (error) {
       next(error);
     }
@@ -859,6 +992,14 @@ class ConsignacaoController {
   async obterComprovante(req, res, next) {
     try {
       const { id } = req.params;
+      const consignacaoRepository = this._container.consignacaoRepository;
+      const consignacao = await consignacaoRepository.buscarPorId(id);
+      if (!consignacao || !consignacaoPertenceAoCliente(consignacao, req.query.clienteId || req.query.cliente_id)) {
+        const response = StandardResponse.notFound('Consignação não encontrada');
+        const enriched = StandardResponse.enrich(response, req);
+        return res.status(StandardResponse.getStatusCode(response)).json(enriched);
+      }
+
       const tipo = String(req.query?.tipo || 'ENTREGA').toUpperCase();
       const {
         gerarComprovanteEntrega,

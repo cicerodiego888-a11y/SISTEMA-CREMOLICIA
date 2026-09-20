@@ -92,18 +92,28 @@ class RegistrarEntregaConsignacaoUseCase extends ConsignacaoWriteUseCase {
         permitirExcessoAutorizado: liberacaoOk
       });
 
+      // RCM-8.12 — autoridade: resolver + vincular ciclo ANTES de qualquer ENTREGA no Ledger
+      const {
+        resolverCicloPrestacaoParaEntrega
+      } = require('./prestacaoCicloClienteHelpers');
+
+      const resolucao = await resolverCicloPrestacaoParaEntrega(uow, consignacao);
+      const grupoCiclo = resolucao.grupo;
+      const consignacaoCiclo = resolucao.consignacao || consignacao;
+
       const movimentacoes = [];
       for (const item of itens) {
         const valorItem = Number(item.quantidadeEntregue) * Number(item.precoUnitario);
         const mov = await registrarMovimentacaoComercial(uow, {
-          consignacaoId: consignacao.id,
+          consignacaoId: consignacaoCiclo.id,
           consignacaoItemId: item.id,
           tipoMovimentacao: 'ENTREGA',
           origem,
           correlationId,
+          grupoPrestacaoContasId: grupoCiclo?.id ?? null,
           snapshot: {
-            ...criarSnapshotConsignacao(consignacao, { operacao: 'ENTREGA' }),
-            documento: consignacao.documento,
+            ...criarSnapshotConsignacao(consignacaoCiclo, { operacao: 'ENTREGA' }),
+            documento: consignacaoCiclo.documento,
             item: { id: item.id, produtoId: item.produtoId, quantidade: item.quantidadeEntregue },
             liberacaoGerencial: liberacaoOk ? {
               autorizado: true,
@@ -122,24 +132,37 @@ class RegistrarEntregaConsignacaoUseCase extends ConsignacaoWriteUseCase {
         movimentacoes.push(mov);
       }
 
-      const consignacaoAtualizada = await uow.consignacao.atualizar(consignacao.id, {
+      const patchEntrega = {
         status: STATUS_ENTREGUE,
         dataEntrega: entrada.dataEntrega ?? new Date().toISOString(),
         documento: {
-          ...consignacao.documento,
+          ...consignacaoCiclo.documento,
           situacao: 'ATIVO',
-          dataEmissao: consignacao.documento?.dataEmissao ?? new Date().toISOString()
+          dataEmissao: consignacaoCiclo.documento?.dataEmissao ?? new Date().toISOString()
         }
-      });
+      };
+      // Reforça ponteiro do ciclo (idempotente se já vinculado em resolverCiclo…)
+      if (grupoCiclo) {
+        patchEntrega.prestacaoContasAtiva = {
+          ...grupoCiclo,
+          status: 'ABERTA',
+          dataFechamento: null
+        };
+      }
 
-      await sincronizarCacheConsignacao(uow, consignacao.id);
-      const consignacaoComCache = await uow.consignacao.buscarPorId(consignacao.id);
+      const consignacaoAtualizada = await uow.consignacao.atualizar(
+        consignacaoCiclo.id,
+        patchEntrega
+      );
+
+      await sincronizarCacheConsignacao(uow, consignacaoCiclo.id);
+      const consignacaoComCache = await uow.consignacao.buscarPorId(consignacaoCiclo.id);
 
       await enfileirarBridgeOutbox(outboxEnqueue, {
         eventType: OUTBOX_EVENT_TYPES.ESTOQUE_BAIXAR_PRODUTO,
         bridgeName: OUTBOX_BRIDGE_NAMES.ESTOQUE,
         payload: {
-          consignacaoId: consignacao.id,
+          consignacaoId: consignacaoCiclo.id,
           itens,
           correlationId
         },
@@ -147,21 +170,33 @@ class RegistrarEntregaConsignacaoUseCase extends ConsignacaoWriteUseCase {
         requestId: entrada.requestId ?? null
       });
 
-      enfileirarEvento(eventos, EVENTOS_DOMINIO.CONSIGNACAO_ENTREGUE, consignacao.id, {
+      enfileirarEvento(eventos, EVENTOS_DOMINIO.CONSIGNACAO_ENTREGUE, consignacaoCiclo.id, {
         consignacao: consignacaoComCache ?? consignacaoAtualizada,
         movimentacoes,
         valorTotal,
         correlationId,
+        grupoPrestacaoContasId: grupoCiclo?.id ?? null,
+        incorporadaAoCicloCliente: resolucao.vinculadaAoCiclo || resolucao.origem === 'cliente',
         liberacaoGerencial: liberacaoOk ? liberacaoGerencial : null
       }, correlationId);
 
-      await sincronizarCreditoComercial(uow, eventos, consignacao, {
+      await sincronizarCreditoComercial(uow, eventos, consignacaoCiclo, {
         origem: 'ENTREGA',
         correlationId,
         usuarioId: entrada.usuarioId ?? null
       });
 
-      return { consignacao: consignacaoComCache ?? consignacaoAtualizada, movimentacoes, valorTotal, correlationId };
+      return {
+        consignacao: consignacaoComCache ?? consignacaoAtualizada,
+        movimentacoes,
+        valorTotal,
+        correlationId,
+        grupoPrestacaoContasId: grupoCiclo?.id ?? null,
+        incorporadaAoCicloCliente: Boolean(
+          resolucao.vinculadaAoCiclo || (grupoCiclo && resolucao.origem === 'cliente')
+        ),
+        cicloOrigem: resolucao.origem
+      };
     });
   }
 }

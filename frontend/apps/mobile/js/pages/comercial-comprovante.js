@@ -1,6 +1,5 @@
 /**
- * CDS Mobile — Resumo Inteligente da Entrega (RCM-04.4)
- * Renderiza exclusivamente o Snapshot do Motor de Comprovantes.
+ * CDS Mobile — Resumo da entrega para enviar ao consignatário.
  */
 import {
   escapeHtml,
@@ -13,7 +12,6 @@ import {
   icon
 } from '../ui.js';
 import { showToast } from '../toast.js';
-import { confirmSheet } from '../forms.js';
 import { openWhatsApp } from '../native.js';
 import { apiErrorMessage } from '../api-errors.js';
 
@@ -46,6 +44,47 @@ function loadOffline(id) {
   }
 }
 
+function unwrapComprovante(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  let c = raw;
+  if (c.data && typeof c.data === 'object' && !Array.isArray(c.data)) c = c.data;
+  if (c.dados && typeof c.dados === 'object' && !Array.isArray(c.dados)) c = c.dados;
+  if (c.comprovante && typeof c.comprovante === 'object') c = c.comprovante;
+  return c;
+}
+
+function montarTextoResumo(comprovante) {
+  const snap = comprovante?.snapshot || comprovante || {};
+  const existente = String(
+    comprovante?.textoCompartilhavel || snap.textoCompartilhavel || ''
+  ).trim();
+  if (existente) return existente;
+
+  const h = snap.cabecalho || {};
+  const prod = snap.cards?.produtos || {};
+  const sit = snap.cards?.situacaoComercial || {};
+  const linhas = [
+    '*COMPROVANTE DE ENTREGA*',
+    h.empresaNome || 'CDS Sistemas',
+    `Nº ${h.numeroComprovante || snap.numeroComprovante || '—'}`,
+    `${h.data || ''} ${h.hora || ''}`.trim(),
+    '',
+    `*Cliente:* ${h.clienteNome || '—'}`,
+    '',
+    '*PRODUTOS*'
+  ];
+  (prod.itens || []).forEach((i) => {
+    linhas.push(
+      `• ${i.produto} — ${i.quantidade} ${i.unidade || 'UN'} = ${money(i.total)}`
+    );
+  });
+  linhas.push(`Valor comercial: ${money(prod.valorComercial)}`);
+  linhas.push(`Saldo atual: ${money(sit.saldoAtual)}`);
+  linhas.push('');
+  linhas.push('Enviado pelo CDS Sistemas');
+  return linhas.filter((l, i, arr) => !(l === '' && arr[i - 1] === '')).join('\n');
+}
+
 async function audit(id, acao, comprovante) {
   try {
     await window.CDSApi.post(`comercial/consignacoes/${id}/comprovante/acoes`, {
@@ -58,7 +97,7 @@ async function audit(id, acao, comprovante) {
 
 function downloadPdf(pdf) {
   if (!pdf?.base64) {
-    showToast('PDF indisponível no snapshot.', 'warning');
+    showToast('PDF indisponível. Use Copiar resumo ou WhatsApp.', 'warning');
     return;
   }
   const bin = atob(pdf.base64);
@@ -81,24 +120,45 @@ function cardHtml(title, body) {
   `;
 }
 
+async function carregarComprovante(id) {
+  const raw = await window.CDSApi.get(
+    `comercial/consignacoes/${id}/comprovante`,
+    { _t: Date.now() },
+    { timeoutMs: 60000 }
+  );
+  return unwrapComprovante(raw);
+}
+
 export async function renderComprovanteEntrega(root, id) {
-  root.innerHTML = loadingHtml('Carregando comprovante…');
+  root.innerHTML = loadingHtml('Montando resumo para o consignatário…');
   let comprovante = null;
   let offline = false;
 
   try {
-    comprovante = await window.CDSApi.get(`comercial/consignacoes/${id}/comprovante`, { _t: Date.now() });
-    if (comprovante?.data) comprovante = comprovante.data;
-    saveOffline(id, comprovante);
+    comprovante = await carregarComprovante(id);
+    if (comprovante) saveOffline(id, comprovante);
   } catch (err) {
     const cached = loadOffline(id);
     if (cached) {
       comprovante = cached;
       offline = true;
     } else {
-      root.innerHTML = errorHtml(apiErrorMessage(err) || err.message || 'Falha ao carregar comprovante', err.status);
+      root.innerHTML = `
+        ${backBarHtml('Comercial')}
+        ${errorHtml(apiErrorMessage(err) || err.message || 'Falha ao carregar o resumo', err.status)}
+        <button type="button" class="cds-mobile-btn" data-go="comercial/${escapeHtml(String(id))}" style="margin-top:12px">Voltar à consignação</button>
+      `;
+      bindBack(root);
+      root.querySelector('[data-go]')?.addEventListener('click', () => {
+        window.CDSMobile?.navigate?.(`comercial/${id}`);
+      });
       return;
     }
+  }
+
+  if (!comprovante || typeof comprovante !== 'object') {
+    root.innerHTML = errorHtml('Resumo da entrega indisponível.', 404);
+    return;
   }
 
   const snap = comprovante.snapshot || comprovante;
@@ -107,13 +167,24 @@ export async function renderComprovanteEntrega(root, id) {
   const sit = snap.cards?.situacaoComercial || {};
   const hist = snap.cards?.historico || {};
   const obs = snap.cards?.observacoes || {};
-  const texto = comprovante.textoCompartilhavel || snap.textoCompartilhavel || '';
+  const texto = montarTextoResumo(comprovante);
   const pdf = comprovante.pdf || snap.pdf;
   const status = sit.statusComercial || snap.indicadores?.statusCredito || '—';
+  const phone = String(h.clienteTelefone || '').replace(/\D/g, '');
 
   root.innerHTML = `
     ${backBarHtml('Comercial')}
-    ${offline ? `<div class="cds-mobile-banner">${icon('warning')} <span>Modo offline — exibindo último snapshot.</span></div>` : ''}
+    ${offline ? `<div class="cds-mobile-banner">${icon('warning')} <span>Modo offline — último resumo salvo.</span></div>` : ''}
+    ${cardHtml('Resumo para o consignatário', `
+      <p class="cds-muted" style="margin:0 0 8px">Revise e envie pelo WhatsApp ou copie o texto.</p>
+      <pre class="cds-comprovante-texto" style="white-space:pre-wrap;word-break:break-word;font-size:13px;line-height:1.4;margin:0;font-family:inherit">${escapeHtml(texto)}</pre>
+    `)}
+    <div class="cds-card" style="display:grid;gap:8px;margin-bottom:12px">
+      <button type="button" class="cds-mobile-btn" id="cmp-whatsapp">Enviar ao consignatário (WhatsApp)</button>
+      <button type="button" class="cds-mobile-btn cds-mobile-btn--secondary" id="cmp-copiar">Copiar resumo</button>
+      <button type="button" class="cds-mobile-btn cds-mobile-btn--secondary" id="cmp-pdf">Gerar PDF</button>
+      <button type="button" class="cds-mobile-btn cds-mobile-btn--ghost" id="cmp-print">Imprimir</button>
+    </div>
     ${cardHtml('Comprovante de Entrega', `
       <p class="cds-muted" style="margin:0">${escapeHtml(h.empresaNome || '')}</p>
       <p style="margin:4px 0 0"><strong>${escapeHtml(h.numeroComprovante || snap.numeroComprovante || '')}</strong></p>
@@ -148,67 +219,47 @@ export async function renderComprovanteEntrega(root, id) {
       <div class="cds-row"><span>Índice perdas</span><strong>${escapeHtml(hist.indicePerdas != null ? `${hist.indicePerdas}%` : '—')}</strong></div>
     `)}
     ${cardHtml('Observações', `<p style="margin:0">${escapeHtml(obs.entrega || '—')}</p>`)}
-    <div class="cds-card" style="display:grid;gap:8px">
-      <button type="button" class="cds-mobile-btn" id="cmp-whatsapp">📱 Compartilhar via WhatsApp</button>
-      <button type="button" class="cds-mobile-btn cds-mobile-btn--secondary" id="cmp-copiar">📋 Copiar Resumo</button>
-      <button type="button" class="cds-mobile-btn cds-mobile-btn--secondary" id="cmp-pdf">📄 Gerar PDF</button>
-      <button type="button" class="cds-mobile-btn cds-mobile-btn--ghost" id="cmp-print">🖨️ Imprimir</button>
-    </div>
   `;
 
   bindBack(root);
+
+  const enviarWhatsApp = async () => {
+    if (!texto) {
+      showToast('Não há texto de resumo para enviar.', 'warning');
+      return;
+    }
+    await audit(id, 'whatsapp', comprovante);
+    if (phone) openWhatsApp(phone, texto);
+    else window.open(`https://wa.me/?text=${encodeURIComponent(texto)}`, '_blank', 'noopener');
+    if (pdf?.base64) downloadPdf(pdf);
+  };
 
   root.querySelector('#cmp-copiar')?.addEventListener('click', async () => {
     try {
       await navigator.clipboard.writeText(texto);
       await audit(id, 'resumo_copiado', comprovante);
-      showToast('Resumo copiado com sucesso.', 'success');
-      await afterShare(id);
+      showToast('Resumo copiado. Cole no WhatsApp do consignatário.', 'success');
     } catch (_e) {
-      showToast('Não foi possível copiar.', 'error');
+      showToast('Não foi possível copiar. Selecione o texto na tela.', 'error');
     }
   });
 
-  root.querySelector('#cmp-whatsapp')?.addEventListener('click', async () => {
-    await audit(id, 'whatsapp', comprovante);
-    const phone = String(h.clienteTelefone || '').replace(/\D/g, '');
-    if (phone) {
-      openWhatsApp(phone, texto);
-    } else {
-      window.open(`https://wa.me/?text=${encodeURIComponent(texto)}`, '_blank', 'noopener');
-    }
-    if (pdf?.base64) downloadPdf(pdf);
-    await afterShare(id);
-  });
+  root.querySelector('#cmp-whatsapp')?.addEventListener('click', enviarWhatsApp);
 
   root.querySelector('#cmp-pdf')?.addEventListener('click', async () => {
     await audit(id, 'pdf', comprovante);
     downloadPdf(pdf);
-    showToast('PDF gerado a partir do snapshot oficial.', 'success');
-    await afterShare(id);
   });
 
   root.querySelector('#cmp-print')?.addEventListener('click', async () => {
     await audit(id, 'impressao', comprovante);
     const w = window.open('', '_blank');
-    if (w && pdf?.html) {
-      w.document.write(pdf.html);
+    if (w && (pdf?.html || texto)) {
+      w.document.write(pdf?.html || `<pre>${escapeHtml(texto)}</pre>`);
       w.document.close();
       setTimeout(() => w.print(), 250);
     }
-    await afterShare(id);
   });
-}
-
-async function afterShare(id) {
-  const ok = await confirmSheet({
-    title: 'Finalizar atendimento?',
-    message: 'Deseja finalizar este atendimento?',
-    confirmLabel: 'Finalizar'
-  });
-  if (ok) {
-    window.CDSMobile?.navigate?.('comercial', { replace: true });
-  }
 }
 
 export default { renderComprovanteEntrega };

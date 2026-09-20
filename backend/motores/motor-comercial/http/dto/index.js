@@ -10,9 +10,11 @@ const { CriarPerfilRequest, AtualizarPerfilRequest, AlterarLimiteRequest, Perfil
 const {
   CriarConsignacaoRequest,
   EditarConsignacaoRequest,
+  CancelarConsignacaoRequest,
   AdicionarItemRequest,
   AlterarQuantidadeItemRequest,
   RegistrarEntregaRequest,
+  RegistrarEntregaComplementarRequest,
   RegistrarEmissaoTermoEntregaRequest,
   AbrirPrestacaoRequest,
   RegistrarDevolucaoRequest,
@@ -47,9 +49,11 @@ module.exports = {
   // Consignação DTOs
   CriarConsignacaoRequest,
   EditarConsignacaoRequest,
+  CancelarConsignacaoRequest,
   AdicionarItemRequest,
   AlterarQuantidadeItemRequest,
   RegistrarEntregaRequest,
+  RegistrarEntregaComplementarRequest,
   RegistrarEmissaoTermoEntregaRequest,
   AbrirPrestacaoRequest,
   RegistrarDevolucaoRequest,

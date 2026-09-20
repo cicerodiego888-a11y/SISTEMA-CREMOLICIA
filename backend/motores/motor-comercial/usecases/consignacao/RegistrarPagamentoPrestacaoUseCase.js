@@ -13,7 +13,7 @@ const {
 const { gerarCorrelationId, enfileirarEvento } = require('./consignacaoUseCaseHelpers');
 const { registrarMovimentacaoComercial } = require('./consignacaoOperacaoHelpers');
 const {
-  garantirPrestacaoAberta,
+  obterGrupoPrestacaoParaPagamento,
   criarSnapshotPrestacao,
   resolverTotaisParaPagamento,
   validarPagamentoContraSaldo,
@@ -62,7 +62,7 @@ class RegistrarPagamentoPrestacaoUseCase extends ConsignacaoWriteUseCase {
 
     return this.executarEscrita(async (uow, eventos, outboxEnqueue) => {
       const consignacao = await uow.consignacao.buscarPorId(entrada.consignacaoId);
-      const grupo = garantirPrestacaoAberta(consignacao);
+      const grupo = obterGrupoPrestacaoParaPagamento(consignacao);
 
       const {
         totais: totaisAtuais,

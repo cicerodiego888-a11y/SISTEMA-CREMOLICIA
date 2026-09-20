@@ -117,6 +117,23 @@ function garantirPrestacaoAberta(consignacao) {
 }
 
 /**
+ * Pagamento financeiro pode ocorrer com prestação ABERTA (ciclo de atendimento)
+ * ou FECHADA em ACERTADA/ENCERRADA (dívida da Conta Corrente).
+ * Não cria nem reabre prestação.
+ */
+function obterGrupoPrestacaoParaPagamento(consignacao) {
+  const prestacao = consignacao?.prestacaoContasAtiva;
+  if (prestacaoEstaAberta(consignacao)) {
+    return prestacao;
+  }
+  const status = String(consignacao?.status || '').toUpperCase();
+  if (prestacao && (status === STATUS_ACERTADA || status === STATUS_ENCERRADA)) {
+    return prestacao;
+  }
+  throw new PrestacaoNaoAbertaError(consignacao?.id);
+}
+
+/**
  * @param {Object} consignacao
  * @returns {Object}
  */
@@ -239,7 +256,9 @@ function determinarStatusAposFechamento(totais) {
  * @returns {string|null}
  */
 function determinarStatusAposPagamento(totais, statusAtual) {
-  if (totais.saldo <= 0 && statusAtual === STATUS_ACERTADA) {
+  const saldo = Number(totais?.saldo ?? 0);
+  const st = String(statusAtual || '').toUpperCase();
+  if (saldo <= 0 && (st === STATUS_ACERTADA || st === STATUS_ENCERRADA)) {
     return STATUS_QUITADA;
   }
   return null;
@@ -387,11 +406,22 @@ async function resolverTotaisParaPagamento(uow, consignacao, grupo) {
   let escopo = 'GRUPO_PRESTACAO';
   let reconciliacao = null;
 
+  const prestacaoFechada = String(grupoAtivo?.status || '').toUpperCase() === STATUS_PRESTACAO_FECHADA;
+
   if (totais.totalVendido <= 0) {
     const todas = await uow.movimentacaoComercial.listar({ consignacaoId: consignacao.id });
     const totaisConsignacao = calcularTotaisPrestacao(todas, null);
 
     if (totaisConsignacao.totalVendido > 0) {
+      if (prestacaoFechada) {
+        return {
+          totais: totaisConsignacao,
+          escopo: 'CONSIGNACAO_CONTA_CORRENTE',
+          movimentacoes: todas,
+          grupo: grupoAtivo,
+          reconciliacao: null
+        };
+      }
       const ponteiro = await apontarPrestacaoAtivaParaGrupoRecuperavel(
         uow,
         consignacao,
@@ -432,14 +462,18 @@ async function resolverTotaisParaPagamento(uow, consignacao, grupo) {
 /**
  * @param {import('../../infrastructure/transactions/UnitOfWork')} uow
  * @param {string} grupoPrestacaoContasId
- * @param {number|string} consignacaoId
+ * @param {number|string} [consignacaoId] — opcional; com grupo, escopo é o ciclo (RCM-8.11)
  * @returns {Promise<Object[]>}
  */
-async function listarMovimentacoesPrestacao(uow, grupoPrestacaoContasId, consignacaoId) {
-  return uow.movimentacaoComercial.listar({
-    consignacaoId,
-    grupoPrestacaoContasId
-  });
+async function listarMovimentacoesPrestacao(uow, grupoPrestacaoContasId, consignacaoId = null) {
+  const filtros = {};
+  if (grupoPrestacaoContasId) {
+    // RCM-8.11 — ciclo = grupo; não limitar à consignação da URL
+    filtros.grupoPrestacaoContasId = grupoPrestacaoContasId;
+  } else if (consignacaoId != null) {
+    filtros.consignacaoId = consignacaoId;
+  }
+  return uow.movimentacaoComercial.listar(filtros);
 }
 
 /**
@@ -489,6 +523,7 @@ module.exports = {
   fecharGrupoPrestacaoContas,
   obterConsignacaoParaAbrirPrestacao,
   garantirPrestacaoAberta,
+  obterGrupoPrestacaoParaPagamento,
   garantirPrestacaoFechada,
   obterItemPrestacao,
   calcularTotaisPrestacao,

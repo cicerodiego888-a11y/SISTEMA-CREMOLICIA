@@ -28,7 +28,8 @@ import {
   formatDocumento,
   mapConsignacaoView,
   normalizeResumoPrestacao,
-  numOrZero
+  numOrZero,
+  badgeStatusConsignacao
 } from '../comercial-mappers.js';
 import {
   isOnline,
@@ -405,8 +406,8 @@ export async function renderLocator(root) {
     const data = unwrapData(raw) || raw;
     const lista = Array.isArray(data) ? data : (data?.items || data?.consignacoes || []);
     const elegiveis = lista.filter((c) => {
-      const s = String(c.status || c.situacao || '').toUpperCase();
-      return /ENTREGUE|PRESTACAO|ACERT|EM_PRESTACAO|ABERTA/.test(s) || s === 'ENTREGUE';
+      const s = String(c.status || '').toUpperCase();
+      return s === 'ENTREGUE' || s === 'EM_PRESTACAO';
     });
 
     const pendingBadge = countPending() > 0
@@ -427,7 +428,7 @@ export async function renderLocator(root) {
                 go: `comercial/${c.id || c.consignacao_id}/prestacao`,
                 title: asText(formatDocumento(c.documento, c.id), `Consignação #${c.id}`),
                 subtitle: asText(c.clienteNome || c.cliente_nome || c.cliente || 'Cliente'),
-                status: c.status || c.situacao,
+                status: badgeStatusConsignacao(c),
                 meta: [formatDate(c.dataEntrega || c.data_entrega || c.updatedAt || c.created_at)].filter((x) => x !== '—'),
                 value: countPending(c.id) ? 'Pendente sync' : undefined
               })).join('')
@@ -454,7 +455,7 @@ export async function renderLocator(root) {
               go: `comercial/${c.id || c.consignacao_id}/prestacao`,
               title: asText(formatDocumento(c.documento, c.id), `Consignação #${c.id}`),
               subtitle: asText(c.clienteNome || c.cliente_nome || c.cliente || 'Cliente'),
-              status: c.status || c.situacao
+              status: badgeStatusConsignacao(c)
             })).join('')
           : emptyHtml('Nenhum resultado');
         bindGo(list);
@@ -548,7 +549,7 @@ export async function renderPrestacaoContas(root, id) {
             <div class="cds-row"><span>Data</span><strong>${escapeHtml(formatDate(c.dataEntrega || c.data_entrega || c.updatedAt || c.createdAt))}</strong></div>
             <div class="cds-row"><span>Rota</span><strong>${escapeHtml(asText(c.rota || c.rotaNome || c.rota_nome, '—'))}</strong></div>
             <div class="cds-row"><span>Vendedor</span><strong>${escapeHtml(asText(c.vendedor || c.vendedorNome || c.usuarioNome || c.operador, '—'))}</strong></div>
-            <div class="cds-row"><span>Situação</span>${statusBadgeHtml(c.status || c.situacao)}</div>
+            <div class="cds-row"><span>Situação</span>${statusBadgeHtml(badgeStatusConsignacao(c))}</div>
           `
         })}
 
@@ -807,7 +808,7 @@ function bindFinalizar(root, id, state, totalPerdas) {
       if (totalPerdas > 0.01) {
         await window.CDSApi.put(rateioPath, rateioBody);
       }
-      await window.CDSApi.post(fecharPath, fecharBody);
+      await window.CDSApi.post(fecharPath, fecharBody, null, { timeoutMs: 120000 });
       showToast('Prestação finalizada.', 'success');
       window.CDSMobile?.navigate?.(`comercial/${id}`, { replace: true });
     } catch (err) {

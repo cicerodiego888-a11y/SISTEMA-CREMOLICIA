@@ -15,7 +15,7 @@ const SITUACAO = Object.freeze({
 });
 
 const SITUACAO_LABEL = Object.freeze({
-  SEM_VENDA: 'Quitada',
+  SEM_VENDA: 'Sem Venda',
   QUITADA: 'Quitada',
   EM_ABERTO: 'Em Aberto',
   PARCIALMENTE_RECEBIDA: 'Parcial'

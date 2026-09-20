@@ -1,6 +1,10 @@
 /**
  * UC-001 — CriarConsignacaoUseCase
  *
+ * RCM-8.12 — cria apenas RASCUNHO. O vínculo ao ciclo de Prestação ABERTA do cliente
+ * ocorre na ENTREGA (RegistrarEntregaConsignacaoUseCase → resolverCicloPrestacaoParaEntrega).
+ * Não criar/vincular prestacaoContasAtiva aqui.
+ *
  * @class CriarConsignacaoUseCase
  */
 

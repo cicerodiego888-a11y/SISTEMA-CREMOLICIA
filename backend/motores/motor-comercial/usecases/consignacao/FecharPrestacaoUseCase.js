@@ -40,8 +40,15 @@ class FecharPrestacaoUseCase extends ConsignacaoWriteUseCase {
         throw new PrestacaoJaFechadaError(grupoAberto.id);
       }
 
-      const itens = await uow.consignacaoItem.listarPorConsignacao(consignacao.id);
-      const movimentacoes = await listarMovimentacoesPrestacao(uow, grupoAberto.id, consignacao.id);
+      const {
+        listarItensDasConsignacoesDoGrupo,
+        fecharPonteirosConsignacoesDoGrupo,
+        listarConsignacoesDoGrupoPrestacao
+      } = require('./prestacaoCicloClienteHelpers');
+
+      // RCM-8.11 — totais e itens do ciclo inteiro
+      const itens = await listarItensDasConsignacoesDoGrupo(uow, grupoAberto.id);
+      const movimentacoes = await listarMovimentacoesPrestacao(uow, grupoAberto.id);
       const totais = calcularTotaisPrestacao(movimentacoes, grupoAberto.id);
       const grupoFechado = fecharGrupoPrestacaoContas(grupoAberto);
 
@@ -70,12 +77,24 @@ class FecharPrestacaoUseCase extends ConsignacaoWriteUseCase {
         novoStatus = STATUS_ENCERRADA;
       }
 
-      const consignacaoAtualizada = await uow.consignacao.atualizar(consignacao.id, {
-        status: novoStatus,
-        prestacaoContasAtiva: grupoFechado
+      // Fecha ponteiro em TODAS as consignações do ciclo
+      const membros = await listarConsignacoesDoGrupoPrestacao(uow, grupoAberto.id);
+      const statusPorId = new Map();
+      for (const m of membros) {
+        statusPorId.set(String(m.id), novoStatus);
+      }
+      await fecharPonteirosConsignacoesDoGrupo(uow, grupoFechado, {
+        statusPorConsignacaoId: statusPorId
       });
 
+      const consignacaoAtualizada = await uow.consignacao.buscarPorId(consignacao.id);
+
       await sincronizarCacheConsignacao(uow, consignacao.id);
+      for (const m of membros) {
+        if (String(m.id) !== String(consignacao.id)) {
+          await sincronizarCacheConsignacao(uow, m.id);
+        }
+      }
 
       const consignacaoComCache = await uow.consignacao.buscarPorId(consignacao.id);
 
@@ -84,6 +103,7 @@ class FecharPrestacaoUseCase extends ConsignacaoWriteUseCase {
         grupoPrestacaoContas: grupoFechado,
         movimentacao,
         totais,
+        quantidadeConsignacoes: membros.length,
         documento: grupoFechado.documento,
         correlationId
       }, correlationId);
@@ -99,6 +119,7 @@ class FecharPrestacaoUseCase extends ConsignacaoWriteUseCase {
         grupoPrestacaoContas: grupoFechado,
         movimentacao,
         totais,
+        quantidadeConsignacoes: membros.length,
         correlationId
       };
     });

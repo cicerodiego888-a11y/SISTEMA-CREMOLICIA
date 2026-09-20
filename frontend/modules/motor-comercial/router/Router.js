@@ -276,8 +276,29 @@ class Router {
     if (!target) {
       throw new Error(`Elemento de montagem não encontrado: ${this.mountTarget}`);
     }
+    this._disposeMountedPages(target);
     target.innerHTML = '';
     target.appendChild(element);
+  }
+
+  /**
+   * RCM-8.6 — destrói páginas com destroy() antes de trocar o DOM
+   * (timers/polling/callbacks da Prestação não sobrevivem à navegação).
+   * @private
+   */
+  _disposeMountedPages(target) {
+    if (!target) return;
+    const nodes = target.querySelectorAll('[data-page-destroyable="true"]');
+    nodes.forEach((node) => {
+      const instance = node.__cdsPageInstance;
+      if (instance && typeof instance.destroy === 'function') {
+        try {
+          instance.destroy();
+        } catch (_e) {
+          /* ignore dispose errors */
+        }
+      }
+    });
   }
 
   /**

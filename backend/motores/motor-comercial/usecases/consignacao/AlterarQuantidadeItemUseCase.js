@@ -16,6 +16,7 @@ const {
   enfileirarEvento,
   obterConsignacaoEmRascunho
 } = require('./consignacaoUseCaseHelpers');
+const { validarQuantidadePorUnidade } = require('../../services/quantidadeUnidadeComercial');
 
 class AlterarQuantidadeItemUseCase extends ConsignacaoWriteUseCase {
   async validar(entrada) {
@@ -55,11 +56,19 @@ class AlterarQuantidadeItemUseCase extends ConsignacaoWriteUseCase {
         );
       }
 
+      const quantidadeCheck = validarQuantidadePorUnidade(
+        novaQuantidade,
+        item.unidadeComercial || item.unidade
+      );
+      if (!quantidadeCheck.ok) {
+        throw new QuantidadeInvalidaError(novaQuantidade);
+      }
+
       const quantidadeAnterior = item.quantidadeEntregue;
       const precoUnitario = Number(item.precoUnitario ?? 0);
       const itemAtualizado = await uow.consignacaoItem.atualizar(item.id, {
-        quantidadeEntregue: novaQuantidade,
-        subtotalEntregue: novaQuantidade * precoUnitario
+        quantidadeEntregue: quantidadeCheck.quantidade,
+        subtotalEntregue: quantidadeCheck.quantidade * precoUnitario
       });
 
       enfileirarEvento(eventos, EVENTOS_DOMINIO.QUANTIDADE_ITEM_ALTERADA, consignacao.id, {

@@ -128,9 +128,14 @@ class ApiClient {
         try {
           errorBody = await response.json();
         } catch (_parseError) {
-          throw new Error(`HTTP ${response.status}`);
+          const httpErr = new Error(`HTTP ${response.status}`);
+          httpErr.status = response.status;
+          throw httpErr;
         }
-        throw new Error(extractErrorMessage(errorBody));
+        const err = new Error(extractErrorMessage(errorBody));
+        err.status = response.status;
+        err.body = errorBody;
+        throw err;
       }
 
       return await response.json();

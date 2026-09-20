@@ -47,6 +47,11 @@ function normalizeLipProduct(row = {}) {
   const precoBase = Number(row.preco_venda || row.preco || 0);
   const preco = temPromo && precoPromo > 0 ? precoPromo : precoBase;
 
+  const ativoRaw = row.ativo;
+  const ativo = ativoRaw === undefined || ativoRaw === null
+    ? true
+    : !(ativoRaw === 0 || ativoRaw === false || ativoRaw === '0');
+
   return {
     id: row.id,
     nome: row.nome || row.descricao || `Produto #${row.id}`,
@@ -61,9 +66,15 @@ function normalizeLipProduct(row = {}) {
     preco_venda: precoBase,
     preco,
     unidade: row.unidade || 'UN',
+    ativo,
     match_exato: row.match_exato === 1 || row.match_exato === true,
     frequente: Boolean(row.frequente)
   };
+}
+
+/** Mantém apenas produtos ativos (desativado = ativo 0/false). */
+function filterActiveLipProducts(products = []) {
+  return (products || []).filter((p) => p && p.ativo !== false);
 }
 
 /**
@@ -110,6 +121,7 @@ module.exports = {
   escapeHtml,
   highlightTerm,
   normalizeLipProduct,
+  filterActiveLipProducts,
   groupLipProducts,
   formatCurrency
 };

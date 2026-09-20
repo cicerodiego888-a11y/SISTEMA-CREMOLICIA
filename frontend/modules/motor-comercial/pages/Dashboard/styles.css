@@ -661,6 +661,103 @@
   border-left: 3px solid #10b981;
 }
 
+/* RCM-8.10 — operações aninhadas no card do cliente */
+.cds-central-ops__ops {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(15, 23, 42, 0.08);
+}
+
+.cds-central-ops__op {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(248, 250, 252, 0.9);
+  border: 1px solid rgba(15, 23, 42, 0.06);
+}
+
+.cds-central-ops__op-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.cds-central-ops__op-doc {
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: var(--color-neutral-900, #0f172a);
+  letter-spacing: -0.01em;
+}
+
+.cds-central-ops__op-badge {
+  flex-shrink: 0;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.cds-central-ops__op-badge[data-variant="info"] {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+.cds-central-ops__op-badge[data-variant="danger"] {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.cds-central-ops__op-meta {
+  margin: 0 0 8px;
+  font-size: 0.75rem;
+  color: var(--color-neutral-600, #475569);
+  line-height: 1.35;
+}
+
+.cds-central-ops__op-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.cds-central-ops__op-btn {
+  font-family: inherit;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 6px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.cds-central-ops__op-btn--primary {
+  background: var(--color-primary-600, #2563eb);
+  color: #fff;
+  border-color: var(--color-primary-600, #2563eb);
+}
+
+.cds-central-ops__op-btn--primary:hover {
+  filter: brightness(1.05);
+}
+
+.cds-central-ops__op-btn--ghost {
+  background: transparent;
+  color: var(--color-neutral-700, #334155);
+  border-color: rgba(15, 23, 42, 0.12);
+}
+
+.cds-central-ops__op-btn--ghost:hover {
+  background: rgba(255, 255, 255, 0.9);
+}
+
 .cds-central-ops__timeline {
   display: flex;
   flex-direction: column;

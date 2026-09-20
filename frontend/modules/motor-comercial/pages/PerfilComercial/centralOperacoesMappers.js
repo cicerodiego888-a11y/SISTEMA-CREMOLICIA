@@ -9,6 +9,7 @@
 
 const { extrairCapacidadesDosPerfis } = require('./capacidadesComerciais');
 const { buildHistoricoUnificado, normalizeTimelineEvents } = require('./cliente360Mappers');
+const { buildHistoricoConsignacoes } = require('./historicoConsignacoesMappers');
 
 const STATUS_ABERTOS = new Set(['RASCUNHO', 'VALIDADA', 'ENTREGUE', 'EM_PRESTACAO']);
 
@@ -517,7 +518,9 @@ function buildCentralOperacoesViewModel(payload = {}) {
     consignacoes = [],
     pendencias = {},
     historico = [],
-    timeline = []
+    timeline = [],
+    consignacoesHistorico = null,
+    historicoPaginacao = null
   } = payload;
 
   const identificacao = buildIdentificacao({
@@ -543,6 +546,10 @@ function buildCentralOperacoesViewModel(payload = {}) {
       lancamentos: (contaCorrente.lancamentos || contaCorrente.movimentacoes || []).slice(0, 5)
     },
     historico: buildHistoricoSimplificado(historico, timeline, perfil),
+    consignacoesHistorico: Array.isArray(consignacoesHistorico)
+      ? consignacoesHistorico
+      : buildHistoricoConsignacoes(consignacoes, perfil?.clienteId),
+    historicoPaginacao,
     documentos: buildDocumentos(consignacoes)
   };
 }
@@ -558,5 +565,6 @@ module.exports = {
   limiteExcedido,
   findConsignacaoEmEntrega,
   findConsignacaoEmPrestacao,
-  findConsignacaoPrestacaoPendente
+  findConsignacaoPrestacaoPendente,
+  buildHistoricoConsignacoes
 };

@@ -3,10 +3,9 @@
  * Cache de assets estáticos. Nunca intercepta /api/*.
  * HTML/JS/ícones/manifest: network-first (evita ícone/atalho stale).
  */
-const CACHE = 'cds-mobile-2.4.9-lista-produtos';
+const CACHE = 'cds-mobile-2.5.6-resumo';
 const PRECACHE = [
   '/apps/mobile/manifest.webmanifest',
-  '/apps/mobile/icons/favicon.ico',
   '/apps/mobile/icons/favicon-32.png',
   '/apps/mobile/icons/icon-192.png',
   '/apps/mobile/icons/icon-512.png',
@@ -21,7 +20,6 @@ function isNetworkFirstAsset(url) {
   return (
     p === '/apps/mobile/' ||
     p === '/apps/mobile/index.html' ||
-    p.endsWith('.js') ||
     p.endsWith('.css') ||
     p.endsWith('.webmanifest') ||
     p.endsWith('.png') ||
@@ -63,6 +61,9 @@ self.addEventListener('fetch', function (event) {
 
   const url = new URL(req.url);
   if (url.pathname.indexOf('/api/') === 0) return;
+  if (/\.m?js$/i.test(url.pathname) || url.pathname.indexOf('/apps/mobile/js/') === 0) {
+    return;
+  }
 
   if (url.pathname.indexOf('/apps/mobile') !== 0 &&
       url.pathname.indexOf('/shared/') !== 0) {

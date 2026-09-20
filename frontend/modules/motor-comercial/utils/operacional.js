@@ -84,7 +84,8 @@ function confirmDialog(options = {}) {
     footer.appendChild(cancelBtn);
     footer.appendChild(confirmBtn);
 
-    const content = document.createElement('p');
+    const content = document.createElement('div');
+    content.style.whiteSpace = 'pre-wrap';
     content.textContent = options.message || 'Deseja continuar?';
 
     const backdrop = Modal.create({

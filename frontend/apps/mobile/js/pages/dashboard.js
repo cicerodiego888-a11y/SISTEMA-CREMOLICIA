@@ -26,6 +26,7 @@ import {
   icon
 } from '../ui.js';
 import { showToast } from '../toast.js';
+import { badgeStatusConsignacao } from '../comercial-mappers.js';
 
 function pick(obj, keys, fallback = null) {
   for (const key of keys) {
@@ -187,7 +188,7 @@ export async function renderDashboard(root) {
                 'Cliente'
               ),
               value: c.valor_total != null || c.total != null ? formatMoney(c.valor_total ?? c.total) : '',
-              status: c.status || c.situacao,
+              status: badgeStatusConsignacao(c),
               meta: [formatDate(c.criado_em || c.data_criacao || c.created_at || '')].filter((x) => x !== '—')
             })).join('')
           : emptyHtml('Nenhuma atividade recente', 'As consignações aparecerão aqui.')}

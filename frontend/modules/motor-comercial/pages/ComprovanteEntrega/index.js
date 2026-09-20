@@ -98,7 +98,9 @@ class ComprovanteEntregaPage {
   }
 
   async _load() {
-    const host = document.getElementById('comprovante-entrega-root');
+    const host = (this.root && this.root.querySelector)
+      ? this.root.querySelector('#comprovante-entrega-root')
+      : document.getElementById('comprovante-entrega-root');
     if (!host) return;
     try {
       this.comprovante = await withLoading('Montando comprovante…', () =>
@@ -209,11 +211,22 @@ class ComprovanteEntregaPage {
 
   _bindShareActions(container) {
     if (!container) return;
-    container.innerHTML = '<h3>Compartilhamento</h3>';
+    container.innerHTML = '<h3>Enviar ao consignatário</h3>';
     const row = document.createElement('div');
     row.className = 'cds-comp-actions';
 
-    const botoes = this.comprovante?.cards?.compartilhamento?.botoes || [];
+    const cards = this.comprovante?.cards
+      || this.comprovante?.snapshot?.cards
+      || {};
+    let botoes = cards.compartilhamento?.botoes || [];
+    if (!botoes.length) {
+      botoes = [
+        { id: 'whatsapp', label: 'Enviar ao consignatário (WhatsApp)', icone: '📱', habilitado: true },
+        { id: 'copiar', label: 'Copiar Resumo', icone: '📋', habilitado: true },
+        { id: 'pdf', label: 'Gerar PDF', icone: '📄', habilitado: true },
+        { id: 'imprimir', label: 'Imprimir', icone: '🖨️', habilitado: true }
+      ];
+    }
     botoes.forEach((btn) => {
       if (btn.estrutura && !btn.habilitado) {
         row.appendChild(Button.create({

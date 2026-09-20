@@ -30,7 +30,11 @@ class CentralOperacoesView {
 
     root.appendChild(CentralOperacoesView._renderAcoes(viewModel.acoesPrincipais, ctx));
     root.appendChild(CentralOperacoesView._renderSituacao(viewModel.situacaoCliente, ctx));
-    root.appendChild(CentralOperacoesView._renderTimeline(viewModel.historico));
+    root.appendChild(CentralOperacoesView._renderTimeline(
+      viewModel.historico,
+      viewModel.consignacoesHistorico,
+      { ...ctx, historicoPaginacao: ctx.historicoPaginacao || viewModel.historicoPaginacao }
+    ));
 
     return root;
   }
@@ -196,13 +200,22 @@ class CentralOperacoesView {
     return section;
   }
 
-  /** Linha do tempo simplificada */
-  static _renderTimeline(itens = []) {
+  /** Histórico: consignações + linha do tempo */
+  static _renderTimeline(itens = [], consignacoes = [], ctx = {}) {
     const section = document.createElement('section');
     section.className = 'cds-ficha-cliente__timeline-wrap';
     section.id = 'sec-historico';
 
-    section.innerHTML = `<h2 class="cds-ficha-cliente__secao-titulo">Últimas movimentações</h2>`;
+    section.appendChild(CentralOperacoesView._renderConsignacoes(
+      consignacoes,
+      ctx,
+      ctx.historicoPaginacao || {}
+    ));
+
+    const movTitle = document.createElement('h2');
+    movTitle.className = 'cds-ficha-cliente__secao-titulo';
+    movTitle.textContent = 'Últimas movimentações';
+    section.appendChild(movTitle);
 
     if (!itens.length) {
       section.appendChild(EmptyState.create({
@@ -227,6 +240,83 @@ class CentralOperacoesView {
 
     section.appendChild(list);
     return section;
+  }
+
+  static _renderConsignacoes(consignacoes = [], ctx = {}, paginacao = {}) {
+    const wrap = document.createElement('div');
+    wrap.className = 'cds-ficha-cliente__consignacoes';
+    wrap.id = 'sec-historico-consignacoes';
+
+    const title = document.createElement('h2');
+    title.className = 'cds-ficha-cliente__secao-titulo';
+    title.textContent = 'CONSIGNAÇÕES';
+    wrap.appendChild(title);
+
+    const total = Number(paginacao.total);
+    const carregadas = consignacoes.length;
+    if (Number.isFinite(total) && total > 0) {
+      const meta = document.createElement('p');
+      meta.className = 'cds-ficha-cliente__consignacoes-pagina';
+      meta.textContent = `Mostrando ${carregadas} de ${total}`;
+      wrap.appendChild(meta);
+    }
+
+    if (!consignacoes.length) {
+      wrap.appendChild(EmptyState.create({
+        title: 'Nenhuma consignação',
+        description: 'Quando houver operações, elas aparecerão aqui em qualquer status'
+      }));
+      return wrap;
+    }
+
+    const fmt = (v) => (ctx.formatCurrency ? ctx.formatCurrency(v) : String(v ?? '—'));
+    const fmtDate = (v) => (v && ctx.formatDate ? ctx.formatDate(v) : '—');
+
+    const list = document.createElement('div');
+    list.className = 'cds-ficha-cliente__consignacoes-lista';
+
+    consignacoes.forEach((row) => {
+      const card = document.createElement('article');
+      card.className = 'cds-ficha-cliente__consignacao-card';
+      card.dataset.consignacaoId = String(row.id);
+      card.innerHTML = `
+        <div class="cds-ficha-cliente__consignacao-numero">${row.numero}</div>
+        <div class="cds-ficha-cliente__consignacao-meta">${fmtDate(row.data)} · ${row.statusLabel}</div>
+        <div class="cds-ficha-cliente__consignacao-resumo">${row.quantidadeItens} itens · ${fmt(row.valorTotal)}</div>
+        <div class="cds-ficha-cliente__consignacao-atualizacao">Última atualização: ${fmtDate(row.atualizadoEm)}</div>
+        <div class="cds-ficha-cliente__consignacoes-acoes"></div>
+      `;
+      const acoes = card.querySelector('.cds-ficha-cliente__consignacoes-acoes');
+      const ver = document.createElement('button');
+      ver.type = 'button';
+      ver.className = 'cds-ficha-cliente__mini-btn';
+      ver.textContent = 'Visualizar';
+      ver.addEventListener('click', () => ctx.onVisualizarConsignacao && ctx.onVisualizarConsignacao(row));
+      const reprint = document.createElement('button');
+      reprint.type = 'button';
+      reprint.className = 'cds-ficha-cliente__mini-btn cds-ficha-cliente__mini-btn--primary';
+      reprint.textContent = 'Reimprimir';
+      reprint.addEventListener('click', () => ctx.onReimprimirConsignacao && ctx.onReimprimirConsignacao(row));
+      acoes.appendChild(ver);
+      acoes.appendChild(reprint);
+      list.appendChild(card);
+    });
+
+    wrap.appendChild(list);
+
+    if (paginacao.hasMore) {
+      const mais = document.createElement('button');
+      mais.type = 'button';
+      mais.className = 'cds-ficha-cliente__carregar-mais';
+      mais.disabled = !!paginacao.loading;
+      mais.textContent = paginacao.loading ? 'Carregando...' : 'Carregar mais';
+      mais.addEventListener('click', () => {
+        if (ctx.onCarregarMaisConsignacoes) ctx.onCarregarMaisConsignacoes();
+      });
+      wrap.appendChild(mais);
+    }
+
+    return wrap;
   }
 }
 

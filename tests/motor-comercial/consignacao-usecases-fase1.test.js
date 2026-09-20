@@ -78,6 +78,19 @@ function criarMockConsignacaoRepo(estadoInicial = null) {
   let store = estadoInicial ? { ...estadoInicial } : null;
   const todos = estadoInicial ? [{ ...estadoInicial }] : [];
 
+  async function aplicarPatch(id, dados) {
+    if (!store || store.id !== id) return null;
+    const patch = { ...dados };
+    if (patch.documento) {
+      store.documento = { ...store.documento, ...patch.documento };
+      delete patch.documento;
+    }
+    store = { ...store, ...patch };
+    const idx = todos.findIndex((c) => c.id === id);
+    if (idx >= 0) todos[idx] = { ...store };
+    return { ...store };
+  }
+
   return {
     buscarPorId: async (id) => (store && store.id === id ? { ...store } : null),
     listar: async (filtros = {}) => todos.filter((c) => {
@@ -98,16 +111,11 @@ function criarMockConsignacaoRepo(estadoInicial = null) {
       todos.push({ ...store });
       return { ...store };
     },
-    atualizar: async (id, dados) => {
+    atualizar: async (id, dados) => aplicarPatch(id, dados),
+    atualizarSeStatus: async (id, statusEsperado, dados) => {
       if (!store || store.id !== id) return null;
-      if (dados.documento) {
-        store.documento = { ...store.documento, ...dados.documento };
-        delete dados.documento;
-      }
-      store = { ...store, ...dados };
-      const idx = todos.findIndex((c) => c.id === id);
-      if (idx >= 0) todos[idx] = { ...store };
-      return { ...store };
+      if (String(store.status) !== String(statusEsperado)) return null;
+      return aplicarPatch(id, dados);
     },
     obterMaxSequencialDocumento: async () => 0,
     obterProximoSequencialDocumento: async () => 1,

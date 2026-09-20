@@ -5,6 +5,7 @@
 const {
   highlightTerm,
   normalizeLipProduct,
+  filterActiveLipProducts,
   groupLipProducts
 } = require('../../../../shared/components/LIP/lipMappers');
 const { readRecent, saveRecent } = require('../../../../shared/components/LIP/lipHistory');
@@ -19,6 +20,15 @@ describe('LIP lipMappers', () => {
     const p = normalizeLipProduct({ id: 1, nome: 'Teste', preco_venda: 10, preco_promocional: 8, tem_promocao: 1 });
     expect(p.preco).toBe(8);
     expect(p.nome).toBe('Teste');
+  });
+
+  test('filterActiveLipProducts remove desativados', () => {
+    const list = filterActiveLipProducts([
+      normalizeLipProduct({ id: 1, nome: 'Ativo', ativo: 1 }),
+      normalizeLipProduct({ id: 2, nome: 'Inativo', ativo: 0 }),
+      normalizeLipProduct({ id: 3, nome: 'Sem flag' })
+    ]);
+    expect(list.map((p) => p.id)).toEqual([1, 3]);
   });
 
   test('groupLipProducts agrupa por categoria', () => {

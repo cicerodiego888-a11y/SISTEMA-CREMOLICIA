@@ -197,12 +197,56 @@ export function normalizeResumoPrestacao(raw) {
   };
 }
 
+export function normalizeConsignacaoStatus(c) {
+  return String(c?.status || '').trim().toUpperCase();
+}
+
+/** Encerrada no domínio (prestação já fechada). */
+export function isStatusConsignacaoFinalizada(st) {
+  const s = String(st || '').trim().toUpperCase();
+  return /^(ACERTADA|ENCERRADA|QUITADA|FINALIZADA|FECHADA)$/.test(s);
+}
+
+/**
+ * Badge de lista — paridade Desktop (badges.js).
+ * ACERTADA/ENCERRADA/QUITADA = FINALIZADA, não “pendente”.
+ */
+export function badgeStatusConsignacao(c) {
+  const st = normalizeConsignacaoStatus(c);
+  if (st === 'CANCELADA') return 'CANCELADA';
+  if (isStatusConsignacaoFinalizada(st)) return 'FINALIZADA';
+  if (st === 'ENTREGUE' || st === 'EM_PRESTACAO') {
+    const prest = c?.prestacaoContasAtiva || c?.prestacao_contas_ativa;
+    const prestAberta = String(prest?.status || '').toUpperCase() === 'ABERTA';
+    if (prestAberta) return 'PRESTACAO_PENDENTE';
+    return 'ENTREGUE';
+  }
+  if (!st || st === 'RASCUNHO' || st === 'DRAFT') return 'RASCUNHO';
+  if (st === 'PREPARACAO' || st === 'PREPARAÇÃO') return 'PREPARACAO';
+  return st;
+}
+
+export function isConsignacaoAbertaOperacional(c) {
+  const st = normalizeConsignacaoStatus(c);
+  if (!st || st === 'CANCELADA' || isStatusConsignacaoFinalizada(st)) return false;
+  return (
+    st === 'RASCUNHO'
+    || st === 'DRAFT'
+    || st === 'PREPARACAO'
+    || st === 'PREPARAÇÃO'
+    || st === 'EM_ENTREGA'
+    || st === 'EM ENTREGA'
+    || st === 'ENTREGUE'
+    || st === 'EM_PRESTACAO'
+  );
+}
+
 /** Fase operacional — alinhada a badges.js + PrestacaoContas Desktop. */
 export function deriveComercialPhase(c, resumoPrest = null, resumoFinal = null) {
-  const st = String(c?.status || c?.situacao || '').toUpperCase();
-  const isDraft = !st || st === 'RASCUNHO' || /RASCUNH|ABERT|PEND|DRAFT/.test(st);
+  const st = normalizeConsignacaoStatus(c) || String(c?.situacao || '').trim().toUpperCase();
+  const isDraft = !st || st === 'RASCUNHO' || st === 'DRAFT' || st === 'PREPARACAO' || st === 'PREPARAÇÃO';
   const isCancelada = st === 'CANCELADA';
-  const isEncerrada = /^(ACERTADA|ENCERRADA|QUITADA)$/.test(st);
+  const isEncerrada = isStatusConsignacaoFinalizada(st);
   const isEntregue = st === 'ENTREGUE' || st === 'EM_PRESTACAO';
 
   const saldo = numOrZero(

@@ -2,7 +2,8 @@
  * Mapeadores da Central de Trabalho Comercial — UX-03 / UX-09 / UX-10.
  *
  * UX-10: máquina de estados operacionais (E1–E6).
- * Um cliente = um estado = uma ação. Sem concorrência entre blocos.
+ * Uma consignação = um card operacional (mesmo cliente pode ter várias).
+ * Sem concorrência entre blocos para a MESMA consignação.
  *
  * @module frontend/modules/motor-comercial/pages/Dashboard/centralTrabalhoMappers
  */
@@ -15,6 +16,9 @@ const {
 } = require('../PerfilComercial/centralOperacoesMappers');
 const { buildViewFromPayload } = require('../Pendencias/pendenciasMappers');
 const { normalizeTimelineEvents } = require('../PerfilComercial/cliente360Mappers');
+const {
+  podeAdicionarProdutoComplementar
+} = require('../EntregaComplementar/entregaComplementarMappers');
 
 /** Estados oficiais UX-10 */
 const ESTADOS = {
@@ -280,8 +284,9 @@ function saldoDevedorPerfil(perfil = {}) {
 }
 
 /**
- * Resolve o status UX de prestação e o estado operacional E1–E6 do cliente.
- * Precedência: E2 > E4 > E3 > E5 > E6/E1 (um cliente = um estado).
+ * Resolve o status UX de prestação e o estado operacional E1–E6
+ * para resumo do cliente (precedência E2 > E4 > E3 > E5 > E6/E1).
+ * A fila operacional NÃO usa mais este colapso — ver buildFilaOperacional.
  */
 function resolveEstadoOperacionalCliente({ consignacoes = [], perfil = {} } = {}) {
   const emEntrega = consignacoes.find(isEntregaEmAndamento);
@@ -372,7 +377,13 @@ function enriquecerMetaConsignacao(consignacao = {}) {
   const qtd = Number(consignacao.quantidadeItens)
     || (Array.isArray(consignacao.itens) ? consignacao.itens.length : 0)
     || 0;
-  const valor = Number(consignacao.valor ?? consignacao.saldo ?? consignacao.saldoDevedor ?? 0) || 0;
+  const valor = Number(
+    consignacao.valor
+      ?? consignacao.valorTotal
+      ?? consignacao.saldo
+      ?? consignacao.saldoDevedor
+      ?? 0
+  ) || 0;
   return {
     valor,
     itens: qtd,
@@ -524,8 +535,51 @@ function workItemFromPendencia(alerta = {}, consignacoes = [], perfis = []) {
   };
 }
 
+function resolverOperacaoConsignacao(c) {
+  if (isEntregaEmAndamento(c)) {
+    return {
+      estado: ESTADOS.E2,
+      prestacaoStatus: PRESTACAO_STATUS.NENHUMA,
+      consignacao: c,
+      saldoDevedor: saldoDevedorConsignacao(c)
+    };
+  }
+  if (isPrestacaoEmAndamento(c)) {
+    return {
+      estado: ESTADOS.E4,
+      prestacaoStatus: PRESTACAO_STATUS.EM_ANDAMENTO,
+      consignacao: c,
+      saldoDevedor: saldoDevedorConsignacao(c)
+    };
+  }
+  if (isProntoParaFechar(c)) {
+    return {
+      estado: ESTADOS.E3,
+      prestacaoStatus: PRESTACAO_STATUS.PRONTO_PARA_FECHAR,
+      consignacao: c,
+      saldoDevedor: saldoDevedorConsignacao(c)
+    };
+  }
+  return null;
+}
+
+function montarOperacaoItem(c, clienteNome, perfil = {}) {
+  const resolved = resolverOperacaoConsignacao(c);
+  if (!resolved) return null;
+  const item = itemFromEstado(c.clienteId, clienteNome, resolved, {
+    id: `consig-${c.id}-${resolved.estado}`,
+    documento: perfil.cpfCnpj && perfil.cpfCnpj !== '-' ? perfil.cpfCnpj : '—',
+    documentoConsignacao: c.documento || `Consignação #${c.id}`
+  });
+  if (!item) return null;
+  item.statusConsignacao = c.status || null;
+  item.podeEntregaComplementar = podeAdicionarProdutoComplementar(c).elegivel === true;
+  return item;
+}
+
 /**
- * Classifica todos os clientes e monta a fila operacional exclusiva.
+ * Monta a fila: 1 cliente = 1 card visual; N consignações independentes dentro.
+ * clienteId = agrupamento | consignacaoId = identidade operacional (RCM-8.10).
  */
 function buildFilaOperacional({ pendenciasView = {}, consignacoes = [], perfis = [] } = {}) {
   const perfilPorCliente = new Map();
@@ -544,88 +598,121 @@ function buildFilaOperacional({ pendenciasView = {}, consignacoes = [], perfis =
     consignacoesPorCliente.get(key).push(c);
   });
 
-  const clienteIds = new Set([
-    ...consignacoesPorCliente.keys(),
-    ...perfilPorCliente.keys()
-  ]);
+  const cardsPorCliente = new Map();
+  const consignacaoIdsNaFila = new Set();
 
-  const porCliente = new Map();
-
-  clienteIds.forEach((key) => {
-    const lista = consignacoesPorCliente.get(key) || [];
+  consignacoesPorCliente.forEach((lista, key) => {
     const perfil = (perfilPorCliente.get(key) || [])[0] || {};
-    const resolved = resolveEstadoOperacionalCliente({ consignacoes: lista, perfil });
-    if (resolved.estado === ESTADOS.E1 || resolved.estado === ESTADOS.E6) return;
-
     const nome = resolverNomeTrabalho(key, {
       consignacoes: lista,
       perfis: perfilPorCliente.get(key) || []
     });
-    const item = itemFromEstado(perfil.clienteId ?? key, nome, resolved, {
+
+    const operacoes = lista
+      .map((c) => montarOperacaoItem(c, nome, perfil))
+      .filter(Boolean)
+      .sort((a, b) => (a.ordemFila - b.ordemFila) || (a.prioridade - b.prioridade));
+
+    if (!operacoes.length) return;
+
+    operacoes.forEach((op) => consignacaoIdsNaFila.add(String(op.consignacaoId)));
+
+    const valorTotal = operacoes.reduce((s, op) => s + Number(op.valor || 0), 0);
+    const itensTotal = operacoes.reduce((s, op) => s + Number(op.itens || 0), 0);
+    const principal = operacoes[0];
+    const estadosUnicos = [...new Set(operacoes.map((op) => op.estado))];
+
+    cardsPorCliente.set(key, {
+      id: `cli-${key}`,
+      clienteId: perfil.clienteId ?? key,
+      clienteNome: nome,
+      agrupado: true,
       documento: perfil.cpfCnpj && perfil.cpfCnpj !== '-' ? perfil.cpfCnpj : '—',
-      documentoConsignacao: resolved.consignacao?.documento
-        || (resolved.consignacao?.id ? `Consignação #${resolved.consignacao.id}` : null)
+      valor: valorTotal,
+      saldoDevedor: valorTotal,
+      itens: itensTotal,
+      quantidadeConsignacoes: operacoes.length,
+      tempoAguardando: principal.tempoAguardando || '—',
+      ordemFila: principal.ordemFila,
+      prioridade: Math.min(...operacoes.map((op) => op.prioridade || 99)),
+      nivel: principal.nivel || 'warning',
+      icone: principal.icone || '🟠',
+      // Header: não esconde estados — badge principal = prioridade; lista interna tem todos
+      estado: principal.estado,
+      estados: estadosUnicos,
+      statusLabel: estadosUnicos.length > 1
+        ? `${operacoes.length} operações`
+        : (principal.statusLabel || principal.situacao),
+      situacao: estadosUnicos.length > 1
+        ? `${operacoes.length} consignações em aberto`
+        : (principal.situacao || ''),
+      // Compat buildAcaoPrincipal / navegação legado: aponta para a 1ª op ordenada
+      consignacaoId: principal.consignacaoId,
+      acaoTipo: principal.acaoTipo,
+      acaoLabel: principal.acaoLabel,
+      podeEntregaComplementar: operacoes.some((op) => op.podeEntregaComplementar),
+      consignacoes: operacoes
     });
-    if (item) porCliente.set(key, item);
   });
 
-  // Riscos (limite/bloqueio): só entram no prioritário se o cliente NÃO está em E5
-  // (E2–E4 já têm ação operacional; risco sobrescreve se danger)
+  const clientesComOperacao = new Set(cardsPorCliente.keys());
+  const riscos = [];
   (pendenciasView.criticas || []).concat(pendenciasView.importantes || [], pendenciasView.alertas || [])
     .forEach((alerta) => {
       if (alerta.clienteId == null) return;
       const key = String(alerta.clienteId);
+      if (clientesComOperacao.has(key)) return;
       const risco = workItemFromPendenciaRisco(
         alerta,
         consignacoesPorCliente.get(key) || [],
         perfilPorCliente.get(key) || []
       );
-      if (!risco) return;
-
-      const atual = porCliente.get(key);
-      if (atual && atual.estado === ESTADOS.E5) {
-        // Risco financeiro: permanece em E5 (Receber) — não mistura com prioritário
-        return;
+      if (risco) {
+        risco.agrupado = false;
+        risco.consignacoes = [];
+        riscos.push(risco);
       }
-      if (!atual || atual.estado === ESTADOS.E2 || atual.estado === ESTADOS.E3 || atual.estado === ESTADOS.E4) {
-        // Mantém o estado operacional E2–E4 (próxima ação do ciclo) — risco não compete
-        if (atual) return;
-      }
-      porCliente.set(key, risco);
     });
 
-  const trabalhoPrioritario = [...porCliente.values()]
-    .filter((i) => [ESTADOS.E2, ESTADOS.E3, ESTADOS.E4, ESTADOS.RISCO].includes(i.estado))
+  const trabalhoPrioritario = [...cardsPorCliente.values(), ...riscos]
+    .filter((i) => {
+      if (i.agrupado && Array.isArray(i.consignacoes) && i.consignacoes.length) return true;
+      return [ESTADOS.RISCO].includes(i.estado);
+    })
     .sort((a, b) => (a.ordemFila - b.ordemFila) || (a.prioridade - b.prioridade))
-    .slice(0, 12);
+    .slice(0, 20);
 
-  const idsPrioritarios = new Set(trabalhoPrioritario.map((i) => String(i.clienteId)));
-
-  const consignadosPendentes = [...porCliente.values()]
-    .filter((i) => i.estado === ESTADOS.E5
-      && !idsPrioritarios.has(String(i.clienteId))
-      && Number(i.saldoDevedor) > 0)
-    .map((i) => ({
-      id: i.id,
-      clienteId: i.clienteId,
-      clienteNome: i.clienteNome,
-      documento: i.documento || '—',
-      valorEmAberto: i.saldoDevedor,
-      consignacaoId: i.consignacaoId,
-      documentoConsignacao: i.documentoConsignacao || null,
-      statusConsignacao: i.consignacaoId
-        ? (consignacoes.find((c) => String(c.id) === String(i.consignacaoId))?.status || null)
-        : null,
-      acaoTipo: 'receber-conta-corrente',
-      origemRecebimento: 'conta-corrente-comercial',
-      estado: ESTADOS.E5,
-      prestacaoStatus: PRESTACAO_STATUS.ENCERRADA
-    }))
+  const consignadosPendentes = consignacoes
+    .filter((c) => isElegivelE5(c) && !consignacaoIdsNaFila.has(String(c.id)))
+    .map((c) => {
+      const key = String(c.clienteId);
+      const perfil = (perfilPorCliente.get(key) || [])[0] || {};
+      const nome = resolverNomeTrabalho(key, {
+        consignacoes: consignacoesPorCliente.get(key) || [c],
+        perfis: perfilPorCliente.get(key) || []
+      });
+      return {
+        id: `consig-${c.id}-E5`,
+        clienteId: c.clienteId,
+        clienteNome: nome,
+        documento: perfil.cpfCnpj && perfil.cpfCnpj !== '-' ? perfil.cpfCnpj : '—',
+        valorEmAberto: saldoDevedorConsignacao(c),
+        consignacaoId: c.id,
+        documentoConsignacao: c.documento || `Consignação #${c.id}`,
+        statusConsignacao: c.status || null,
+        acaoTipo: 'receber-conta-corrente',
+        origemRecebimento: 'conta-corrente-comercial',
+        estado: ESTADOS.E5,
+        prestacaoStatus: PRESTACAO_STATUS.ENCERRADA,
+        acaoLabel: 'Receber'
+      };
+    })
     .filter((i) => String(i.statusConsignacao || '').toUpperCase() !== 'QUITADA')
+    .filter((i) => Number(i.valorEmAberto) > 0)
     .sort((a, b) => b.valorEmAberto - a.valorEmAberto)
-    .slice(0, 12);
+    .slice(0, 20);
 
-  return { trabalhoPrioritario, consignadosPendentes, porCliente };
+  return { trabalhoPrioritario, consignadosPendentes, porCliente: cardsPorCliente };
 }
 
 function buildTrabalhoPrioritario(opts = {}) {
@@ -839,18 +926,23 @@ function buildUltimasOperacoes(timeline = [], historico = []) {
 }
 
 /**
- * Auditoria automática UX-10 — exclusividade e nomenclatura por estado.
+ * Auditoria automática UX-10 — exclusividade por consignação e nomenclatura por estado.
+ * Mesmo cliente pode ter cards em blocos diferentes (ex.: E4 + E5 de consignações distintas).
  */
 function auditarCentralEstados(viewModel = {}) {
   const erros = [];
   const prioritario = viewModel.trabalhoPrioritario || [];
   const pendentes = viewModel.consignadosPendentes || [];
-  const idsPrioritarios = new Set(prioritario.map((i) => String(i.clienteId)));
-  const idsPendentes = new Set(pendentes.map((i) => String(i.clienteId)));
+  const idsPrioritarios = new Set(
+    prioritario.map((i) => String(i.consignacaoId || i.id)).filter((id) => id && id !== 'null')
+  );
+  const idsPendentes = new Set(
+    pendentes.map((i) => String(i.consignacaoId || i.id)).filter((id) => id && id !== 'null')
+  );
 
   idsPrioritarios.forEach((id) => {
     if (idsPendentes.has(id)) {
-      erros.push(`Cliente ${id} aparece em Trabalho Prioritário e Consignados Pendentes`);
+      erros.push(`Consignação ${id} aparece em Trabalho Prioritário e Consignados Pendentes`);
     }
   });
 
@@ -965,5 +1057,6 @@ module.exports = {
   isProntoParaFechar,
   isPrestacaoEncerrada,
   isElegivelE5,
-  isQuitada
+  isQuitada,
+  podeAdicionarProdutoComplementar
 };

@@ -17,7 +17,8 @@ const {
   buildCentralTrabalhoViewModel,
   resolveEstadoOperacionalCliente,
   auditarCentralEstados,
-  workItemFromPendencia
+  workItemFromPendencia,
+  podeAdicionarProdutoComplementar
 } = require('../../pages/Dashboard/centralTrabalhoMappers');
 
 describe('centralTrabalhoMappers', () => {
@@ -268,7 +269,39 @@ describe('centralTrabalhoMappers', () => {
     expect(prioritario[0].acaoLabel).toBe('Continuar Atendimento');
   });
 
-  test('cliente nunca aparece nos dois blocos', () => {
+  test('mesmo cliente com prestação aberta + nova entrega = 1 card com 2 consignações (RCM-8.10)', () => {
+    const itens = buildTrabalhoPrioritario({
+      pendenciasView: { alertas: [] },
+      consignacoes: [
+        {
+          id: 15,
+          clienteId: 42,
+          status: 'EM_PRESTACAO',
+          documento: 'CONS-2026-000015',
+          saldo: 206,
+          prestacaoContasAtiva: { status: 'ABERTA' }
+        },
+        {
+          id: 16,
+          clienteId: 42,
+          status: 'RASCUNHO',
+          documento: 'CONS-2026-000016',
+          saldo: 0
+        }
+      ],
+      perfis: [{ clienteId: 42, clienteNome: 'CICERO MAXIMINO DE SOUSA' }]
+    });
+    expect(itens).toHaveLength(1);
+    expect(itens[0].agrupado).toBe(true);
+    expect(itens[0].quantidadeConsignacoes).toBe(2);
+    expect(itens[0].consignacoes).toHaveLength(2);
+    expect(itens[0].consignacoes.map((i) => i.estado).sort()).toEqual(['E2', 'E4']);
+    expect(itens[0].consignacoes.find((i) => i.estado === 'E2').consignacaoId).toBe(16);
+    expect(itens[0].consignacoes.find((i) => i.estado === 'E4').consignacaoId).toBe(15);
+    expect(itens[0].clienteId).toBe(42);
+  });
+
+  test('mesma consignação nunca aparece nos dois blocos', () => {
     const payload = {
       consignacoes: [
         { id: 1, clienteId: 1, status: 'EM_PRESTACAO', saldo: 80, prestacaoContasAtiva: { status: 'ABERTA' } },
@@ -280,8 +313,8 @@ describe('centralTrabalhoMappers', () => {
       ]
     };
     const vm = buildCentralTrabalhoViewModel(payload);
-    const idsP = new Set(vm.trabalhoPrioritario.map((i) => String(i.clienteId)));
-    const idsC = new Set(vm.consignadosPendentes.map((i) => String(i.clienteId)));
+    const idsP = new Set(vm.trabalhoPrioritario.map((i) => String(i.consignacaoId)));
+    const idsC = new Set(vm.consignadosPendentes.map((i) => String(i.consignacaoId)));
     idsP.forEach((id) => expect(idsC.has(id)).toBe(false));
     expect(vm.auditoriaEstados.ok).toBe(true);
   });
@@ -345,11 +378,17 @@ describe('centralTrabalhoMappers', () => {
     expect(vm.auditoriaEstados.ok).toBe(true);
   });
 
-  test('auditarCentralEstados detecta interseção', () => {
+  test('auditarCentralEstados detecta interseção da mesma consignação', () => {
     const result = auditarCentralEstados({
-      trabalhoPrioritario: [{ clienteId: 1, estado: 'E4', acaoLabel: 'Continuar Atendimento' }],
+      trabalhoPrioritario: [{
+        clienteId: 1,
+        consignacaoId: 99,
+        estado: 'E4',
+        acaoLabel: 'Continuar Atendimento'
+      }],
       consignadosPendentes: [{
         clienteId: 1,
+        consignacaoId: 99,
         estado: 'E5',
         prestacaoStatus: 'ENCERRADA',
         valorEmAberto: 10
@@ -358,5 +397,94 @@ describe('centralTrabalhoMappers', () => {
     });
     expect(result.ok).toBe(false);
     expect(result.erros[0]).toMatch(/Trabalho Prioritário e Consignados Pendentes/);
+  });
+
+  describe('RCM-8.9 — Ent. Complementar no card', () => {
+    test('botão elegível para ENTREGUE (E3)', () => {
+      const itens = buildTrabalhoPrioritario({
+        pendenciasView: {},
+        consignacoes: [
+          { id: 19, clienteId: 7, status: 'ENTREGUE', documento: 'CONS-2026-000019', saldo: 22.5 }
+        ],
+        perfis: [{ clienteId: 7, clienteNome: 'Milton' }]
+      });
+      expect(itens).toHaveLength(1);
+      expect(itens[0].consignacaoId).toBe(19);
+      expect(itens[0].podeEntregaComplementar).toBe(true);
+      expect(itens[0].acaoTipo).toBe('prestacao');
+    });
+
+    test('botão elegível para ENTREGUE com prestação ABERTA (E4)', () => {
+      const itens = buildTrabalhoPrioritario({
+        pendenciasView: {},
+        consignacoes: [{
+          id: 19,
+          clienteId: 7,
+          status: 'ENTREGUE',
+          documento: 'CONS-019',
+          saldo: 100,
+          prestacaoContasAtiva: { status: 'ABERTA' }
+        }],
+        perfis: [{ clienteId: 7, clienteNome: 'Milton' }]
+      });
+      expect(itens[0].estado).toBe('E4');
+      expect(itens[0].podeEntregaComplementar).toBe(true);
+      expect(itens[0].consignacaoId).toBe(19);
+    });
+
+    test('botão NÃO aparece para RASCUNHO', () => {
+      const itens = buildTrabalhoPrioritario({
+        pendenciasView: {},
+        consignacoes: [{ id: 1, clienteId: 1, status: 'RASCUNHO' }],
+        perfis: [{ clienteId: 1, clienteNome: 'A' }]
+      });
+      expect(itens[0].podeEntregaComplementar).toBe(false);
+    });
+
+    test('botão NÃO aparece para CANCELADA / QUITADA / ENCERRADA', () => {
+      expect(podeAdicionarProdutoComplementar({ status: 'CANCELADA' }).elegivel).toBe(false);
+      expect(podeAdicionarProdutoComplementar({ status: 'QUITADA' }).elegivel).toBe(false);
+      expect(podeAdicionarProdutoComplementar({ status: 'ENCERRADA' }).elegivel).toBe(false);
+      expect(podeAdicionarProdutoComplementar({ status: 'ACERTADA' }).elegivel).toBe(false);
+    });
+
+    test('botão NÃO aparece quando prestação FECHADA', () => {
+      expect(podeAdicionarProdutoComplementar({
+        status: 'ENTREGUE',
+        prestacaoContasAtiva: { status: 'FECHADA' }
+      }).elegivel).toBe(false);
+    });
+
+    test('ação usa consignacaoId de cada operação, não só clienteId', () => {
+      const itens = buildTrabalhoPrioritario({
+        pendenciasView: {},
+        consignacoes: [
+          {
+            id: 14,
+            clienteId: 7,
+            status: 'ENTREGUE',
+            prestacaoContasAtiva: { status: 'ABERTA' },
+            documento: 'CONS-014'
+          },
+          {
+            id: 19,
+            clienteId: 7,
+            status: 'ENTREGUE',
+            documento: 'CONS-019'
+          }
+        ],
+        perfis: [{ clienteId: 7, clienteNome: 'Milton' }]
+      });
+      expect(itens).toHaveLength(1);
+      const elegiveis = (itens[0].consignacoes || []).filter((i) => i.podeEntregaComplementar);
+      expect(elegiveis.length).toBeGreaterThanOrEqual(2);
+      const ids = new Set(elegiveis.map((i) => i.consignacaoId));
+      expect(ids.has(14)).toBe(true);
+      expect(ids.has(19)).toBe(true);
+      elegiveis.forEach((i) => {
+        expect(i.consignacaoId).not.toBeNull();
+        expect(String(i.consignacaoId)).not.toBe(String(i.clienteId));
+      });
+    });
   });
 });

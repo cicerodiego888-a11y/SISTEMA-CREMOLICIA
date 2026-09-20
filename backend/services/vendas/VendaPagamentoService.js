@@ -26,6 +26,7 @@ const {
   aplicarDescontoProporcionalTotais,
   montarFiscalOperacionalPagamento,
   obterTotalFiscalFinal,
+  inferirDescontoGlobal,
   somarPagamentos,
   logAuditoriaPagamentoFiscal
 } = require('./TotalFiscalFinal');
@@ -37,8 +38,13 @@ const {
 function resolverTotaisPagamentoComDesconto(fiscalOperacional, body = {}) {
   const brutoFiscal = Number(fiscalOperacional.totalFiscal || 0);
   const brutoNaoFiscal = Number(fiscalOperacional.totalNaoFiscal || 0);
-  const desconto = Number(body.desconto || 0);
   const acrescimo = Number(body.acrescimo || body.acrescimo_total || 0);
+  const desconto = inferirDescontoGlobal({
+    bruto: brutoFiscal + brutoNaoFiscal,
+    desconto: Number(body.desconto || 0),
+    acrescimo,
+    totalInformado: body.total
+  });
   const totaisLiquidos = aplicarDescontoProporcionalTotais({
     valorFiscal: brutoFiscal,
     valorNaoFiscal: brutoNaoFiscal,
@@ -74,6 +80,9 @@ function resolverTotaisPagamentoComDesconto(fiscalOperacional, body = {}) {
     suficiente: null
   });
 
+  const omitirItensNoMidp = desconto > 0.009
+    || (valorPago > 0 && valorPago + 0.01 < brutoFiscal);
+
   return {
     brutoFiscal,
     brutoNaoFiscal,
@@ -83,8 +92,18 @@ function resolverTotaisPagamentoComDesconto(fiscalOperacional, body = {}) {
     fiscalOperacionalPagamento,
     totaisLiquidos,
     // PRESERVAR_DINHEIRO com itens brutos ignora o líquido e recria o fiscal cheio.
-    // Com desconto global, MIDP deve distribuir só pelos totais líquidos (sem itens).
-    omitirItensNoMidp: Number(desconto || 0) > 0.009
+    omitirItensNoMidp
+  };
+}
+
+function totaisFluxoSemInflar(totaisFluxo, totalFiscalLiquido, totalNaoFiscalLiquido) {
+  const fiscal = Number(totaisFluxo?.totalFiscal);
+  const naoFiscal = Number(totaisFluxo?.totalNaoFiscal);
+  return {
+    totalFiscal: Number.isFinite(fiscal)
+      ? Math.min(fiscal, Number(totalFiscalLiquido))
+      : Number(totalFiscalLiquido),
+    totalNaoFiscal: Number.isFinite(naoFiscal) ? naoFiscal : Number(totalNaoFiscalLiquido)
   };
 }
 
@@ -998,7 +1017,10 @@ db.all(`
     }
 
     itensDistribuidos.push({
+      ...item,
       produto_id: item.produto_id,
+      quantidade: item.quantidade,
+      preco_unitario: item.preco_unitario,
       quantidade_fiscal: resultado.quantidadeFiscal,
       quantidade_nao_fiscal: resultado.quantidadeNaoFiscal,
       valor_fiscal: resultado.valorFiscal,
@@ -1017,6 +1039,15 @@ db.all(`
     itens: itensDistribuidos
   });
 });
+}
+
+function resolverOrigemPdv(req) {
+  const header = String(req.headers['x-cds-client'] || '').trim().toLowerCase();
+  const raw = String(req.body?.origem_pdv || req.body?.origem_cliente || '').trim().toUpperCase();
+  if (raw === 'PDV_MOBILE' || raw === 'MOBILE' || header === 'mobile') return 'PDV_MOBILE';
+  if (raw === 'CONSIGNACAO' || raw === 'CONSIGNACAO_PRESTACAO') return 'CONSIGNACAO';
+  if (raw === 'PDV_DESKTOP' || raw === 'DESKTOP' || raw === 'PDV') return 'PDV_DESKTOP';
+  return 'PDV_DESKTOP';
 }
 
 function criarVenda(req, res) {
@@ -1043,6 +1074,7 @@ const {
 } = req.body;
 
 const canalVendaGravar = String(canal_venda || 'VAREJO').trim().toUpperCase() || 'VAREJO';
+const origemPdvGravar = resolverOrigemPdv(req);
 
 const pularBaixaEstoque = isPoliticaEstoqueJaBaixado(req.body);
 const origemConsignacao = isOrigemConsignacao(req.body);
@@ -1344,9 +1376,13 @@ db.all(`
     });
 
     // RC4.31 — com desconto, o total de pagamento é o líquido; não deixar a decisão MIDP inflar.
-    const totaisFluxo = totaisPagamento.omitirItensNoMidp
-      ? { totalFiscal, totalNaoFiscal }
-      : lerTotaisDecisaoMidp(midpResult, totalFiscal, totalNaoFiscal);
+    const totaisFluxo = totaisFluxoSemInflar(
+      totaisPagamento.omitirItensNoMidp
+        ? { totalFiscal, totalNaoFiscal }
+        : lerTotaisDecisaoMidp(midpResult, totalFiscal, totalNaoFiscal),
+      totalFiscal,
+      totalNaoFiscal
+    );
     const totalFiscalFluxo = totaisFluxo.totalFiscal;
     const totalNaoFiscalFluxo = totaisFluxo.totalNaoFiscal;
 
@@ -1381,9 +1417,9 @@ db.all(`
     db.serialize(() => {
       db.run('BEGIN IMMEDIATE');
       db.run(`
-        INSERT INTO vendas (codigo, data_venda, cliente_id, total, desconto, forma_pagamento, status, caixa_sessao_id, caixa_id, terminal_id, operador_id, valor_fiscal, valor_nao_fiscal, status_pagamento, tef_transacao_id, canal_venda)
-          VALUES (?, ?, ?, ?, ?, ?, 'concluida', ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `, [codigo, data_venda, cliente_id, totalNum, desconto || 0, formaPagamentoFinal, req.caixaSessaoId || null, req.caixaId, req.terminalId || null, req.operadorId, totalFiscalFluxo, totalNaoFiscalFluxo, statusPagamento, resultadoFiscal?.transacoes?.[0] || null, canalVendaGravar], function(err) {
+        INSERT INTO vendas (codigo, data_venda, cliente_id, total, desconto, forma_pagamento, status, caixa_sessao_id, caixa_id, terminal_id, operador_id, valor_fiscal, valor_nao_fiscal, status_pagamento, tef_transacao_id, canal_venda, origem_pdv)
+          VALUES (?, ?, ?, ?, ?, ?, 'concluida', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `, [codigo, data_venda, cliente_id, totalNum, desconto || 0, formaPagamentoFinal, req.caixaSessaoId || null, req.caixaId, req.terminalId || null, req.operadorId, totalFiscalFluxo, totalNaoFiscalFluxo, statusPagamento, resultadoFiscal?.transacoes?.[0] || null, canalVendaGravar, origemPdvGravar], function(err) {
         if (err) {
           db.run('ROLLBACK');
           res.status(500).json({ error: err.message });
@@ -1449,10 +1485,21 @@ db.all(`
               ? 1
               : 0;
 
-          const precoUnitario =
-            Number(
-              item.preco_unitario || 0
-            );
+          const precoUnitario = Number(
+            item.preco_unitario != null && item.preco_unitario !== ''
+              ? item.preco_unitario
+              : (item.preco != null && item.preco !== '' ? item.preco : 0)
+          );
+          const quantidadeItem = Number(
+            item.quantidade != null && item.quantidade !== ''
+              ? item.quantidade
+              : (Number(quantidadeFiscal || 0) + Number(quantidadeNaoFiscal || 0))
+          );
+          if (!Number.isFinite(precoUnitario)) {
+            db.run('ROLLBACK');
+            res.status(400).json({ error: 'Preço unitário do item é obrigatório.' });
+            return;
+          }
 
           const valorFiscal =
             Number(
@@ -1469,7 +1516,7 @@ db.all(`
           db.run(`
             INSERT INTO vendas_itens (venda_id, produto_id, quantidade, preco_unitario, desconto_percentual, promocao_id, desconto_atacado, tipo_preco, subtotal, item_fiscal, quantidade_fiscal, quantidade_nao_fiscal, valor_fiscal, valor_nao_fiscal, tipo_venda, unidade_comercial_id, unidade_comercial, fator_conversao, codigo_barras_comercial, quantidade_bolas, forma_comercializacao)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `, [vendaId, item.produto_id, item.quantidade, item.preco_unitario, item.desconto_percentual || 0, item.promocao_id || null, item.desconto_atacado || 0, item.tipo_preco || 'varejo', item.subtotal, itemFiscal, quantidadeFiscal, quantidadeNaoFiscal, valorFiscal, valorNaoFiscal, tipoVenda, item.unidade_comercial_id || null, item.unidade_comercial || null, item.fator_conversao != null ? Number(item.fator_conversao) : 1, item.codigo_barras_comercial || null, extrairQuantidadeBolasItem(item), item.forma_comercializacao ? String(item.forma_comercializacao).toUpperCase() : null], function(itemErr) {
+          `, [vendaId, item.produto_id, quantidadeItem, precoUnitario, item.desconto_percentual || 0, item.promocao_id || null, item.desconto_atacado || 0, item.tipo_preco || 'varejo', item.subtotal, itemFiscal, quantidadeFiscal, quantidadeNaoFiscal, valorFiscal, valorNaoFiscal, tipoVenda, item.unidade_comercial_id || null, item.unidade_comercial || null, item.fator_conversao != null ? Number(item.fator_conversao) : 1, item.codigo_barras_comercial || null, extrairQuantidadeBolasItem(item), item.forma_comercializacao ? String(item.forma_comercializacao).toUpperCase() : null], function(itemErr) {
             if (itemErr) {
               db.run('ROLLBACK');
               res.status(500).json({ error: itemErr.message });
@@ -1676,9 +1723,13 @@ const executarVenda = async () => {
   });
 
   // RC4.31 — com desconto, o total de pagamento é o líquido; não deixar a decisão MIDP inflar.
-  const totaisFluxo = totaisPagamento.omitirItensNoMidp
-    ? { totalFiscal, totalNaoFiscal }
-    : lerTotaisDecisaoMidp(midpResult, totalFiscal, totalNaoFiscal);
+  const totaisFluxo = totaisFluxoSemInflar(
+    totaisPagamento.omitirItensNoMidp
+      ? { totalFiscal, totalNaoFiscal }
+      : lerTotaisDecisaoMidp(midpResult, totalFiscal, totalNaoFiscal),
+    totalFiscal,
+    totalNaoFiscal
+  );
   const totalFiscalFluxo = totaisFluxo.totalFiscal;
   const totalNaoFiscalFluxo = totaisFluxo.totalNaoFiscal;
 
@@ -1760,9 +1811,10 @@ const executarVenda = async () => {
         valor_nao_fiscal,
         status_pagamento,
         tef_transacao_id,
-        canal_venda
+        canal_venda,
+        origem_pdv
       )
-      VALUES (?, ?, ?, ?, ?, ?, 'concluida', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, 'concluida', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       codigo,
       data_venda,
@@ -1780,7 +1832,8 @@ const executarVenda = async () => {
       totalNaoFiscalFluxo,
       statusPagamento,
       resultadoFiscal?.transacoes?.[0] || null,
-      canalVendaGravar
+      canalVendaGravar,
+      origemPdvGravar
     ], function(err) {
       if (err) {
         db.run('ROLLBACK');
@@ -1847,10 +1900,21 @@ const executarVenda = async () => {
             ? 1
             : 0;
 
-        const precoUnitario =
-          Number(
-            item.preco_unitario || 0
-          );
+        const precoUnitario = Number(
+          item.preco_unitario != null && item.preco_unitario !== ''
+            ? item.preco_unitario
+            : (item.preco != null && item.preco !== '' ? item.preco : 0)
+        );
+        const quantidadeItem = Number(
+          item.quantidade != null && item.quantidade !== ''
+            ? item.quantidade
+            : (Number(quantidadeFiscal || 0) + Number(quantidadeNaoFiscal || 0))
+        );
+        if (!Number.isFinite(precoUnitario)) {
+          db.run('ROLLBACK');
+          res.status(400).json({ error: 'Preço unitário do item é obrigatório.' });
+          return;
+        }
 
         const valorFiscal =
           Number(
@@ -1867,7 +1931,7 @@ const executarVenda = async () => {
         db.run(`
           INSERT INTO vendas_itens (venda_id, produto_id, quantidade, preco_unitario, desconto_percentual, promocao_id, desconto_atacado, tipo_preco, subtotal, item_fiscal, quantidade_fiscal, quantidade_nao_fiscal, valor_fiscal, valor_nao_fiscal, tipo_venda, unidade_comercial_id, unidade_comercial, fator_conversao, codigo_barras_comercial, quantidade_bolas, forma_comercializacao)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `, [vendaId, item.produto_id, item.quantidade, item.preco_unitario, item.desconto_percentual || 0, item.promocao_id || null, item.desconto_atacado || 0, item.tipo_preco || 'varejo', item.subtotal, itemFiscal, quantidadeFiscal, quantidadeNaoFiscal, valorFiscal, valorNaoFiscal, tipoVenda, item.unidade_comercial_id || null, item.unidade_comercial || null, item.fator_conversao != null ? Number(item.fator_conversao) : 1, item.codigo_barras_comercial || null, extrairQuantidadeBolasItem(item), item.forma_comercializacao ? String(item.forma_comercializacao).toUpperCase() : null], function(itemErr) {
+        `, [vendaId, item.produto_id, quantidadeItem, precoUnitario, item.desconto_percentual || 0, item.promocao_id || null, item.desconto_atacado || 0, item.tipo_preco || 'varejo', item.subtotal, itemFiscal, quantidadeFiscal, quantidadeNaoFiscal, valorFiscal, valorNaoFiscal, tipoVenda, item.unidade_comercial_id || null, item.unidade_comercial || null, item.fator_conversao != null ? Number(item.fator_conversao) : 1, item.codigo_barras_comercial || null, extrairQuantidadeBolasItem(item), item.forma_comercializacao ? String(item.forma_comercializacao).toUpperCase() : null], function(itemErr) {
           if (itemErr) {
             db.run('ROLLBACK');
             res.status(500).json({ error: itemErr.message });

@@ -8,6 +8,47 @@ const API_URL = (() => {
   return resolved;
 })();
 
+const LOGIN_CREDENCIAIS_KEY = 'cds-login-credenciais';
+
+function salvarUltimasCredenciaisLogin(username, password) {
+  try {
+    localStorage.setItem(
+      LOGIN_CREDENCIAIS_KEY,
+      JSON.stringify({
+        username: String(username || ''),
+        password: String(password || '')
+      })
+    );
+  } catch (e) { /* ignore quota / private mode */ }
+}
+
+function carregarUltimasCredenciaisLogin() {
+  try {
+    const raw = localStorage.getItem(LOGIN_CREDENCIAIS_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (!data || typeof data !== 'object') return null;
+    return {
+      username: String(data.username || ''),
+      password: String(data.password || '')
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
+function preencherCredenciaisSalvas() {
+  const salvas = carregarUltimasCredenciaisLogin();
+  if (!salvas) return;
+
+  if (salvas.username) {
+    $('#username').val(salvas.username);
+  }
+  if (salvas.password) {
+    $('#password').val(salvas.password);
+  }
+}
+
 (function redirectIfLoggedIn() {
   const token = localStorage.getItem('token');
   if (!token) return;
@@ -48,6 +89,9 @@ $('#loginForm').on('submit', function(e) {
   const username = $('#username').val().trim();
   const password = $('#password').val();
 
+  // Sempre lembrar o último usuário e senha digitados (mesmo se o login falhar)
+  salvarUltimasCredenciaisLogin(username, password);
+
   hideLoginError();
   setLoginLoading(true);
 
@@ -59,6 +103,7 @@ $('#loginForm').on('submit', function(e) {
     success: function(data) {
       localStorage.setItem('token', data.token);
       localStorage.setItem('user', JSON.stringify(data.user));
+      salvarUltimasCredenciaisLogin(username, password);
 
       const destino = typeof obterDestinoPosLogin === 'function'
         ? obterDestinoPosLogin(data.user)
@@ -92,8 +137,18 @@ $(document).ready(function() {
   $('*').css('pointer-events', '');
   $('body, html').css('pointer-events', 'auto');
 
+  preencherCredenciaisSalvas();
+
   const campoUsername = $('#username');
-  if (campoUsername.length > 0 && !$('#password').is(':focus')) {
+  const campoPassword = $('#password');
+  if (campoUsername.length > 0 && campoUsername.val()) {
+    // Já tem usuário salvo: foca na senha (ou no botão se a senha também veio preenchida)
+    if (campoPassword.length > 0 && !campoPassword.val()) {
+      campoPassword[0].focus();
+    } else if (campoPassword.length > 0 && campoPassword.val()) {
+      $('#btn-entrar').trigger('focus');
+    }
+  } else if (campoUsername.length > 0 && !campoPassword.is(':focus')) {
     campoUsername[0].focus();
   }
 

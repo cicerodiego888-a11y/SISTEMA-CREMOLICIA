@@ -46,6 +46,10 @@ const {
   ORIGEM_CLIENTE_360
 } = require('../../utils/cliente360Context');
 const { extrairCapacidadesDosPerfis } = require('../PerfilComercial/capacidadesComerciais');
+const {
+  podeAdicionarProdutoComplementar
+} = require('../EntregaComplementar/entregaComplementarMappers');
+const { formatDocumento } = require('../../api/helpers');
 const PrepararEntregaView = require('./PrepararEntregaView');
 const {
   FLUXO_MOMENTOS,
@@ -115,6 +119,8 @@ class NovaConsignacaoPage {
     this.concluido = false;
     this.documentoCriado = null;
     this.consignacaoId = null;
+    /** Evita reabrir o diálogo de complementar em loop na mesma sessão do wizard. */
+    this._skipComplementarOffer = false;
 
     this.data = {
       cliente: null,
@@ -811,6 +817,56 @@ class NovaConsignacaoPage {
     this._scheduleAutosave();
     this._updateSidebar();
     this._renderOperacaoResumo();
+
+    // RCM-8.7 — se já existe consignação ENTREGUE elegível, oferecer complementar
+    // (nova consignação cria documento separado e NÃO entra na Prestação antiga)
+    await this._oferecerEntregaComplementarSeElegivel(cliente);
+  }
+
+  /**
+   * Evita o operador criar documento novo quando o desejado é somar na consignação antiga.
+   * @private
+   */
+  async _oferecerEntregaComplementarSeElegivel(cliente) {
+    if (!cliente?.id || this._skipComplementarOffer) return;
+    try {
+      const lista = await this.api.listarConsignacoes({
+        clienteId: cliente.id,
+        cliente_id: cliente.id,
+        pageSize: 30
+      });
+      const items = lista?.items || [];
+      const elegiveis = items.filter((c) => podeAdicionarProdutoComplementar(c).elegivel);
+      if (!elegiveis.length) return;
+
+      const comPrestacaoAberta = elegiveis.find((c) => {
+        const p = c.prestacaoContasAtiva || c.prestacaoContas || {};
+        return String(p.status || '').toUpperCase() === 'ABERTA';
+      });
+      const alvo = comPrestacaoAberta
+        || elegiveis.sort((a, b) => Number(b.id) - Number(a.id))[0];
+      const doc = formatDocumento(alvo.documento, alvo.id);
+      const qtd = elegiveis.length;
+      const extras = qtd > 1 ? ` (há ${qtd} consignações elegíveis)` : '';
+
+      const confirmed = await confirmDialog({
+        title: 'Usar a consignação já entregue?',
+        message: `${cliente.nome || 'Este cliente'} já possui ${doc}${extras}.\n\n`
+          + 'Para os produtos ficarem na MESMA consignação (e na Prestação atual), '
+          + 'use Entrega Complementar.\n\n'
+          + 'Nova consignação cria outro documento separado.\n\n'
+          + 'Abrir Entrega Complementar agora?'
+      });
+      if (!confirmed) return;
+
+      this._skipComplementarOffer = true;
+      await navigate(
+        `/consignacoes/${alvo.id}/entrega-complementar`
+        + `?retorno=prestacao&origem=nova-consignacao&clienteId=${cliente.id}`
+      );
+    } catch (_err) {
+      /* oferta soft — não bloqueia o wizard */
+    }
   }
 
   /**

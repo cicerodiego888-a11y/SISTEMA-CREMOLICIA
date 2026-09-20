@@ -72,6 +72,7 @@ describe('STAB-06.6.3 consolidação operacional', () => {
     expect(labelSituacaoFinanceiraOficial('QUITADA')).toBe('Quitada');
     expect(labelSituacaoFinanceiraOficial('PARCIALMENTE_RECEBIDA')).toBe('Parcial');
     expect(labelSituacaoFinanceiraOficial('EM_ABERTO')).toBe('Em Aberto');
+    expect(labelSituacaoFinanceiraOficial('SEM_VENDA')).toBe('Sem Venda');
   });
 
   test('situação fiscal — rejeição cadastral', () => {

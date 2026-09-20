@@ -180,6 +180,38 @@ class CockpitDrawer {
   async _tabItens() {
     const { completa } = await this._getBundle();
     const wrap = document.createElement('div');
+
+    let entregas = [];
+    try {
+      const payload = await this.page.api.consultarEntregasConsignacao(this.consignacao.id);
+      entregas = payload?.entregas || [];
+    } catch (_e) {
+      entregas = [];
+    }
+
+    if (entregas.length) {
+      entregas.forEach((ev) => {
+        const bloco = document.createElement('div');
+        bloco.className = 'cds-cockpit-drawer__entrega-bloco';
+        const when = ev.dataHora ? new Date(ev.dataHora).toLocaleString('pt-BR') : '—';
+        bloco.innerHTML = `<h4>${ev.label} — ${when}</h4>`;
+        (ev.itens || []).forEach((item) => {
+          const row = document.createElement('div');
+          row.className = 'cds-cockpit-drawer__item';
+          row.innerHTML = `
+            <div class="cds-cockpit-drawer__item-name">${item.produtoNome || item.produtoId}</div>
+            <div class="cds-cockpit-drawer__item-meta">
+              <span>Qtd: ${item.quantidade}</span>
+              <span>${this.page._formatCurrency(item.valor || 0)}</span>
+            </div>
+          `;
+          bloco.appendChild(row);
+        });
+        wrap.appendChild(bloco);
+      });
+      return wrap;
+    }
+
     if (!completa.itens?.length) {
       wrap.appendChild(EmptyState.create({ title: 'Sem itens', description: 'Nenhum item na consignação' }));
       return wrap;

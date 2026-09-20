@@ -3,6 +3,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../database');
 const { gravarAuditoria } = require('../services/auditoria');
+const ean13Service = require('../services/ean13/EAN13Service');
 const { verificarPermissaoEspecifica, exigirPerfilAjusteEstoque } = require('../middleware/auth');
 const lotesService = require('../services/lotesService');
 const { recalcularEstoqueConsolidado, recalcularSaldosProduto } = require('../services/estoqueFiscalService');
@@ -722,8 +723,11 @@ router.get('/consulta-pdv/buscar', (req, res) => {
       AND promo.status = 'ativa'
       AND date(promo.data_inicio) <= date(?)
       AND date(promo.data_fim) >= date(?)
+    LEFT JOIN categorias c ON c.id = p.categoria_id
     WHERE
-      (
+      COALESCE(p.ativo, 1) = 1
+      AND (p.categoria_id IS NULL OR COALESCE(c.ativo, 1) = 1)
+      AND (
         CAST(p.id AS TEXT) = ?
         OR LOWER(COALESCE(p.codigo, '')) LIKE LOWER(?)
         OR LOWER(COALESCE(p.codigo_barras, '')) LIKE LOWER(?)
@@ -805,6 +809,12 @@ router.get('/consulta-pdv/buscar', (req, res) => {
 });
 
 // LIP — Localizador Inteligente de Produtos (Sprint S-6.2)
+// Consignação / PDV / ERP: nunca listar produto desativado (ativo = 0).
+function lipProdutoEstaAtivo(row) {
+  if (!row || row.ativo === undefined || row.ativo === null) return true;
+  return Number(row.ativo) === 1;
+}
+
 router.get('/search', (req, res) => {
   const termo = String(req.query.q || req.query.nome || req.query.codigo || '').trim();
   const modoFiscal = isModoFiscalQuery(req.query.modo_fiscal);
@@ -817,176 +827,194 @@ router.get('/search', (req, res) => {
     return str.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
   }
 
-  if (!termo) {
-    if (req.query.frequentes === '1' || req.query.frequentes === 'true') {
-      const hoje = new Date();
-      const trintaDias = new Date();
-      trintaDias.setDate(hoje.getDate() - 30);
-      const sqlBase = sqlRankingProdutos(modoFiscal);
-      const sqlFrequentes = `
-        SELECT
-          p.id,
-          p.codigo,
-          p.codigo_barras,
-          p.nome,
-          p.preco_venda,
-          p.tabela_preco_id,
-      p.linha_comercial_id,
-          p.fornecedor,
-          p.estoque_atual,
-          c.nome AS categoria_nome,
-          ranked.quantidade_vendida
-        FROM (
-          ${sqlBase}
-          HAVING quantidade_vendida > 0
-          ORDER BY quantidade_vendida DESC
+  produtosTemColuna('ativo', (colErr, temColunaAtivo) => {
+    if (colErr) {
+      console.error('Erro LIP /produtos/search (pragma ativo):', colErr.message);
+      return res.status(500).json({ error: colErr.message });
+    }
+
+    const filtroAtivoProduto = temColunaAtivo ? 'COALESCE(p.ativo, 1) = 1' : '1 = 1';
+    const selectAtivo = temColunaAtivo ? 'COALESCE(p.ativo, 1) AS ativo' : '1 AS ativo';
+
+    if (!termo) {
+      if (req.query.frequentes === '1' || req.query.frequentes === 'true') {
+        const hoje = new Date();
+        const trintaDias = new Date();
+        trintaDias.setDate(hoje.getDate() - 30);
+        const sqlBase = sqlRankingProdutos(modoFiscal);
+        const sqlFrequentes = `
+          SELECT
+            p.id,
+            p.codigo,
+            p.codigo_barras,
+            p.nome,
+            p.preco_venda,
+            p.tabela_preco_id,
+            p.linha_comercial_id,
+            p.fornecedor,
+            p.estoque_atual,
+            ${selectAtivo},
+            c.nome AS categoria_nome,
+            ranked.quantidade_vendida
+          FROM (
+            ${sqlBase}
+            HAVING quantidade_vendida > 0
+          ) ranked
+          INNER JOIN produtos p ON p.id = ranked.id
+          LEFT JOIN categorias c ON c.id = p.categoria_id
+          WHERE ${filtroAtivoProduto}
+            AND (p.categoria_id IS NULL OR COALESCE(c.ativo, 1) = 1)
+          ORDER BY ranked.quantidade_vendida DESC
           LIMIT ?
-        ) ranked
-        INNER JOIN produtos p ON p.id = ranked.id
-        LEFT JOIN categorias c ON c.id = p.categoria_id
-        ORDER BY ranked.quantidade_vendida DESC
-      `;
-      return db.all(sqlFrequentes, [
-        trintaDias.toISOString().slice(0, 10),
-        hoje.toISOString().slice(0, 10),
-        limite
-      ], async (err, rows) => {
-        if (err) return res.status(500).json({ error: err.message });
-        try {
-          const normalizados = await normalizarProdutosResposta(rows || [], modoFiscal);
-          const items = normalizados.map((row) => {
-            const precoOficial = Number(row.preco_venda ?? 0);
-            return {
-              id: row.id,
-              nome: row.nome,
-              codigo: row.codigo || '',
-              codigo_barras: row.codigo_barras || '',
-              categoria: row.categoria_nome || '',
-              marca: row.fornecedor || '',
-              fabricante: row.fornecedor || '',
-              referencia: row.codigo || String(row.id),
-              estoque: Number(row.estoque_atual || 0),
-              preco_venda: precoOficial,
-              preco_origem: row.preco_origem,
-              preco_canal: row.preco_canal,
-              frequente: true
-            };
-          });
-          return res.json({ items, total: items.length, offset: 0, limite });
-        } catch (normErr) {
-          return res.status(500).json({ error: normErr.message });
-        }
-      });
-    }
-    return res.json({ items: [], total: 0, offset, limite });
-  }
-
-  const termoNormalized = removeDiacritics(termo.toLowerCase());
-  const buscaLike = `%${termo}%`;
-  const buscaLikeNormalized = `%${termoNormalized}%`;
-  const buscaNumero = termo.replace(/\D/g, '') || termo;
-  const termoLower = termo.toLowerCase();
-  const replacements = {
-    'á':'a','à':'a','â':'a','ã':'a','ä':'a',
-    'é':'e','è':'e','ê':'e','ë':'e',
-    'í':'i','ì':'i','î':'i','ï':'i',
-    'ó':'o','ò':'o','ô':'o','õ':'o','ö':'o',
-    'ú':'u','ù':'u','û':'u','ü':'u',
-    'ç':'c','ñ':'n'
-  };
-  const replaceChain = Object.keys(replacements).reduce((acc, ch) => {
-    return `REPLACE(${acc}, '${ch}', '${replacements[ch]}')`;
-  }, 'LOWER(p.nome)');
-
-  const sql = `
-    SELECT
-      p.id,
-      p.codigo,
-      p.codigo_barras,
-      p.nome,
-      p.unidade,
-      p.preco_venda,
-      p.fornecedor,
-      p.estoque_atual,
-      COALESCE(p.saldo_fiscal, 0) AS saldo_fiscal,
-      COALESCE(p.saldo_nao_fiscal, 0) AS saldo_nao_fiscal,
-      COALESCE(p.eh_kit, 0) AS eh_kit,
-      p.forma_comercializacao,
-      c.nome AS categoria_nome,
-      s.nome AS subcategoria_nome,
-      CASE
-        WHEN LOWER(TRIM(COALESCE(p.codigo_barras, ''))) = ?
-          OR LOWER(TRIM(COALESCE(p.codigo, ''))) = ?
-          OR CAST(p.id AS TEXT) = ?
-        THEN 1 ELSE 0
-      END AS match_exato
-    FROM produtos p
-    LEFT JOIN categorias c ON c.id = p.categoria_id
-    LEFT JOIN subcategorias s ON s.id = p.subcategoria_id
-    WHERE COALESCE(p.ativo, 1) = 1
-      AND (
-        CAST(p.id AS TEXT) = ?
-        OR LOWER(COALESCE(p.codigo, '')) LIKE LOWER(?)
-        OR LOWER(COALESCE(p.codigo_barras, '')) LIKE LOWER(?)
-        OR (${replaceChain}) LIKE ?
-        OR LOWER(COALESCE(p.fornecedor, '')) LIKE LOWER(?)
-        OR LOWER(COALESCE(c.nome, '')) LIKE LOWER(?)
-        OR LOWER(COALESCE(s.nome, '')) LIKE LOWER(?)
-      )
-      ${filtroFiscal}
-    ORDER BY match_exato DESC, p.nome ASC
-    LIMIT ? OFFSET ?
-  `;
-
-  const params = [
-    termoLower, termoLower, buscaNumero,
-    buscaNumero, buscaLike, buscaLike, buscaLikeNormalized,
-    buscaLike, buscaLike, buscaLike,
-    limite, offset
-  ];
-
-  db.all(sql, params, async (err, rows) => {
-    if (err) {
-      console.error('Erro LIP /produtos/search:', err.message);
-      return res.status(500).json({ error: err.message });
+        `;
+        return db.all(sqlFrequentes, [
+          trintaDias.toISOString().slice(0, 10),
+          hoje.toISOString().slice(0, 10),
+          limite
+        ], async (err, rows) => {
+          if (err) return res.status(500).json({ error: err.message });
+          try {
+            const ativos = (rows || []).filter(lipProdutoEstaAtivo);
+            const normalizados = await normalizarProdutosResposta(ativos, modoFiscal);
+            const items = normalizados.map((row) => {
+              const precoOficial = Number(row.preco_venda ?? 0);
+              return {
+                id: row.id,
+                nome: row.nome,
+                codigo: row.codigo || '',
+                codigo_barras: row.codigo_barras || '',
+                categoria: row.categoria_nome || '',
+                marca: row.fornecedor || '',
+                fabricante: row.fornecedor || '',
+                referencia: row.codigo || String(row.id),
+                estoque: Number(row.estoque_atual || 0),
+                preco_venda: precoOficial,
+                preco_origem: row.preco_origem,
+                preco_canal: row.preco_canal,
+                ativo: 1,
+                frequente: true
+              };
+            });
+            return res.json({ items, total: items.length, offset: 0, limite });
+          } catch (normErr) {
+            return res.status(500).json({ error: normErr.message });
+          }
+        });
+      }
+      return res.json({ items: [], total: 0, offset, limite });
     }
 
-    try {
-      const normalizados = await normalizarProdutosResposta(rows || [], modoFiscal);
-      const items = normalizados.map((norm, idx) => {
-        const row = rows[idx] || {};
-        return {
-          id: norm.id,
-          nome: norm.nome,
-          codigo: norm.codigo || '',
-          codigo_barras: norm.codigo_barras || '',
-          referencia: norm.codigo || String(norm.id),
-          categoria: norm.categoria || norm.categoria_nome || '',
-          subcategoria: norm.subcategoria || norm.subcategoria_nome || '',
-          marca: norm.fornecedor || '',
-          fabricante: norm.fornecedor || '',
-          estoque: Number(norm.estoque_exibido ?? norm.estoque_atual ?? 0),
-          preco_venda: Number(norm.preco_venda || 0),
-          preco_promocional: norm.preco_promocional,
-          tem_promocao: norm.tem_promocao,
-          unidade: norm.unidade || 'UN',
-          eh_kit: Number(row.eh_kit || 0),
-          forma_comercializacao: row.forma_comercializacao
-            ? String(row.forma_comercializacao).toUpperCase()
-            : null,
-          match_exato: row.match_exato
-        };
-      });
-      res.json({
-        items,
-        total: items.length,
-        offset,
-        limite,
-        hasMore: items.length === limite
-      });
-    } catch (normErr) {
-      res.status(500).json({ error: normErr.message });
-    }
+    const termoNormalized = removeDiacritics(termo.toLowerCase());
+    const buscaLike = `%${termo}%`;
+    const buscaLikeNormalized = `%${termoNormalized}%`;
+    const buscaNumero = termo.replace(/\D/g, '') || termo;
+    const termoLower = termo.toLowerCase();
+    const replacements = {
+      'á':'a','à':'a','â':'a','ã':'a','ä':'a',
+      'é':'e','è':'e','ê':'e','ë':'e',
+      'í':'i','ì':'i','î':'i','ï':'i',
+      'ó':'o','ò':'o','ô':'o','õ':'o','ö':'o',
+      'ú':'u','ù':'u','û':'u','ü':'u',
+      'ç':'c','ñ':'n'
+    };
+    const replaceChain = Object.keys(replacements).reduce((acc, ch) => {
+      return `REPLACE(${acc}, '${ch}', '${replacements[ch]}')`;
+    }, 'LOWER(p.nome)');
+
+    const sql = `
+      SELECT
+        p.id,
+        p.codigo,
+        p.codigo_barras,
+        p.nome,
+        p.unidade,
+        p.preco_venda,
+        p.fornecedor,
+        p.estoque_atual,
+        ${selectAtivo},
+        COALESCE(p.saldo_fiscal, 0) AS saldo_fiscal,
+        COALESCE(p.saldo_nao_fiscal, 0) AS saldo_nao_fiscal,
+        COALESCE(p.eh_kit, 0) AS eh_kit,
+        p.forma_comercializacao,
+        c.nome AS categoria_nome,
+        s.nome AS subcategoria_nome,
+        CASE
+          WHEN LOWER(TRIM(COALESCE(p.codigo_barras, ''))) = ?
+            OR LOWER(TRIM(COALESCE(p.codigo, ''))) = ?
+            OR CAST(p.id AS TEXT) = ?
+          THEN 1 ELSE 0
+        END AS match_exato
+      FROM produtos p
+      LEFT JOIN categorias c ON c.id = p.categoria_id
+      LEFT JOIN subcategorias s ON s.id = p.subcategoria_id
+      WHERE ${filtroAtivoProduto}
+        AND (p.categoria_id IS NULL OR COALESCE(c.ativo, 1) = 1)
+        AND (
+          CAST(p.id AS TEXT) = ?
+          OR LOWER(COALESCE(p.codigo, '')) LIKE LOWER(?)
+          OR LOWER(COALESCE(p.codigo_barras, '')) LIKE LOWER(?)
+          OR (${replaceChain}) LIKE ?
+          OR LOWER(COALESCE(p.fornecedor, '')) LIKE LOWER(?)
+          OR LOWER(COALESCE(c.nome, '')) LIKE LOWER(?)
+          OR LOWER(COALESCE(s.nome, '')) LIKE LOWER(?)
+        )
+        ${filtroFiscal}
+      ORDER BY match_exato DESC, p.nome ASC
+      LIMIT ? OFFSET ?
+    `;
+
+    const params = [
+      termoLower, termoLower, buscaNumero,
+      buscaNumero, buscaLike, buscaLike, buscaLikeNormalized,
+      buscaLike, buscaLike, buscaLike,
+      limite, offset
+    ];
+
+    db.all(sql, params, async (err, rows) => {
+      if (err) {
+        console.error('Erro LIP /produtos/search:', err.message);
+        return res.status(500).json({ error: err.message });
+      }
+
+      try {
+        const ativos = (rows || []).filter(lipProdutoEstaAtivo);
+        const normalizados = await normalizarProdutosResposta(ativos, modoFiscal);
+        const items = normalizados.map((norm, idx) => {
+          const row = ativos[idx] || {};
+          return {
+            id: norm.id,
+            nome: norm.nome,
+            codigo: norm.codigo || '',
+            codigo_barras: norm.codigo_barras || '',
+            referencia: norm.codigo || String(norm.id),
+            categoria: norm.categoria || norm.categoria_nome || '',
+            subcategoria: norm.subcategoria || norm.subcategoria_nome || '',
+            marca: norm.fornecedor || '',
+            fabricante: norm.fornecedor || '',
+            estoque: Number(norm.estoque_exibido ?? norm.estoque_atual ?? 0),
+            preco_venda: Number(norm.preco_venda || 0),
+            preco_promocional: norm.preco_promocional,
+            tem_promocao: norm.tem_promocao,
+            unidade: norm.unidade || 'UN',
+            ativo: 1,
+            eh_kit: Number(row.eh_kit || 0),
+            forma_comercializacao: row.forma_comercializacao
+              ? String(row.forma_comercializacao).toUpperCase()
+              : null,
+            match_exato: row.match_exato
+          };
+        });
+        res.json({
+          items,
+          total: items.length,
+          offset,
+          limite,
+          hasMore: items.length === limite
+        });
+      } catch (normErr) {
+        res.status(500).json({ error: normErr.message });
+      }
+    });
   });
 });
 
@@ -2084,6 +2112,26 @@ router.get('/:id', (req, res) => {
   });
 });
 
+async function gerarCodigoBarrasEan13Handler(req, res) {
+  try {
+    const excludeRaw = req.params.id != null ? req.params.id : req.body?.exclude_id;
+    const excludeId = Number(excludeRaw);
+    const codigo_barras = await ean13Service.generateUnique(db, {
+      excludeId: Number.isFinite(excludeId) && excludeId > 0 ? excludeId : null
+    });
+    res.json({
+      codigo_barras,
+      tipo: 'EAN-13',
+      valido: ean13Service.validate(codigo_barras)
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Falha ao gerar código de barras.' });
+  }
+}
+
+router.post('/codigo-barras/gerar', gerarCodigoBarrasEan13Handler);
+router.post('/:id/codigo-barras/gerar', gerarCodigoBarrasEan13Handler);
+
 // Criar produto
 router.post('/', async (req, res) => {
   const {
@@ -2184,6 +2232,17 @@ router.post('/', async (req, res) => {
   console.log('[AUDIT PRODUTO POST] req.body.item_fiscal:', req.body.item_fiscal);
   console.log('[AUDIT PRODUTO POST] item_fiscal gravar INSERT:', itemFiscalGravar);
 
+  let codigoBarrasGravar = codigo_barras;
+  try {
+    codigoBarrasGravar = await ean13Service.validarParaPersistencia(codigo_barras, {
+      produtoId: null,
+      codigoAtual: null,
+      exists: (code, excludeId) => ean13Service.exists(db, code, excludeId)
+    });
+  } catch (eanErr) {
+    return res.status(eanErr.statusCode || 400).json({ error: eanErr.message });
+  }
+
   db.run(`
     INSERT INTO produtos (
       codigo, nome, categoria_id, subcategoria_id, unidade,
@@ -2203,7 +2262,7 @@ router.post('/', async (req, res) => {
     codigo, nome, categoria_id, subcategoria_id, unidade,
     preco_compra, lucro_percentual, preco_venda,
     estoqueInicial, estoque_minimo || 0, fornecedor,
-    ncm, cfop, csosn, origem, cest, codigo_barras,
+    ncm, cfop, csosn, origem, cest, codigoBarrasGravar,
     aliquota_icms, aliquota_pis, aliquota_cofins,
     controlarValidade,
     flagFracionadoFinal,
@@ -2563,6 +2622,18 @@ router.put('/:id', (req, res) => {
       }
     }
 
+    try {
+      if (Object.prototype.hasOwnProperty.call(bodyUpdates, 'codigo_barras')) {
+        bodyUpdates.codigo_barras = await ean13Service.validarParaPersistencia(bodyUpdates.codigo_barras, {
+          produtoId: id,
+          codigoAtual: old.codigo_barras,
+          exists: (code, excludeId) => ean13Service.exists(db, code, excludeId)
+        });
+      }
+    } catch (eanErr) {
+      return res.status(eanErr.statusCode || 400).json({ error: eanErr.message });
+    }
+
     Object.keys(bodyUpdates).forEach(key => {
       if (!CAMPOS_PRODUTO_IGNORADOS.has(key)) {
         fields.push(`${key} = ?`);
@@ -2723,6 +2794,63 @@ router.put('/:id', (req, res) => {
     });
   });
 });
+
+function alterarStatusAtivoProduto(req, res, ativoValor) {
+  const { id } = req.params;
+  const ativoNormalizado = Number(ativoValor) === 1 ? 1 : 0;
+  const acao = ativoNormalizado === 1 ? 'ativar_produto' : 'desativar_produto';
+
+  produtosTemColuna('ativo', (colErr, temColuna) => {
+    if (colErr) {
+      return res.status(500).json({ error: colErr.message });
+    }
+    if (!temColuna) {
+      return res.status(500).json({ error: 'Coluna ativo não disponível em produtos.' });
+    }
+
+    db.get('SELECT id, nome, codigo, ativo FROM produtos WHERE id = ?', [id], (err, row) => {
+      if (err) {
+        return res.status(500).json({ error: err.message });
+      }
+      if (!row) {
+        return res.status(404).json({ error: 'Produto não encontrado' });
+      }
+
+      db.run('UPDATE produtos SET ativo = ? WHERE id = ?', [ativoNormalizado, id], function (updErr) {
+        if (updErr) {
+          return res.status(500).json({ error: updErr.message });
+        }
+
+        gravarAuditoria({
+          usuario_id: req.user?.id || null,
+          usuario_nome: req.user?.username || req.user?.nome || null,
+          modulo: 'produtos',
+          acao,
+          referencia_tipo: 'produto',
+          referencia_id: id,
+          detalhes: {
+            id: Number(id),
+            nome: row.nome,
+            codigo: row.codigo,
+            ativo_anterior: Number(row.ativo ?? 1),
+            ativo: ativoNormalizado
+          },
+          ip_requisicao: req.ip || null
+        }).catch((auditErr) => console.error(`Erro ao gravar auditoria de ${acao}:`, auditErr));
+
+        res.json({
+          id: Number(id),
+          ativo: ativoNormalizado,
+          message: ativoNormalizado === 1 ? 'Produto habilitado com sucesso' : 'Produto desabilitado com sucesso'
+        });
+      });
+    });
+  });
+}
+
+// Soft-disable: produto some de PDV/busca (COALESCE ativo=1), permanece no cadastro
+router.post('/:id/desativar', (req, res) => alterarStatusAtivoProduto(req, res, 0));
+router.post('/:id/ativar', (req, res) => alterarStatusAtivoProduto(req, res, 1));
 
 // Deletar produto
 router.delete('/:id', (req, res) => {

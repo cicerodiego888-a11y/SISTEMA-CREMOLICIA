@@ -35,7 +35,9 @@ function derivarCamposCacheConsignacao(movimentacoes) {
   let valorTotalPago = 0;
   let saldoAberto = 0;
 
-  for (const mov of ordenarCronologicamente(movimentacoes)) {
+  const ordenadas = ordenarCronologicamente(movimentacoes);
+  for (let i = 0; i < ordenadas.length; i += 1) {
+    const mov = ordenadas[i];
     const valor = Number(mov.valor ?? 0);
 
     switch (mov.tipoMovimentacao) {
@@ -57,7 +59,7 @@ function derivarCamposCacheConsignacao(movimentacoes) {
       case 'FECHAMENTO_PRESTACAO': {
         const { calcularTotaisPrestacao } = require('../../usecases/consignacao/prestacaoOperacaoHelpers');
         const totais = calcularTotaisPrestacao(
-          movimentacoes,
+          ordenadas.slice(0, i + 1),
           mov.grupoPrestacaoContasId ?? null
         );
         valorTotalAcertado = totais.totalVendido;

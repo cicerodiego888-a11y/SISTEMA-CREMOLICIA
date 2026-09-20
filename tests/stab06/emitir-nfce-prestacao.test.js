@@ -244,7 +244,8 @@ async function run() {
     const result = await uc.executar({ consignacaoId: 10 });
     assert.strictEqual(result.sucesso, true);
     assert.strictEqual(criarCalls.length, 1);
-    assert.strictEqual(criarCalls[0].emitir_fiscal, false);
+    assert.strictEqual(criarCalls[0].emitir_fiscal, true);
+    assert.ok(criarCalls[0].itens[0].quantidade_fiscal > 0, 'itens fiscais na venda oficial');
     assert.strictEqual(emitirCalls.length, 1);
     assert.strictEqual(result.dados.faturamento.situacaoFiscal, 'AUTORIZADA');
     assert.strictEqual(result.dados.faturamento.vendaId, 9001);

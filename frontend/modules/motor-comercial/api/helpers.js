@@ -70,12 +70,18 @@ function unwrapList(response) {
     return {
       items: raw,
       total: response?.metadata?.total ?? raw.length,
+      page: response?.metadata?.page,
+      pageSize: response?.metadata?.pageSize,
+      hasMore: response?.metadata?.hasMore,
       metadata: response?.metadata || null
     };
   }
   return {
     items: raw?.items || raw?.movimentacoes || raw?.registros || raw?.eventos || [],
     total: raw?.total ?? response?.metadata?.total ?? 0,
+    page: raw?.page ?? response?.metadata?.page,
+    pageSize: raw?.pageSize ?? response?.metadata?.pageSize,
+    hasMore: raw?.hasMore ?? response?.metadata?.hasMore,
     metadata: response?.metadata || raw?.metadata || null
   };
 }
@@ -210,7 +216,9 @@ function mapConsignacaoView(consignacao, extras = {}) {
     valor: valorResolvido,
     saldo: saldoResolvido,
     aguardandoEntrega: isRascunho,
-    quantidadeItens: itens.length,
+    quantidadeItens: consignacao.quantidadeItens != null
+      ? Number(consignacao.quantidadeItens)
+      : itens.length,
     prestacaoContasAtiva: consignacao.prestacaoContasAtiva ?? extras.prestacaoContasAtiva ?? null,
     ultimaMovimentacao: consignacao.updatedAt,
     usuario: consignacao.usuarioAberturaId,

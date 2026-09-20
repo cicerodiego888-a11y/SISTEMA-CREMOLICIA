@@ -409,7 +409,15 @@ async function renderRoute(parsed, seq) {
     if (isNavStale(seq)) return;
     if (window.CDSApi?.isSessionExpiredError?.(err)) return;
     const status = err && err.status;
-    root.innerHTML = errorHtml(err.message || 'Falha ao abrir módulo', status);
+    root.innerHTML = `
+      ${errorHtml(err.message || 'Falha ao abrir módulo', status)}
+      <p style="text-align:center;margin:16px 12px 24px">
+        <button type="button" class="cds-mobile-btn" id="cds-module-escape">Sair desta tela</button>
+      </p>
+    `;
+    document.getElementById('cds-module-escape')?.addEventListener('click', () => {
+      navigate('mais', { replace: true });
+    });
     if (status && status !== 401) showToast(err.message || 'Erro ao carregar', 'error');
   }
 }
@@ -506,7 +514,7 @@ function bindShell() {
 
 function registerPwaStub() {
   if (!('serviceWorker' in navigator)) return;
-  navigator.serviceWorker.register('/apps/mobile/sw.js?v=2.5.3-rcm923').catch(() => {});
+  navigator.serviceWorker.register('/apps/mobile/sw.js?v=2.5.6-resumo').catch(() => {});
 }
 
 function paintShellIcons() {

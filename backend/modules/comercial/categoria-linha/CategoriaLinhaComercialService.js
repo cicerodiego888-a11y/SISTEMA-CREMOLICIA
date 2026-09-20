@@ -83,7 +83,34 @@ class CategoriaLinhaComercialService {
       `UPDATE categorias SET ativo = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
       [categoriaId]
     );
+    await run(
+      `UPDATE subcategorias SET ativo = 0, updated_at = CURRENT_TIMESTAMP WHERE categoria_id = ?`,
+      [categoriaId]
+    );
+    await run(
+      `UPDATE produtos SET ativo = 0 WHERE categoria_id = ?`,
+      [categoriaId]
+    );
     // A-1: não desativa Política Comercial vinculada historicamente
+    return this.sincronizarCategoria(categoriaId);
+  }
+
+  async ativarPorCategoria(categoriaId) {
+    const cat = await get(`SELECT * FROM categorias WHERE id = ?`, [categoriaId]);
+    if (!cat) return null;
+
+    await run(
+      `UPDATE categorias SET ativo = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      [categoriaId]
+    );
+    await run(
+      `UPDATE subcategorias SET ativo = 1, updated_at = CURRENT_TIMESTAMP WHERE categoria_id = ?`,
+      [categoriaId]
+    );
+    await run(
+      `UPDATE produtos SET ativo = 1 WHERE categoria_id = ?`,
+      [categoriaId]
+    );
     return this.sincronizarCategoria(categoriaId);
   }
 

@@ -126,6 +126,13 @@ function montarPayloadCriarVenda(entrada = {}) {
     if (i.quantidadeNaoFiscal != null || i.quantidade_nao_fiscal != null) {
       item.quantidade_nao_fiscal = Number(i.quantidadeNaoFiscal ?? i.quantidade_nao_fiscal);
     }
+    if (emitirFiscal && item.quantidade_fiscal == null && item.quantidade_nao_fiscal == null) {
+      item.quantidade_fiscal = quantidade;
+      item.quantidade_nao_fiscal = 0;
+      item.valor_fiscal = subtotal;
+      item.valor_nao_fiscal = 0;
+      item.item_fiscal = 1;
+    }
     return item;
   });
 
@@ -134,7 +141,8 @@ function montarPayloadCriarVenda(entrada = {}) {
   if (integridade.valorRecebido > 0.01) {
     pagamentos.push({
       forma_pagamento: formaRecebido === 'prazo' ? 'dinheiro' : formaRecebido,
-      valor: integridade.valorRecebido
+      valor: integridade.valorRecebido,
+      tipo_recebimento: emitirFiscal ? 'fiscal' : 'nao_fiscal'
     });
   }
   if (integridade.saldoEmAberto > 0.01) {
@@ -144,7 +152,11 @@ function montarPayloadCriarVenda(entrada = {}) {
     });
   }
   if (!pagamentos.length) {
-    pagamentos.push({ forma_pagamento: 'dinheiro', valor: totalVendido });
+    pagamentos.push({
+      forma_pagamento: 'dinheiro',
+      valor: totalVendido,
+      tipo_recebimento: emitirFiscal ? 'fiscal' : 'nao_fiscal'
+    });
   }
 
   const forma_pagamento = pagamentos.length > 1
@@ -163,6 +175,8 @@ function montarPayloadCriarVenda(entrada = {}) {
     forcar: true,
     cpf_cnpj_nota: entrada.cpfCnpjNota || null,
     origem: ORIGEM_CONSIGNACAO,
+    origem_pdv: 'CONSIGNACAO',
+    canal_venda: 'CONSIGNACAO',
     metadata: {
       origem: ORIGEM_CONSIGNACAO,
       consignacaoId: Number(entrada.consignacaoId),

@@ -331,13 +331,23 @@ class ComprovanteEntregaBuilder {
 
     parcial.qrCode = qrCode;
     parcial.textoCompartilhavel = buildTextoCompartilhavel(parcial);
-    parcial.pdf = buildPdfPayload(parcial);
+    try {
+      parcial.pdf = buildPdfPayload(parcial);
+    } catch (pdfErr) {
+      console.warn('[comprovantes] PDF da entrega falhou — snapshot segue sem PDF:', pdfErr?.message || pdfErr);
+      parcial.pdf = null;
+    }
 
-    // snapshot é cópia imutável do payload oficial
-    const snapshot = JSON.parse(JSON.stringify({
-      ...parcial,
-      geradoEm: new Date().toISOString()
-    }));
+    let snapshot;
+    try {
+      snapshot = JSON.parse(JSON.stringify({
+        ...parcial,
+        geradoEm: new Date().toISOString()
+      }));
+    } catch (serErr) {
+      console.warn('[comprovantes] snapshot JSON falhou:', serErr?.message || serErr);
+      snapshot = { ...parcial, geradoEm: new Date().toISOString(), pdf: null };
+    }
 
     return {
       ...parcial,

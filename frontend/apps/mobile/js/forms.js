@@ -243,7 +243,7 @@ export function openBottomSheet({
   panelClass = '',
   closeMs = 180
 } = {}) {
-  closeBottomSheet();
+  closeBottomSheet({ immediate: true });
   const el = document.createElement('div');
   el.className = 'cds-sheet';
   el.id = 'cds-mobile-sheet';
@@ -262,15 +262,26 @@ export function openBottomSheet({
   document.body.classList.add('is-overlay-open');
   requestAnimationFrame(() => el.classList.add('is-open'));
   el.querySelectorAll('[data-sheet-close]').forEach((btn) => {
-    btn.addEventListener('click', closeBottomSheet);
+    btn.addEventListener('click', () => closeBottomSheet());
   });
   return el;
 }
 
-export function closeBottomSheet() {
+export function closeBottomSheet({ immediate = false } = {}) {
   const el = document.getElementById('cds-mobile-sheet');
   if (!el) {
     if (!document.querySelector('.cds-mobile-drawer.is-open') && !document.querySelector('.cds-scan-overlay')) {
+      document.body.classList.remove('is-overlay-open');
+    }
+    return;
+  }
+  // Libera o id na hora para o próximo sheet não competir no seletor #cds-mobile-sheet
+  el.removeAttribute('id');
+  if (immediate) {
+    el.remove();
+    if (!document.getElementById('cds-mobile-sheet')
+      && !document.querySelector('.cds-mobile-drawer.is-open')
+      && !document.querySelector('.cds-scan-overlay')) {
       document.body.classList.remove('is-overlay-open');
     }
     return;
@@ -284,7 +295,9 @@ export function closeBottomSheet() {
   el.setAttribute('aria-hidden', 'true');
   setTimeout(() => {
     el.remove();
-    if (!document.querySelector('.cds-mobile-drawer.is-open') && !document.querySelector('.cds-scan-overlay')) {
+    if (!document.getElementById('cds-mobile-sheet')
+      && !document.querySelector('.cds-mobile-drawer.is-open')
+      && !document.querySelector('.cds-scan-overlay')) {
       document.body.classList.remove('is-overlay-open');
     }
   }, Number.isFinite(ms) ? ms : 180);

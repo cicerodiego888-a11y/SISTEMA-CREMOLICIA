@@ -90,6 +90,29 @@ function validarTotalFiscalFinalXml({
 }
 
 /**
+ * Se o PDV mandou o total líquido e o desconto veio 0 (ou formato inválido),
+ * reconstitui o desconto por bruto − total.
+ */
+function inferirDescontoGlobal({
+  bruto = 0,
+  desconto = 0,
+  acrescimo = 0,
+  totalInformado = null
+} = {}) {
+  let d = Math.max(0, arredondar2(desconto));
+  const b = arredondar2(bruto);
+  const a = arredondar2(acrescimo);
+  const t = totalInformado == null || totalInformado === ''
+    ? NaN
+    : arredondar2(totalInformado);
+  if (d <= 0.009 && Number.isFinite(t) && b > 0) {
+    const implicito = arredondar2(b + a - t);
+    if (implicito > 0.009) d = implicito;
+  }
+  return d;
+}
+
+/**
  * Rateia desconto (e acréscimo) global entre fiscal e não fiscal —
  * paridade com frontend/pdv/js/pdv.js → aplicarDescontoProporcionalDistribuicao.
  *
@@ -213,6 +236,7 @@ module.exports = {
   arredondar2,
   obterTotalFiscalFinal,
   validarTotalFiscalFinalXml,
+  inferirDescontoGlobal,
   aplicarDescontoProporcionalTotais,
   montarFiscalOperacionalPagamento,
   pagamentoFiscalSuficiente,

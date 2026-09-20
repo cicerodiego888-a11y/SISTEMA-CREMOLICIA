@@ -887,6 +887,233 @@
   color: var(--color-neutral-700, #334155);
 }
 
+.cds-ficha-cliente__consignacoes {
+  margin-bottom: var(--spacing-lg, 20px);
+}
+
+.cds-ficha-cliente__consignacoes-pagina {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--color-neutral-500, #64748b);
+}
+
+.cds-ficha-cliente__consignacoes-lista {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cds-ficha-cliente__carregar-mais {
+  margin-top: 12px;
+  width: 100%;
+  border: 1px solid var(--color-neutral-300, #cbd5e1);
+  background: #fff;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.cds-ficha-cliente__carregar-mais:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.cds-ficha-cliente__consignacao-card {
+  border: 1px solid var(--color-neutral-200, #e2e8f0);
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: var(--color-surface, #fff);
+}
+
+.cds-ficha-cliente__consignacao-numero {
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: 0.02em;
+}
+
+.cds-ficha-cliente__consignacao-meta,
+.cds-ficha-cliente__consignacao-resumo,
+.cds-ficha-cliente__consignacao-atualizacao {
+  margin-top: 2px;
+  font-size: 13px;
+  color: var(--color-neutral-700, #334155);
+}
+
+.cds-ficha-cliente__consignacao-atualizacao {
+  font-size: 12px;
+  color: var(--color-neutral-500, #64748b);
+}
+
+.cds-ficha-cliente__consignacoes-acoes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.cds-ficha-cliente__mini-btn {
+  border: 1px solid var(--color-neutral-300, #cbd5e1);
+  background: #fff;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.cds-ficha-cliente__mini-btn--primary {
+  border-color: #1d4ed8;
+  color: #1d4ed8;
+}
+
+.cds-consulta-consignacao {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: rgba(15, 23, 42, 0.45);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 32px 16px;
+  overflow: auto;
+}
+
+.cds-consulta-consignacao__painel {
+  width: min(760px, 100%);
+  background: #fff;
+  border-radius: 12px;
+  padding: 20px 22px 16px;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.2);
+}
+
+.cds-consulta-consignacao__cabecalho {
+  position: relative;
+  margin-bottom: 16px;
+}
+
+.cds-consulta-consignacao__cabecalho h2 {
+  margin: 0 36px 8px 0;
+  font-size: 18px;
+}
+
+.cds-consulta-consignacao__cabecalho p,
+.cds-consulta-consignacao section p {
+  margin: 2px 0;
+  font-size: 13px;
+}
+
+.cds-consulta-consignacao__fechar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  border: 0;
+  background: transparent;
+  font-size: 24px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.cds-consulta-consignacao section h3 {
+  margin: 16px 0 8px;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #475569;
+}
+
+.cds-consulta-consignacao__resumo {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 16px;
+  margin: 0;
+}
+
+.cds-consulta-consignacao__resumo dt {
+  font-size: 11px;
+  color: #64748b;
+}
+
+.cds-consulta-consignacao__resumo dd {
+  margin: 0;
+  font-size: 13px;
+}
+
+.cds-consulta-consignacao__tabela-wrap {
+  overflow-x: auto;
+}
+
+.cds-consulta-consignacao table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.cds-consulta-consignacao th,
+.cds-consulta-consignacao td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.cds-consulta-consignacao__snapshot {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.cds-consulta-consignacao__snapshot ul {
+  margin: 0;
+  padding-left: 16px;
+}
+
+.cds-consulta-consignacao__snapshot li {
+  margin-bottom: 8px;
+}
+
+.cds-consulta-consignacao__snapshot span {
+  display: inline-block;
+  margin-right: 10px;
+}
+
+.cds-consulta-consignacao__fallback {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.cds-consulta-consignacao__acoes {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.cds-consulta-consignacao__btn {
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.cds-consulta-consignacao__btn--primary {
+  background: #1d4ed8;
+  border-color: #1d4ed8;
+  color: #fff;
+}
+
+@media (max-width: 700px) {
+  .cds-ficha-cliente__consignacoes-tabela,
+  .cds-consulta-consignacao__resumo {
+    display: block;
+  }
+
+  .cds-consulta-consignacao__resumo {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* Compat: ids/classes antigas ainda referenciadas no host */
 .cds-central-operacoes,
 .cds-central-operacoes--loading {

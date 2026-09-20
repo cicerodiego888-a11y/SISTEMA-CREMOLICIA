@@ -1877,16 +1877,33 @@ function montarOptionsFiltroCategorias(produtos) {
         .join('');
 }
 
+function produtoEstaAtivo(p) {
+    return Number(p?.ativo ?? 1) !== 0;
+}
+
+function obterFiltroStatusProduto() {
+    return String($('#filtroStatusProduto').val() || 'todos');
+}
+
+function produtoBateFiltroStatus(p, filtroStatus = obterFiltroStatusProduto()) {
+    const ativo = produtoEstaAtivo(p);
+    if (filtroStatus === 'ativos') return ativo;
+    if (filtroStatus === 'inativos') return !ativo;
+    return true;
+}
+
 function aplicarFiltrosProdutos(produtos) {
     const termo = normalizarTexto($('#buscaProduto').val()).trim();
     const categoriaId = String($('#filtroCategoriaProduto').val() || '');
+    const filtroStatus = obterFiltroStatusProduto();
+    const base = (produtos || []).filter((p) => produtoBateFiltroStatus(p, filtroStatus));
 
     // Se houver termo de busca ou filtro de categoria, mostrar tabela normal
     if (termo || categoriaId) {
         $('#categorias-container').hide();
         $('#tabela-produtos-container').show();
 
-        const filtrados = (produtos || []).filter(p => {
+        const filtrados = base.filter(p => {
             const bateBusca =
                 !termo ||
                 (p.nome && normalizarTexto(p.nome).includes(termo)) ||
@@ -1918,13 +1935,24 @@ function produtoProximoMinimo(p) {
 }
 
 function renderProdutoRow(p) {
+    const ativo = produtoEstaAtivo(p);
     const status = obterStatusVisualProduto(p);
-    const classes = classesLinhaStatusProduto(status);
+    const classes = ativo
+        ? classesLinhaStatusProduto(status)
+        : { row: 'table-secondary produto-linha-desabilitada', text: 'text-muted', estoque: 'text-muted' };
     const badges = montarBadgesStatusProduto(p);
+    const badgeDesabilitado = ativo
+        ? ''
+        : '<span class="badge bg-secondary ms-1">Desabilitado</span>';
+    const rowStyle = ativo ? '' : 'opacity:0.62; filter:grayscale(0.35);';
+    const nomeStyle = ativo ? '' : 'text-decoration:line-through;';
 
     return `
-        <tr class="${classes.row}">
-            <td class="${classes.text} fw-semibold">${escapeHtml(p.nome || '')}</td>
+        <tr class="${classes.row}" style="${rowStyle}" data-produto-id="${p.id}" data-produto-ativo="${ativo ? 1 : 0}">
+            <td class="${classes.text} fw-semibold" style="${nomeStyle}">
+                ${escapeHtml(p.nome || '')}
+                ${badgeDesabilitado}
+            </td>
             <td>${escapeHtml(p.codigo || '')}</td>
             <td>${escapeHtml(p.categoria || p.categoria_nome || '')}</td>
             <td>${escapeHtml(p.unidade || '')}</td>
@@ -1934,24 +1962,33 @@ function renderProdutoRow(p) {
                 ${formatarColunaEstoqueLista(p)}
                 ${badges}
             </td>
-            <td>
-                <button class="btn btn-sm btn-info" onclick="viewProduto(${p.id})">
+            <td class="text-nowrap">
+                <button class="btn btn-sm btn-info" onclick="viewProduto(${p.id})" title="Visualizar">
                     <i class="fas fa-eye"></i>
                 </button>
-                <button class="btn btn-sm btn-warning" onclick="editProduto(${p.id})">
+                <button class="btn btn-sm btn-warning" onclick="editProduto(${p.id})" title="Editar" ${ativo ? '' : 'disabled'}>
                     <i class="fas fa-edit"></i>
                 </button>
                 ${podeAjustarEstoque() ? `
-                <button class="btn btn-sm btn-success" onclick="abrirModalAjustarEstoque(${p.id})" title="Ajustar Estoque">
+                <button class="btn btn-sm btn-success" onclick="abrirModalAjustarEstoque(${p.id})" title="Ajustar Estoque" ${ativo ? '' : 'disabled'}>
                     <i class="fas fa-boxes"></i>
                 </button>
                 ` : ''}
-                <button class="btn btn-sm btn-danger" onclick="deleteProduto(${p.id})">
+                <button class="btn btn-sm btn-danger" onclick="deleteProduto(${p.id})" title="Excluir" ${ativo ? '' : 'disabled'}>
                     <i class="fas fa-trash"></i>
                 </button>
-                <button class="btn btn-sm btn-secondary" onclick="historicoProduto(${p.id})">
+                <button class="btn btn-sm btn-secondary" onclick="historicoProduto(${p.id})" title="Histórico">
                     <i class="fas fa-history"></i>
                 </button>
+                ${ativo ? `
+                <button class="btn btn-sm btn-dark" onclick="desabilitarProduto(${p.id})" title="Desabilitar produto e linha">
+                    <i class="fas fa-ban"></i>
+                </button>
+                ` : `
+                <button class="btn btn-sm btn-outline-success" onclick="habilitarProduto(${p.id})" title="Reabilitar produto">
+                    <i class="fas fa-check"></i>
+                </button>
+                `}
             </td>
         </tr>
     `;
@@ -2028,6 +2065,11 @@ function gerarRelatorioEstoque() {
 function renderProdutos(produtos) {
     window.produtosCache = produtos;
     window.produtosOriginais = produtos;
+    const filtroStatusAtual = String(
+        window._filtroStatusProdutoPreferido ||
+        ($('#filtroStatusProduto').length ? $('#filtroStatusProduto').val() : '') ||
+        'todos'
+    );
     const html = `
         <div class="row mb-3 g-3">
             <div class="col-md-6 col-lg-4">
@@ -2098,6 +2140,17 @@ function renderProdutos(produtos) {
                             ${montarOptionsFiltroCategorias(produtos)}
                         </select>
 
+                        <select
+                            class="form-select form-select-sm"
+                            id="filtroStatusProduto"
+                            style="width: 160px;"
+                            title="Filtrar por status do produto"
+                        >
+                            <option value="todos"${filtroStatusAtual === 'todos' ? ' selected' : ''}>Todos</option>
+                            <option value="ativos"${filtroStatusAtual === 'ativos' ? ' selected' : ''}>Ativos</option>
+                            <option value="inativos"${filtroStatusAtual === 'inativos' ? ' selected' : ''}>Desabilitados</option>
+                        </select>
+
                         <input
                             type="text"
                             class="form-control form-control-sm"
@@ -2113,10 +2166,13 @@ function renderProdutos(produtos) {
                 <div class="alert alert-info py-2 mb-3">
                     <i class="fas fa-info-circle me-2"></i>
                     Clique em uma categoria para ver os produtos. Use a busca acima para pesquisar em todos os produtos.
+                    O botão <i class="fas fa-ban"></i> na categoria desabilita ela por completo (todos os produtos deixam de vender e de gerar estoque).
+                    O mesmo ícone na linha do produto desabilita só aquele item.
                 </div>
                 <div class="d-flex flex-wrap gap-3 mb-3 small">
                     <span><span class="d-inline-block rounded px-2 py-1 bg-warning">&nbsp;</span> Amarelo: próximo do mínimo ou do vencimento</span>
                     <span><span class="d-inline-block rounded px-2 py-1 bg-danger">&nbsp;</span> Vermelho: estoque no mínimo ou abaixo / vencido</span>
+                    <span><span class="d-inline-block rounded px-2 py-1 bg-secondary">&nbsp;</span> Cinza: produto/categoria desabilitado</span>
                 </div>
                 <div id="categorias-container">
                     ${renderCategoriasProdutos(produtos)}
@@ -2145,7 +2201,10 @@ function renderProdutos(produtos) {
 
     $('#page-content').html(html);
 
-    $('#buscaProduto, #filtroCategoriaProduto').on('input change', function () {
+    $('#buscaProduto, #filtroCategoriaProduto, #filtroStatusProduto').on('input change', function () {
+        if (this.id === 'filtroStatusProduto') {
+            window._filtroStatusProdutoPreferido = String($(this).val() || 'todos');
+        }
         aplicarFiltrosProdutos(produtos);
     });
 
@@ -2211,25 +2270,52 @@ function carregarCategoriasProdutos() {
                 return;
             }
 
-            // Contar produtos por categoria
+            const filtroStatus = obterFiltroStatusProduto();
+
+            // Contar produtos por categoria (respeita filtro Ativos/Desabilitados/Todos)
+            // Mantém categorias desabilitadas visíveis para permitir reabilitar
             const categoriasComContagem = categorias.map(cat => {
-                const produtosCategoria = (window.produtosCache || []).filter(
+                const todosProdutosCategoria = (window.produtosCache || []).filter(
                     (p) => String(p.categoria_id) === String(cat.id)
                 );
+                const produtosCategoria = todosProdutosCategoria.filter((p) =>
+                    produtoBateFiltroStatus(p, filtroStatus)
+                );
                 const count = produtosCategoria.length;
-                const countBaixo = produtosCategoria.filter((p) => produtoComEstoqueBaixo(p)).length;
-                const countProximo = produtosCategoria.filter((p) => produtoProximoMinimo(p)).length;
-                return { ...cat, count, countBaixo, countProximo };
-            }).filter(cat => cat.count > 0);
+                const countTotal = todosProdutosCategoria.length;
+                const countBaixo = produtosCategoria.filter((p) => produtoEstaAtivo(p) && produtoComEstoqueBaixo(p)).length;
+                const countProximo = produtosCategoria.filter((p) => produtoEstaAtivo(p) && produtoProximoMinimo(p)).length;
+                const countDesabilitados = todosProdutosCategoria.filter((p) => !produtoEstaAtivo(p)).length;
+                return { ...cat, count, countTotal, countBaixo, countProximo, countDesabilitados };
+            }).filter(cat => cat.countTotal > 0);
 
-            const html = categoriasComContagem.map(cat => `
-                <div class="card mb-2 categoria-card" data-categoria-id="${cat.id}">
-                    <div class="card-header bg-light d-flex justify-content-between align-items-center" style="cursor: pointer;" onclick="toggleProdutosCategoriaMenu(${cat.id}, '${escapeHtml(cat.nome)}')">
-                        <strong><i class="fas fa-folder me-2"></i>${escapeHtml(cat.nome)}</strong>
-                        <span>
+            const html = categoriasComContagem.map(cat => {
+                const categoriaAtiva = Number(cat.ativo ?? 1) !== 0;
+                const nomeEscapado = String(cat.nome || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+                const headerClass = categoriaAtiva ? 'bg-light' : 'bg-secondary bg-opacity-25';
+                const cardClass = categoriaAtiva ? '' : 'opacity-75 border-secondary';
+
+                return `
+                <div class="card mb-2 categoria-card ${cardClass}" data-categoria-id="${cat.id}" data-categoria-ativa="${categoriaAtiva ? 1 : 0}">
+                    <div class="card-header ${headerClass} d-flex justify-content-between align-items-center" style="cursor: pointer;" onclick="toggleProdutosCategoriaMenu(${cat.id}, '${nomeEscapado}')">
+                        <strong class="${categoriaAtiva ? '' : 'text-muted'}" style="${categoriaAtiva ? '' : 'text-decoration:line-through;'}">
+                            <i class="fas fa-folder me-2"></i>${escapeHtml(cat.nome)}
+                            ${categoriaAtiva ? '' : '<span class="badge bg-secondary ms-2">Desabilitada</span>'}
+                        </strong>
+                        <span class="d-flex align-items-center gap-1 flex-wrap justify-content-end" onclick="event.stopPropagation();">
                             <span class="badge bg-primary">${cat.count}</span>
-                            ${cat.countProximo > 0 ? `<span class="badge bg-warning text-dark ms-1" title="Próximo do estoque mínimo">${cat.countProximo} próx.</span>` : ''}
-                            ${cat.countBaixo > 0 ? `<span class="badge bg-danger ms-1" title="Estoque no mínimo ou abaixo">${cat.countBaixo} baixo</span>` : ''}
+                            ${cat.countProximo > 0 ? `<span class="badge bg-warning text-dark" title="Próximo do estoque mínimo">${cat.countProximo} próx.</span>` : ''}
+                            ${cat.countBaixo > 0 ? `<span class="badge bg-danger" title="Estoque no mínimo ou abaixo">${cat.countBaixo} baixo</span>` : ''}
+                            ${cat.countDesabilitados > 0 ? `<span class="badge bg-secondary" title="Produtos desabilitados">${cat.countDesabilitados} off</span>` : ''}
+                            ${categoriaAtiva ? `
+                            <button type="button" class="btn btn-sm btn-dark ms-1" title="Desabilitar categoria e todos os produtos" onclick="desabilitarCategoriaProdutos(${cat.id}, '${nomeEscapado}')">
+                                <i class="fas fa-ban"></i>
+                            </button>
+                            ` : `
+                            <button type="button" class="btn btn-sm btn-outline-success ms-1" title="Reabilitar categoria e todos os produtos" onclick="habilitarCategoriaProdutos(${cat.id}, '${nomeEscapado}')">
+                                <i class="fas fa-check"></i>
+                            </button>
+                            `}
                         </span>
                     </div>
                     <div class="card-body p-0" id="produtos-categoria-${cat.id}" style="display: none;">
@@ -2238,7 +2324,8 @@ function carregarCategoriasProdutos() {
                         </div>
                     </div>
                 </div>
-            `).join('');
+            `;
+            }).join('');
 
             $('#categorias-container').html(html);
         },
@@ -2258,40 +2345,41 @@ function toggleProdutosCategoriaMenu(categoriaId, categoriaNome) {
     if (container.is(':visible')) {
         container.slideUp();
     } else {
-        // Se ainda não carregou os produtos, carregar
-        if (container.find('.spinner-border').length > 0) {
-            const produtosCategoria = (window.produtosCache || []).filter(p => String(p.categoria_id) === String(categoriaId));
+        // Sempre remontar a tabela para refletir status ativo/desabilitado e filtros
+        const filtroStatus = obterFiltroStatusProduto();
+        const produtosCategoria = (window.produtosCache || []).filter(
+            (p) => String(p.categoria_id) === String(categoriaId) && produtoBateFiltroStatus(p, filtroStatus)
+        );
 
-            if (!produtosCategoria || produtosCategoria.length === 0) {
-                container.html(`
-                    <div class="p-3 text-muted">
-                        Nenhum produto nesta categoria.
-                    </div>
-                `);
-            } else {
-                const tabelaHtml = `
-                    <div class="table-responsive">
-                        <table class="table table-striped table-hover mb-0">
-                            <thead>
-                                <tr>
-                                    <th>Nome</th>
-                                    <th>Código</th>
-                                    <th>Categoria</th>
-                                    <th>Unidade</th>
-                                    <th>Preço Compra</th>
-                                    <th>Preço de Segurança</th>
-                                    <th>${tituloColunaEstoqueLista()}</th>
-                                    <th>Ações</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                ${produtosCategoria.map(p => renderProdutoRow(p)).join('')}
-                            </tbody>
-                        </table>
-                    </div>
-                `;
-                container.html(tabelaHtml);
-            }
+        if (!produtosCategoria || produtosCategoria.length === 0) {
+            container.html(`
+                <div class="p-3 text-muted">
+                    Nenhum produto nesta categoria${filtroStatus === 'todos' ? '' : ' para o filtro selecionado'}.
+                </div>
+            `);
+        } else {
+            const tabelaHtml = `
+                <div class="table-responsive">
+                    <table class="table table-striped table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th>Nome</th>
+                                <th>Código</th>
+                                <th>Categoria</th>
+                                <th>Unidade</th>
+                                <th>Preço Compra</th>
+                                <th>Preço de Segurança</th>
+                                <th>${tituloColunaEstoqueLista()}</th>
+                                <th>Ações</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${produtosCategoria.map(p => renderProdutoRow(p)).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            `;
+            container.html(tabelaHtml);
         }
 
         container.slideDown();
@@ -2448,9 +2536,25 @@ function showProdutoModal(produto = null) {
                                                     <label for="nome" class="form-label">Nome / Descrição *</label>
                                                     <input type="text" class="form-control" id="nome" required value="${isEdit ? escapeHtml(produto.nome || '') : ''}">
                                                 </div>
-                                                <div class="col-md-4 mb-3">
+                                                <div class="col-12 mb-3" id="areaCodigoBarrasEan13">
                                                     <label for="codigo_barras" class="form-label">Código de barras</label>
-                                                    <input type="text" class="form-control" id="codigo_barras" value="${isEdit ? escapeHtml(produto.codigo_barras || '') : ''}">
+                                                    <div class="d-flex align-items-center gap-2 flex-wrap mb-2">
+                                                        <input type="text" class="form-control" id="codigo_barras"
+                                                               inputmode="numeric" maxlength="13" autocomplete="off"
+                                                               style="max-width: 220px;"
+                                                               value="${isEdit ? escapeHtml(produto.codigo_barras || '') : ''}">
+                                                        <button type="button" class="btn btn-outline-primary" id="btnGerarEan13">
+                                                            Gerar EAN-13
+                                                        </button>
+                                                    </div>
+                                                    <div class="text-danger small mb-2 d-none" id="codigoBarrasEanErro"></div>
+                                                    <div class="text-center py-3 border rounded bg-light d-none" id="areaEan13Preview">
+                                                        <svg id="ean13BarcodeSvg" role="img" aria-label="Código de barras EAN-13"></svg>
+                                                        <div class="fw-semibold mt-2" id="ean13Numero" style="letter-spacing: 0.12em;"></div>
+                                                        <button type="button" class="btn btn-outline-secondary btn-sm mt-3" id="btnImprimirEtiquetaEan13">
+                                                            <i class="fas fa-print me-1"></i> Imprimir etiqueta
+                                                        </button>
+                                                    </div>
                                                 </div>
                                                 <div class="col-12 mb-2" id="wrapCodigoUxMaster">
                                                     <div class="d-flex align-items-center gap-2 flex-wrap">
@@ -3061,6 +3165,7 @@ function showProdutoModal(produto = null) {
     inicializarControleLoteInicial();
     inicializarPreviewEstoqueTotalInicial();
     inicializarEspelhoCodigoBarras(produto, isEdit);
+    inicializarEan13CadastroProduto(produto, isEdit);
 
     // CP-E1: libera cálculos só após montagem (evita validação/cálculo no open/reset)
     setTimeout(function () {
@@ -3232,9 +3337,14 @@ function inicializarEspelhoCodigoBarras(produto, isEdit) {
             const manual = $modal.data('codigoBarrasEditadoManualmente') === true;
 
             if (!manual || barras === '' || barras === ultimoEspelhado) {
-                $barras.val(codigo);
-                $modal.data('ultimoCodigoEspelhado', codigo);
-                $modal.data('codigoBarrasEditadoManualmente', false);
+                if (window.EAN13 && window.EAN13.validate(codigo)) {
+                    $barras.val(codigo);
+                    $modal.data('ultimoCodigoEspelhado', codigo);
+                    $modal.data('codigoBarrasEditadoManualmente', false);
+                    if (typeof atualizarPreviewEan13Produto === 'function') {
+                        atualizarPreviewEan13Produto();
+                    }
+                }
             }
         })
         .on('input.espelhoCodigo change.espelhoCodigo', '#codigo_barras', function () {
@@ -3253,6 +3363,216 @@ function inicializarEspelhoCodigoBarras(produto, isEdit) {
         });
 }
 window.inicializarEspelhoCodigoBarras = inicializarEspelhoCodigoBarras;
+
+function obterCodigoBarrasFormularioProduto() {
+    const ean = window.EAN13;
+    const bruto = $('#codigo_barras').val();
+    return ean ? ean.stripSpaces(bruto) : String(bruto || '').trim();
+}
+
+function exibirErroEan13Produto(mensagem) {
+    const $erro = $('#codigoBarrasEanErro');
+    if (!$erro.length) return;
+    if (mensagem) {
+        $erro.text(mensagem).removeClass('d-none');
+    } else {
+        $erro.text('').addClass('d-none');
+    }
+}
+
+function atualizarPreviewEan13Produto() {
+    const ean = window.EAN13;
+    const codigo = obterCodigoBarrasFormularioProduto();
+    const $area = $('#areaEan13Preview');
+    const $svg = $('#ean13BarcodeSvg');
+    const valido = Boolean(ean && ean.validate(codigo));
+
+    if (!valido) {
+        $area.addClass('d-none');
+        if (codigo && ean && codigo.length >= 13) {
+            exibirErroEan13Produto(ean.MSG_INVALIDO);
+        } else if (codigo && /[^\d]/.test(codigo)) {
+            exibirErroEan13Produto(ean ? ean.MSG_INVALIDO : 'Código de barras EAN-13 inválido.');
+        } else {
+            exibirErroEan13Produto('');
+        }
+        return;
+    }
+
+    exibirErroEan13Produto('');
+    $area.removeClass('d-none');
+    $('#ean13Numero').text(codigo);
+    if (typeof JsBarcode === 'function' && $svg.length) {
+        try {
+            JsBarcode($svg.get(0), codigo, {
+                format: 'EAN13',
+                width: 2,
+                height: 64,
+                displayValue: false,
+                margin: 8,
+                background: 'transparent'
+            });
+        } catch (err) {
+            console.warn('Falha ao renderizar EAN-13:', err);
+        }
+    }
+}
+
+function confirmarSubstituicaoEan13(codigoAtual) {
+    const ean = window.EAN13;
+    if (!String(codigoAtual || '').trim()) return true;
+    const mensagem = (ean && ean.MSG_CONFIRMA_SUBSTITUIR)
+        || 'Este produto já possui um código de barras.\nDeseja gerar um novo código?';
+    return window.confirm(mensagem);
+}
+
+function gerarEan13Produto() {
+    const atual = obterCodigoBarrasFormularioProduto();
+    if (!confirmarSubstituicaoEan13(atual)) {
+        return;
+    }
+
+    const produtoId = String($('#produtoId').val() || '').trim();
+    const url = produtoId
+        ? `${API_URL}/produtos/${produtoId}/codigo-barras/gerar`
+        : `${API_URL}/produtos/codigo-barras/gerar`;
+
+    $.ajax({
+        url,
+        method: 'POST',
+        contentType: 'application/json',
+        headers: { Authorization: 'Bearer ' + (localStorage.getItem('token') || '') },
+        data: JSON.stringify({ exclude_id: produtoId || null }),
+        success: function (resp) {
+            const codigo = resp && resp.codigo_barras ? String(resp.codigo_barras) : '';
+            $('#codigo_barras').val(codigo);
+            $('#produtoModal').data('codigoBarrasEditadoManualmente', true);
+            atualizarPreviewEan13Produto();
+        },
+        error: function (xhr) {
+            const erro = xhr.responseJSON?.error || 'Não foi possível gerar o código de barras.';
+            showNotification(erro, 'danger');
+        }
+    });
+}
+
+function nomeEmpresaEtiquetaProduto() {
+    try {
+        const cfg = window.configuracoesSistema || window.empresaAtual || {};
+        return cfg.nome_fantasia || cfg.nome_empresa || cfg.razao_social || 'CREMOLÍCIA';
+    } catch (_) {
+        return 'CREMOLÍCIA';
+    }
+}
+
+function precoEtiquetaProduto() {
+    const bruto = parseFloat($('#preco_venda').val());
+    const valor = Number.isFinite(bruto) ? bruto : 0;
+    if (valor <= 0) return '';
+    const fmt = valor.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return `R$ ${fmt}`;
+}
+
+function imprimirEtiquetaEan13Produto() {
+    const ean = window.EAN13;
+    const codigo = obterCodigoBarrasFormularioProduto();
+    if (!ean || !ean.validate(codigo)) {
+        showNotification(ean ? ean.MSG_INVALIDO : 'Código de barras EAN-13 inválido.', 'warning');
+        return;
+    }
+
+    atualizarPreviewEan13Produto();
+    const svgHtml = $('#ean13BarcodeSvg').prop('outerHTML') || '';
+    const nome = String($('#nome').val() || 'Produto').trim() || 'Produto';
+    const empresa = nomeEmpresaEtiquetaProduto();
+    const preco = precoEtiquetaProduto();
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+        showNotification('Permita popups para imprimir a etiqueta.', 'warning');
+        return;
+    }
+
+    printWindow.document.write(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Etiqueta ${codigo}</title>
+  <style>
+    @page { size: 80mm 50mm; margin: 4mm; }
+    body { font-family: Arial, Helvetica, sans-serif; color: #111; text-align: center; margin: 0; padding: 8px; }
+    .empresa { font-size: 11px; letter-spacing: 0.16em; font-weight: 700; margin-bottom: 8px; }
+    .nome { font-size: 14px; font-weight: 700; margin: 8px 0; text-transform: uppercase; }
+    .ean { font-size: 13px; letter-spacing: 0.12em; margin-top: 6px; }
+    .preco { font-size: 16px; font-weight: 700; margin-top: 10px; }
+    svg { max-width: 100%; height: auto; }
+    @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+  </style>
+</head>
+<body>
+  <div class="empresa">${escapeHtml(empresa)}</div>
+  <div class="nome">${escapeHtml(nome)}</div>
+  ${svgHtml}
+  <div class="ean">${escapeHtml(codigo)}</div>
+  ${preco ? `<div class="preco">${escapeHtml(preco)}</div>` : ''}
+</body>
+</html>`);
+    printWindow.document.close();
+    printWindow.focus();
+    setTimeout(() => printWindow.print(), 300);
+}
+
+function inicializarEan13CadastroProduto(produto, isEdit) {
+    const $modal = $('#produtoModal');
+    if (!$modal.length) return;
+    $modal.data('codigoBarrasOriginal', isEdit ? String(produto?.codigo_barras || '') : '');
+
+    $modal.off('click.ean13 input.ean13 blur.ean13')
+        .on('click.ean13', '#btnGerarEan13', function (ev) {
+            ev.preventDefault();
+            gerarEan13Produto();
+        })
+        .on('click.ean13', '#btnImprimirEtiquetaEan13', function (ev) {
+            ev.preventDefault();
+            imprimirEtiquetaEan13Produto();
+        })
+        .on('input.ean13', '#codigo_barras', function () {
+            const ean = window.EAN13;
+            const apenas = ean ? ean.somenteDigitos($(this).val()).slice(0, 13) : String($(this).val() || '');
+            if ($(this).val() !== apenas) $(this).val(apenas);
+            atualizarPreviewEan13Produto();
+        })
+        .on('blur.ean13', '#codigo_barras', function () {
+            const ean = window.EAN13;
+            const codigo = obterCodigoBarrasFormularioProduto();
+            const original = ean
+                ? ean.stripSpaces($('#produtoModal').data('codigoBarrasOriginal'))
+                : String($('#produtoModal').data('codigoBarrasOriginal') || '').trim();
+            if (!codigo) {
+                exibirErroEan13Produto('');
+                atualizarPreviewEan13Produto();
+                return;
+            }
+            if (original && codigo === original && ean && !ean.validate(codigo)) {
+                exibirErroEan13Produto('');
+                $('#areaEan13Preview').addClass('d-none');
+                return;
+            }
+            if (!ean || !ean.validate(codigo)) {
+                exibirErroEan13Produto(ean ? ean.MSG_INVALIDO : 'Código de barras EAN-13 inválido.');
+                $('#areaEan13Preview').addClass('d-none');
+            } else {
+                atualizarPreviewEan13Produto();
+            }
+        });
+
+    atualizarPreviewEan13Produto();
+}
+
+window.atualizarPreviewEan13Produto = atualizarPreviewEan13Produto;
+window.gerarEan13Produto = gerarEan13Produto;
+window.imprimirEtiquetaEan13Produto = imprimirEtiquetaEan13Produto;
+window.inicializarEan13CadastroProduto = inicializarEan13CadastroProduto;
+window.confirmarSubstituicaoEan13 = confirmarSubstituicaoEan13;
 
 // Função para controlar visibilidade dos campos de lote inicial
 function inicializarControleLoteInicial() {
@@ -3581,6 +3901,22 @@ async function saveProduto() {
         return;
     }
 
+    const ean = window.EAN13;
+    if (data.codigo_barras) {
+        data.codigo_barras = ean ? ean.stripSpaces(data.codigo_barras) : data.codigo_barras.replace(/\s+/g, '');
+        if (ean && !ean.validate(data.codigo_barras)) {
+            const produtoIdAtual = String($('#produtoId').val() || '');
+            const original = String($('#produtoModal').data('codigoBarrasOriginal') || '');
+            const legadoInalterado = Boolean(produtoIdAtual) && data.codigo_barras === ean.stripSpaces(original) && original;
+            if (!legadoInalterado) {
+                showNotification(ean.MSG_INVALIDO, 'warning');
+                exibirErroEan13Produto(ean.MSG_INVALIDO);
+                $('#codigo_barras').focus();
+                return;
+            }
+        }
+    }
+
     if (data.preco_venda <= 0 && !data.linha_comercial_id) {
         showNotification('Informe um Preço de Segurança válido (ou selecione uma Linha de Precificação).', 'warning');
         $('#preco_venda').focus();
@@ -3865,6 +4201,95 @@ function deleteProduto(id) {
     });
 }
 window.deleteProduto = deleteProduto;
+
+function alterarStatusAtivoProdutoUi(id, ativo) {
+    const habilitar = Number(ativo) === 1;
+    const acaoLabel = habilitar ? 'reabilitar' : 'desabilitar';
+    const msgConfirm = habilitar
+        ? 'Reabilitar este produto? Ele voltará a aparecer no PDV e nas buscas.'
+        : 'Desabilitar este produto?\n\nA linha ficará cinza/desabilitada e o produto deixará de aparecer no PDV e nas buscas. Você poderá reabilitar depois.';
+
+    if (!confirm(msgConfirm)) {
+        return;
+    }
+
+    $.ajax({
+        url: `${API_URL}/produtos/${id}/${habilitar ? 'ativar' : 'desativar'}`,
+        method: 'POST',
+        headers: {
+            Authorization: 'Bearer ' + (localStorage.getItem('token') || '')
+        },
+        success: function (resp) {
+            showNotification(
+                resp?.message || (habilitar ? 'Produto reabilitado.' : 'Produto desabilitado.'),
+                'success'
+            );
+            loadProdutos();
+        },
+        error: function (xhr) {
+            const erro = xhr.responseJSON?.error || 'Erro desconhecido';
+            showNotification(`Erro ao ${acaoLabel} produto: ` + erro, 'danger');
+        }
+    });
+}
+
+function desabilitarProduto(id) {
+    alterarStatusAtivoProdutoUi(id, 0);
+}
+window.desabilitarProduto = desabilitarProduto;
+
+function habilitarProduto(id) {
+    alterarStatusAtivoProdutoUi(id, 1);
+}
+window.habilitarProduto = habilitarProduto;
+
+function alterarStatusCategoriaProdutosUi(id, ativar, nomeCategoria) {
+    const habilitar = Number(ativar) === 1;
+    const nome = nomeCategoria || 'esta categoria';
+    const msg = habilitar
+        ? `Reabilitar a categoria "${nome}"?\n\nTodos os produtos e subcategorias dela voltarão a poder ser vendidos e receber estoque.`
+        : `Desabilitar a categoria "${nome}" por completo?\n\nTodos os produtos dela serão desabilitados e não poderão ser vendidos nem gerar/ajustar estoque enquanto a categoria estiver desabilitada.`;
+
+    if (!confirm(msg)) return;
+
+    $.ajax({
+        url: `${API_URL}/categorias/${id}/${habilitar ? 'ativar' : 'desativar'}`,
+        method: 'POST',
+        headers: {
+            Authorization: 'Bearer ' + (localStorage.getItem('token') || '')
+        },
+        success: function (resp) {
+            const qtd = habilitar
+                ? Number(resp?.produtos_habilitados || 0)
+                : Number(resp?.produtos_desabilitados || 0);
+            showNotification(
+                resp?.message ||
+                    (habilitar
+                        ? `Categoria reabilitada (${qtd} produto(s)).`
+                        : `Categoria desabilitada (${qtd} produto(s)).`),
+                'success'
+            );
+            loadProdutos();
+        },
+        error: function (xhr) {
+            const erro = xhr.responseJSON?.erro || xhr.responseJSON?.error || 'Erro desconhecido';
+            showNotification(
+                `Erro ao ${habilitar ? 'habilitar' : 'desabilitar'} categoria: ` + erro,
+                'danger'
+            );
+        }
+    });
+}
+
+function desabilitarCategoriaProdutos(id, nome) {
+    alterarStatusCategoriaProdutosUi(id, 0, nome);
+}
+window.desabilitarCategoriaProdutos = desabilitarCategoriaProdutos;
+
+function habilitarCategoriaProdutos(id, nome) {
+    alterarStatusCategoriaProdutosUi(id, 1, nome);
+}
+window.habilitarCategoriaProdutos = habilitarCategoriaProdutos;
 
 
 // Editar produto

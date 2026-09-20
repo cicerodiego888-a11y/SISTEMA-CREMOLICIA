@@ -17,6 +17,14 @@ const ProjectionApi = require('../../api/ProjectionApi');
 const { mapConsignacaoView } = require('../../api/helpers');
 const CentralOperacoesView = require('./CentralOperacoesView');
 const { buildCentralOperacoesViewModel } = require('./centralOperacoesMappers');
+const {
+  buildDetalheConsulta,
+  buildHistoricoConsignacoes,
+  HISTORICO_PAGE_SIZE,
+  STATUS_CONSIGNACAO_OPERACIONAL
+} = require('./historicoConsignacoesMappers');
+const ConsultaConsignacaoModal = require('./ConsultaConsignacaoModal');
+const { imprimirComprovanteConsignacao } = require('../../services/ComprovanteConsignacaoPrintService');
 const ClienteOperacionalCard = require('./ClienteOperacionalCard');
 const ClienteCadastroView = require('./ClienteCadastroView');
 const {
@@ -408,7 +416,11 @@ class PerfilComercialPage {
         if (doc?.id) {
           navigate(buildRouteWithCliente360Context(`/consignacoes/${doc.id}`, this.perfil.clienteId));
         }
-      }
+      },
+      onVisualizarConsignacao: (row) => this._visualizarConsignacao(row),
+      onReimprimirConsignacao: (row) => this._reimprimirConsignacao(row),
+      onCarregarMaisConsignacoes: () => this._carregarMaisHistoricoConsignacoes(),
+      historicoPaginacao: this._historicoPaginacaoView()
     };
   }
 
@@ -545,6 +557,7 @@ class PerfilComercialPage {
         situacao,
         score,
         consignacoesResult,
+        historicoConsignacoesResult,
         pendenciasPayload,
         contaCorrente,
         saldos,
@@ -556,7 +569,15 @@ class PerfilComercialPage {
         perfilId
           ? this.api.obterScorePerfil(perfilId).catch(() => ({}))
           : Promise.resolve({}),
-        this.api.listarConsignacoes({ clienteId }).catch(() => ({ items: [] })),
+        this.api.listarConsignacoes({
+          clienteId,
+          cliente_id: clienteId,
+          statusIn: STATUS_CONSIGNACAO_OPERACIONAL
+        }).catch(() => ({ items: [] })),
+        this.api.listarHistoricoConsignacoesCliente(clienteId, {
+          page: 1,
+          pageSize: HISTORICO_PAGE_SIZE
+        }).catch(() => ({ items: [], total: 0, page: 1, pageSize: HISTORICO_PAGE_SIZE, hasMore: false })),
         this.projectionApi.obterProjecaoPendencias({ clienteId }).catch(() => ({})),
         this.projectionApi.obterProjecaoContaCorrente({ clienteId }).catch(() => ({})),
         this.projectionApi.obterProjecaoSaldos({ clienteId }).catch(() => ({})),
@@ -566,6 +587,19 @@ class PerfilComercialPage {
 
       const perfis = (perfisResult.items || []).map(mapPerfilListItem);
       const consignacoes = (consignacoesResult.items || []).map((c) => mapConsignacaoView(c));
+      const historicoItems = historicoConsignacoesResult.items || [];
+      const historicoPage = historicoConsignacoesResult.page || 1;
+      const historicoPageSize = historicoConsignacoesResult.pageSize || HISTORICO_PAGE_SIZE;
+      const historicoTotal = historicoConsignacoesResult.total ?? historicoItems.length;
+      this._historicoConsignacoes = {
+        items: historicoItems,
+        page: historicoPage,
+        pageSize: historicoPageSize,
+        total: historicoTotal,
+        hasMore: historicoConsignacoesResult.hasMore === true
+          || (historicoPage * historicoPageSize < historicoTotal),
+        loading: false
+      };
       const pendenciasView = buildViewFromPayload(pendenciasPayload);
       const pendencias = buildPendenciasGrouped(pendenciasView);
       const resumo = buildResumoComercial(this.perfil, situacao, score, consignacoes, pendenciasView, timeline);
@@ -592,7 +626,13 @@ class PerfilComercialPage {
         consignacoes,
         pendencias,
         historico,
-        timeline
+        timeline,
+        consignacoesHistorico: buildHistoricoConsignacoes(
+          historicoItems,
+          clienteId,
+          { manterOrdem: true }
+        ),
+        historicoPaginacao: this._historicoPaginacaoView()
       });
 
       this.lastUpdated = new Date();
@@ -645,6 +685,59 @@ class PerfilComercialPage {
     navigate(buildRouteWithCliente360Context(`/consignacoes/${alvo.id}/prestacao`, this.perfil.clienteId));
   }
 
+  _historicoPaginacaoView() {
+    const estado = this._historicoConsignacoes || {};
+    return {
+      total: estado.total || 0,
+      page: estado.page || 1,
+      pageSize: estado.pageSize || HISTORICO_PAGE_SIZE,
+      hasMore: !!estado.hasMore,
+      loading: !!estado.loading
+    };
+  }
+
+  _atualizarSecaoHistoricoConsignacoes() {
+    const atual = document.getElementById('sec-historico-consignacoes');
+    if (!atual) return;
+    const rows = buildHistoricoConsignacoes(
+      this._historicoConsignacoes?.items || [],
+      this.perfil?.clienteId,
+      { manterOrdem: true }
+    );
+    const proxima = CentralOperacoesView._renderConsignacoes(
+      rows,
+      this._getCentralOperacoesContext(),
+      this._historicoPaginacaoView()
+    );
+    atual.replaceWith(proxima);
+  }
+
+  async _carregarMaisHistoricoConsignacoes() {
+    const estado = this._historicoConsignacoes;
+    if (!estado || estado.loading || !estado.hasMore || !this.perfil?.clienteId) return;
+
+    estado.loading = true;
+    this._atualizarSecaoHistoricoConsignacoes();
+    try {
+      const nextPage = (estado.page || 1) + 1;
+      const result = await this.api.listarHistoricoConsignacoesCliente(this.perfil.clienteId, {
+        page: nextPage,
+        pageSize: estado.pageSize || HISTORICO_PAGE_SIZE
+      });
+      const novos = result.items || [];
+      const ids = new Set((estado.items || []).map((c) => String(c.id)));
+      estado.items = (estado.items || []).concat(novos.filter((c) => !ids.has(String(c.id))));
+      estado.page = result.page || nextPage;
+      estado.total = result.total ?? estado.total;
+      estado.hasMore = result.hasMore === true;
+    } catch (error) {
+      notify(error.message || 'Não foi possível carregar mais consignações.', 'error');
+    } finally {
+      estado.loading = false;
+      this._atualizarSecaoHistoricoConsignacoes();
+    }
+  }
+
   _navigateExtrato() {
     if (!this.perfil?.clienteId) {
       notify('Cliente não identificado para abrir o extrato.', 'info');
@@ -656,6 +749,68 @@ class PerfilComercialPage {
 
   _scrollTo(id) {
     document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  async _carregarConsultaConsignacao(row) {
+    const clienteId = this.perfil?.clienteId;
+    if (!row?.id || !clienteId) {
+      throw new Error('Consignação ou cliente não identificado.');
+    }
+    if (row.clienteId != null && Number(row.clienteId) !== Number(clienteId)) {
+      throw new Error('Consignação não encontrada para este cliente.');
+    }
+    const payload = await this.api.obterConsignacao(row.id, { clienteId, cliente_id: clienteId });
+    if (!payload || Number(payload.clienteId) !== Number(clienteId)) {
+      throw new Error('Consignação não encontrada para este cliente.');
+    }
+    return buildDetalheConsulta(payload, {
+      clienteNome: this.perfil.clienteNome || payload.clienteNome,
+      clienteDocumento: this.perfil.cpfCnpj || payload.clienteDocumento,
+      tipoComercial: this.perfil.perfilTipo || null
+    });
+  }
+
+  async _visualizarConsignacao(row) {
+    try {
+      const detalhe = await this._carregarConsultaConsignacao(row);
+      this._abrirModalConsulta(detalhe);
+    } catch (error) {
+      notify(error.message || 'Não foi possível consultar a consignação.', 'error');
+    }
+  }
+
+  async _reimprimirConsignacao(row) {
+    try {
+      const detalhe = await this._carregarConsultaConsignacao(row);
+      const resultado = imprimirComprovanteConsignacao(detalhe);
+      if (resultado.bloqueado) {
+        notify('Permita pop-ups para reimprimir o comprovante.', 'info');
+      }
+    } catch (error) {
+      notify(error.message || 'Não foi possível reimprimir a consignação.', 'error');
+    }
+  }
+
+  _abrirModalConsulta(detalhe) {
+    this._fecharModalConsulta();
+    const host = document.getElementById('central-operacoes-host') || document.body;
+    this._consultaModal = ConsultaConsignacaoModal.render(detalhe, {
+      onClose: () => this._fecharModalConsulta(),
+      onReimprimir: (atual) => {
+        const resultado = imprimirComprovanteConsignacao(atual);
+        if (resultado.bloqueado) {
+          notify('Permita pop-ups para reimprimir o comprovante.', 'info');
+        }
+      }
+    });
+    host.appendChild(this._consultaModal);
+  }
+
+  _fecharModalConsulta() {
+    if (this._consultaModal?.parentNode) {
+      this._consultaModal.parentNode.removeChild(this._consultaModal);
+    }
+    this._consultaModal = null;
   }
 
   _startAutoRefresh() {

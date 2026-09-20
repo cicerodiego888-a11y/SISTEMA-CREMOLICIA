@@ -35,6 +35,7 @@ class AbrirPrestacaoUseCase extends ConsignacaoWriteUseCase {
       }
 
       // INVARIANT: prestação aberta no ponteiro ⇒ reutilizar (nunca criar novo grupo)
+      // RCM-8.12 — mesmo se a consignação for "nova" (ex.: CONS-018 já vinculada na entrega)
       if (prestacaoEstaAberta(consignacao)) {
         console.log('[INVARIANT PRESTACAO] reutilizando ponteiro aberto', {
           consignacaoId: consignacao.id,
@@ -45,7 +46,53 @@ class AbrirPrestacaoUseCase extends ConsignacaoWriteUseCase {
           grupoPrestacaoContas: consignacao.prestacaoContasAtiva,
           movimentacao: null,
           correlationId,
-          idempotente: true
+          idempotente: true,
+          incorporadaAoCicloCliente: true
+        };
+      }
+
+      // RCM-8.11 — reutilizar ciclo ABERTA do cliente (outra consignação) antes de criar
+      const {
+        buscarGrupoPrestacaoAbertaDoCliente,
+        vincularConsignacaoAoGrupoPrestacao,
+        reconciliarConsignacaoComGrupoAbertoCliente
+      } = require('./prestacaoCicloClienteHelpers');
+
+      const cicloCliente = await buscarGrupoPrestacaoAbertaDoCliente(uow, consignacao.clienteId, {
+        excluirConsignacaoId: consignacao.id
+      });
+      if (cicloCliente?.grupo) {
+        if (consignacao.status !== STATUS_ENTREGUE) {
+          throw new ConsignacaoNaoEntregueError(consignacao.id, consignacao.status);
+        }
+        console.log('[RCM-8.11] vinculando consignação ao ciclo aberto do cliente', {
+          consignacaoId: consignacao.id,
+          prestacaoId: cicloCliente.grupo.id,
+          ancora: cicloCliente.consignacaoAncora?.id
+        });
+        const consignacaoVinculada = await vincularConsignacaoAoGrupoPrestacao(
+          uow,
+          consignacao,
+          cicloCliente.grupo
+        );
+        return {
+          consignacao: consignacaoVinculada,
+          grupoPrestacaoContas: cicloCliente.grupo,
+          movimentacao: null,
+          correlationId,
+          incorporadaAoCicloCliente: true
+        };
+      }
+
+      // Reconciliação soft (legado sem ponteiro) — só se houver âncora via listagem
+      const rec = await reconciliarConsignacaoComGrupoAbertoCliente(uow, consignacao);
+      if (rec.reconciliada && prestacaoEstaAberta(rec.consignacao)) {
+        return {
+          consignacao: rec.consignacao,
+          grupoPrestacaoContas: rec.consignacao.prestacaoContasAtiva,
+          movimentacao: null,
+          correlationId,
+          reconciliada: true
         };
       }
 
@@ -130,6 +177,25 @@ class AbrirPrestacaoUseCase extends ConsignacaoWriteUseCase {
       console.log('[INVARIANT PRESTACAO] criando novo grupo (nenhum aberto no ledger)', {
         consignacaoId: consignacao.id
       });
+
+      // RCM-8.11 — revalidar ciclo do cliente imediatamente antes de criar (corrida)
+      const cicloAntesCriar = await buscarGrupoPrestacaoAbertaDoCliente(uow, consignacao.clienteId, {
+        excluirConsignacaoId: consignacao.id
+      });
+      if (cicloAntesCriar?.grupo) {
+        const vinculada = await vincularConsignacaoAoGrupoPrestacao(
+          uow,
+          consignacao,
+          cicloAntesCriar.grupo
+        );
+        return {
+          consignacao: vinculada,
+          grupoPrestacaoContas: cicloAntesCriar.grupo,
+          movimentacao: null,
+          correlationId,
+          incorporadaAoCicloCliente: true
+        };
+      }
 
       const itens = await uow.consignacaoItem.listarPorConsignacao(consignacao.id);
       const grupo = criarGrupoPrestacaoContas(consignacao, documento);

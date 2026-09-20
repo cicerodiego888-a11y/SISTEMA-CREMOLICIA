@@ -21,7 +21,7 @@ class ConsultarOperacaoConsignacaoUseCase extends ConsignacaoReadUseCase {
   }
 
   async processar(entrada) {
-    const consignacao = await this._obterConsignacaoOuFalhar(entrada.consignacaoId);
+    const consignacao = await this._obterConsignacaoOuFalhar(entrada.consignacaoId, entrada.clienteId);
 
     let ultimaMovimentacao = null;
     let cacheDerivado = null;

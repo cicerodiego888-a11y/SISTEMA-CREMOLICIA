@@ -137,6 +137,77 @@
   color: var(--color-neutral-900);
 }
 
+.cds-entrega-items__editar {
+  border: 1px solid var(--color-neutral-300, #cbd5e1);
+  background: #fff;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.cds-entrega-editar-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 40;
+}
+
+.cds-entrega-editar-modal__painel {
+  width: min(420px, 92vw);
+  background: #fff;
+  border-radius: 10px;
+  padding: 16px 18px;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.18);
+}
+
+.cds-entrega-editar-modal__painel--troca {
+  width: min(640px, 94vw);
+}
+
+.cds-entrega-editar-modal__trocar {
+  margin: 4px 0 8px;
+  border: 1px solid var(--color-neutral-300, #cbd5e1);
+  background: #fff;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.cds-entrega-editar-modal__lip {
+  margin: 8px 0 12px;
+}
+
+.cds-entrega-editar-modal__painel h3 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+.cds-entrega-editar-modal__painel label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 10px 0;
+  font-size: 13px;
+}
+
+.cds-entrega-editar-modal__painel input {
+  padding: 6px 8px;
+  border: 1px solid var(--color-neutral-300, #cbd5e1);
+  border-radius: 6px;
+}
+
+.cds-entrega-editar-modal__acoes {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
 /* Entrega Impact */
 .cds-entrega-impact {
   background-color: var(--color-primary-50);

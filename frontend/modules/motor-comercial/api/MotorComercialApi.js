@@ -101,8 +101,21 @@ class MotorComercialApi {
     return unwrapList(response);
   }
 
-  async obterConsignacao(id) {
-    const response = await this.client.get(`/consignacoes/${id}`);
+  /**
+   * RCM-8.5 — histórico paginado do cliente. Nunca solicita a lista inteira.
+   */
+  async listarHistoricoConsignacoesCliente(clienteId, { page = 1, pageSize = 20 } = {}) {
+    return this.listarConsignacoes({
+      clienteId,
+      cliente_id: clienteId,
+      page,
+      pageSize,
+      limite: pageSize
+    });
+  }
+
+  async obterConsignacao(id, params = {}) {
+    const response = await this.client.get(`/consignacoes/${id}`, { params });
     return unwrapData(response);
   }
 
@@ -140,8 +153,19 @@ class MotorComercialApi {
   }
 
   async cancelarConsignacao(id, data = {}) {
-    const response = await this.client.delete(`/consignacoes/${id}`, this._withUsuario(data));
-    return unwrapData(response);
+    const payload = this._withUsuario(data);
+    try {
+      const response = await this.client.post(`/consignacoes/${id}/cancelar`, payload);
+      return unwrapData(response);
+    } catch (error) {
+      // Compatibilidade: ambiente ainda sem rota POST /cancelar
+      const status = Number(error?.status || error?.statusCode || 0);
+      if (status === 404 || status === 405) {
+        const response = await this.client.delete(`/consignacoes/${id}`, payload);
+        return unwrapData(response);
+      }
+      throw error;
+    }
   }
 
   async adicionarItem(id, data) {
@@ -171,12 +195,41 @@ class MotorComercialApi {
   }
 
   async entregarConsignacao(id, data = {}) {
-    const response = await this.client.post(`/consignacoes/${id}/entrega`, this._withUsuario(data));
+    const response = await this.client.post(
+      `/consignacoes/${id}/entrega`,
+      this._withUsuario(data),
+      { timeout: 120000 }
+    );
+    return unwrapData(response);
+  }
+
+  /**
+   * RCM-8.7 — Entrega Complementar (somente itens novos).
+   */
+  async registrarEntregaComplementar(id, data = {}) {
+    const response = await this.client.post(
+      `/consignacoes/${id}/entrega-complementar`,
+      this._withUsuario(data),
+      { timeout: 120000 }
+    );
+    return unwrapUseCaseData(response);
+  }
+
+  /**
+   * RCM-8.7 — Histórico Entrega Original + Complementares (somente leitura).
+   */
+  async consultarEntregasConsignacao(id, params = {}) {
+    const response = await this.client.get(`/consignacoes/${id}/entregas`, {
+      params: { ...params, _t: Date.now() }
+    });
     return unwrapData(response);
   }
 
   async obterComprovanteEntrega(id, params = {}) {
-    const response = await this.client.get(`/consignacoes/${id}/comprovante`, { params: { ...params, _t: Date.now() } });
+    const response = await this.client.get(`/consignacoes/${id}/comprovante`, {
+      params: { ...params, _t: Date.now() },
+      timeout: 60000
+    });
     return unwrapData(response);
   }
 
@@ -259,7 +312,8 @@ class MotorComercialApi {
   async emitirNfcePrestacao(id, data = {}) {
     const response = await this.client.post(
       `/consignacoes/${id}/prestacao/emitir-nfce`,
-      this._withUsuario(data)
+      this._withUsuario(data),
+      { timeout: 180000 }
     );
     return unwrapData(response);
   }

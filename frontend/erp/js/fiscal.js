@@ -53,6 +53,11 @@ function renderFiscal() {
                             Emissão Manual
                         </button>
                     </li>
+                    <li class="nav-item">
+                        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#fiscal-contabilidade-tab" type="button">
+                            Contabilidade
+                        </button>
+                    </li>
                 </ul>
 
                 <div class="tab-content">
@@ -117,12 +122,170 @@ function renderFiscal() {
                             <i class="fas fa-info-circle"></i> Busque a venda pelo ID, confira os dados e clique em "Emitir NFC-e".
                         </div>
                     </div>
+
+                    <div class="tab-pane fade" id="fiscal-contabilidade-tab">
+                        <p class="text-muted mb-3">
+                            Gera um ZIP com os XML de NFC-e autorizadas, XML de entradas e relatórios do período
+                            para enviar ao contador.
+                        </p>
+                        <div class="row g-2 align-items-end">
+                            <div class="col-md-3">
+                                <label class="form-label small mb-0 text-muted">Data inicial</label>
+                                <input type="date" id="fiscalContabDataInicio" class="form-control">
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label small mb-0 text-muted">Data final</label>
+                                <input type="date" id="fiscalContabDataFim" class="form-control">
+                            </div>
+                            <div class="col-md-4">
+                                <button type="button" class="btn btn-success w-100" id="btnExportarContabilidade" onclick="exportarContabilidadeZip()">
+                                    <i class="fas fa-file-archive"></i> Baixar ZIP para o contador
+                                </button>
+                            </div>
+                        </div>
+                        <div id="fiscal-contabilidade-status" class="mt-3"></div>
+                    </div>
                 </div>
             </div>
         </div>
     `;
 
     $('#page-content').html(html);
+    preencherPeriodoContabilidadePadrao();
+}
+
+function datasPadraoContabilidade() {
+    const partes = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/Fortaleza',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+    }).formatToParts(new Date());
+    const valor = (tipo) => partes.find((p) => p.type === tipo)?.value || '';
+    const ano = valor('year');
+    const mes = valor('month');
+    const dia = valor('day');
+    return {
+        inicio: `${ano}-${mes}-01`,
+        fim: `${ano}-${mes}-${dia}`
+    };
+}
+
+function preencherPeriodoContabilidadePadrao() {
+    const padrao = datasPadraoContabilidade();
+    const $inicio = $('#fiscalContabDataInicio');
+    const $fim = $('#fiscalContabDataFim');
+    if ($inicio.length && !$inicio.val()) $inicio.val(padrao.inicio);
+    if ($fim.length && !$fim.val()) $fim.val(padrao.fim);
+}
+
+function nomeArquivoZipContabilidade(headerDisposition, dataFinal) {
+    const match = String(headerDisposition || '').match(/filename="?([^";]+)"?/i);
+    if (match && match[1]) {
+        return match[1].trim();
+    }
+    const ref = String(dataFinal || '').replace(/-/g, '_');
+    const partes = ref.split('_');
+    if (partes.length >= 2) {
+        return `CONTABILIDADE_${partes[0]}_${partes[1]}.zip`;
+    }
+    return 'CONTABILIDADE.zip';
+}
+
+function mensagemResumoContabilidade(headerResumo) {
+    if (!headerResumo) return '';
+    try {
+        const resumo = JSON.parse(headerResumo);
+        const partes = [];
+        if (resumo.periodo) partes.push(`Período ${resumo.periodo}`);
+        if (resumo.quantidadeNfce != null) partes.push(`${resumo.quantidadeNfce} NFC-e`);
+        if (resumo.quantidadeEntradas != null) partes.push(`${resumo.quantidadeEntradas} entradas`);
+        if (resumo.xmlAusentes) partes.push(`${resumo.xmlAusentes} XML ausente(s)`);
+        return partes.join(' · ');
+    } catch (_erro) {
+        return '';
+    }
+}
+
+async function lerErroExportacaoContabilidade(resp) {
+    const tipo = String(resp.headers.get('content-type') || '');
+    if (tipo.includes('application/json')) {
+        const body = await resp.json().catch(() => null);
+        return body?.error || `Erro ${resp.status} ao exportar.`;
+    }
+    const texto = await resp.text().catch(() => '');
+    if (texto) {
+        try {
+            const body = JSON.parse(texto);
+            return body.error || texto;
+        } catch (_erro) {
+            return texto.slice(0, 200);
+        }
+    }
+    return `Erro ${resp.status} ao exportar.`;
+}
+
+async function exportarContabilidadeZip() {
+    const dataInicial = ($('#fiscalContabDataInicio').val() || '').trim();
+    const dataFinal = ($('#fiscalContabDataFim').val() || '').trim();
+    const $status = $('#fiscal-contabilidade-status');
+    const $botao = $('#btnExportarContabilidade');
+
+    if (!dataInicial || !dataFinal) {
+        showNotification('Informe a data inicial e a data final.', 'warning');
+        return;
+    }
+    if (dataInicial > dataFinal) {
+        showNotification('A data inicial não pode ser maior que a data final.', 'warning');
+        return;
+    }
+
+    $botao.prop('disabled', true);
+    $status.html('<div class="alert alert-secondary mb-0"><i class="fas fa-spinner fa-spin"></i> Gerando ZIP...</div>');
+
+    try {
+        const token = localStorage.getItem('token') || '';
+        const resp = await fetch(`${API_URL}/fiscal/exportar-contabilidade`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${token}`
+            },
+            body: JSON.stringify({ dataInicial, dataFinal })
+        });
+
+        if (!resp.ok) {
+            const erro = await lerErroExportacaoContabilidade(resp);
+            throw new Error(erro);
+        }
+
+        const blob = await resp.blob();
+        const nomeArquivo = nomeArquivoZipContabilidade(
+            resp.headers.get('Content-Disposition') || resp.headers.get('X-Export-Filename'),
+            dataFinal
+        );
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = nomeArquivo;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+
+        const detalhe = mensagemResumoContabilidade(resp.headers.get('X-Export-Resumo'));
+        const textoOk = detalhe
+            ? `ZIP baixado (${nomeArquivo}). ${detalhe}. Envie o arquivo ao contador.`
+            : `ZIP baixado (${nomeArquivo}). Envie o arquivo ao contador.`;
+        $status.html(`<div class="alert alert-success mb-0"><i class="fas fa-check-circle"></i> ${textoOk}</div>`);
+        showNotification('ZIP da contabilidade baixado. Envie ao contador.', 'success');
+    } catch (error) {
+        const mensagem = error.message || 'Erro ao exportar documentos para contabilidade.';
+        $status.html(`<div class="alert alert-danger mb-0"><i class="fas fa-exclamation-triangle"></i> ${mensagem}</div>`);
+        showNotification(mensagem, 'danger');
+    } finally {
+        $botao.prop('disabled', false);
+    }
 }
 
 function getFiscalField(label, id, value = '', help = '', type = 'text', onblur = '', oninput = '') {

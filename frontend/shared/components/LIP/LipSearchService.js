@@ -4,7 +4,7 @@
  * @module frontend/shared/components/LIP/LipSearchService
  */
 
-const { normalizeLipProduct } = require('./lipMappers');
+const { normalizeLipProduct, filterActiveLipProducts } = require('./lipMappers');
 
 const CACHE_TTL_MS = 60000;
 
@@ -106,7 +106,9 @@ class LipSearchService {
       throw new Error(body.error || body.message || `HTTP ${response.status}`);
     }
 
-    const items = (body.items || body || []).map(normalizeLipProduct);
+    const items = filterActiveLipProducts(
+      (body.items || body || []).map(normalizeLipProduct)
+    );
     return {
       items,
       hasMore: Boolean(body.hasMore),

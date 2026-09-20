@@ -7,16 +7,28 @@
 
 const ConfirmMessages = Object.freeze({
   CANCELAR_CONSIGNACAO: {
-    title: 'Cancelar consignação',
-    message: 'Deseja cancelar esta consignação em rascunho?\nEsta ação não pode ser desfeita.'
+    title: 'Cancelar preparação',
+    message: 'Cancelar esta consignação?\nEsta ação cancelará a preparação e a entrega não será realizada.',
+    cancelLabel: 'Voltar',
+    confirmLabel: 'Confirmar cancelamento',
+    danger: true
   },
   DUPLICAR_CONSIGNACAO: {
     title: 'Duplicar consignação',
     message: 'Deseja duplicar esta consignação?'
   },
   CONFIRMAR_ENTREGA: {
-    title: 'Confirmar entrega',
-    message: 'Deseja confirmar a entrega desta consignação?'
+    title: 'Confirmar entrega?',
+    message: 'Após confirmar a entrega, os itens serão registrados como entregues e não poderão mais ser editados.',
+    cancelLabel: 'Voltar e revisar',
+    confirmLabel: 'Confirmar entrega'
+  },
+  REMOVER_ITEM_ENTREGA: {
+    title: 'Remover este produto da entrega?',
+    message: 'O produto será removido somente desta consignação em preparação.',
+    cancelLabel: 'Cancelar',
+    confirmLabel: 'Remover',
+    danger: true
   },
   CANCELAR_ENTREGA: {
     title: 'Cancelar entrega',

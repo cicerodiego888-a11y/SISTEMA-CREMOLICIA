@@ -16,6 +16,7 @@ const ConsultarItensConsignacaoUseCase = require('./ConsultarItensConsignacaoUse
 const ValidarConsignacaoUseCase = require('./ValidarConsignacaoUseCase');
 const ValidarEntregaConsignacaoUseCase = require('./ValidarEntregaConsignacaoUseCase');
 const RegistrarEntregaConsignacaoUseCase = require('./RegistrarEntregaConsignacaoUseCase');
+const RegistrarEntregaComplementarUseCase = require('./RegistrarEntregaComplementarUseCase');
 const RegistrarDevolucaoAntesPrestacaoUseCase = require('./RegistrarDevolucaoAntesPrestacaoUseCase');
 const TransferirItensEntreConsignacoesUseCase = require('./TransferirItensEntreConsignacoesUseCase');
 const ConfirmarRecebimentoConsignacaoUseCase = require('./ConfirmarRecebimentoConsignacaoUseCase');
@@ -51,6 +52,7 @@ module.exports = {
   ValidarConsignacaoUseCase,
   ValidarEntregaConsignacaoUseCase,
   RegistrarEntregaConsignacaoUseCase,
+  RegistrarEntregaComplementarUseCase,
   RegistrarDevolucaoAntesPrestacaoUseCase,
   TransferirItensEntreConsignacoesUseCase,
   ConfirmarRecebimentoConsignacaoUseCase,

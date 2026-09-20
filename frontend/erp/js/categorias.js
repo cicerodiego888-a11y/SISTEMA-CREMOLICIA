@@ -50,6 +50,22 @@ const categoriasAPI = {
       method: 'DELETE',
       headers: { Authorization: 'Bearer ' + localStorage.getItem('token') }
     });
+  },
+
+  desativar: function(id) {
+    return $.ajax({
+      url: API_URL + '/categorias/' + id + '/desativar',
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + localStorage.getItem('token') }
+    });
+  },
+
+  ativar: function(id) {
+    return $.ajax({
+      url: API_URL + '/categorias/' + id + '/ativar',
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + localStorage.getItem('token') }
+    });
   }
 };
 
@@ -389,9 +405,9 @@ function salvarCategoria() {
 }
 
 function excluirCategoria(id) {
-  if (!confirm('Desativar esta categoria? Linhas de Precificação existentes não serão alteradas.')) return;
+  if (!confirm('Desativar esta categoria por completo?\n\nTodos os produtos e subcategorias dela serão desabilitados (não vendem e não geram estoque). Linhas de Precificação existentes não serão alteradas.')) return;
 
-  categoriasAPI.excluir(id).done(() => {
+  categoriasAPI.desativar(id).done(() => {
     loadCategorias();
   }).fail(err => {
     alert('Erro ao desativar categoria: ' + (err.responseJSON?.erro || err.statusText));

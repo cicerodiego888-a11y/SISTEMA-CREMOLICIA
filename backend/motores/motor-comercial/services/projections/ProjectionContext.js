@@ -41,10 +41,14 @@ class ProjectionContext {
    */
   toFiltrosComercial() {
     const filtros = {};
-    if (this.consignacaoId != null) filtros.consignacaoId = this.consignacaoId;
+    // RCM-8.11 — com grupo, o ciclo é a unidade oficial (não AND com consignacaoId)
+    if (this.grupoPrestacaoContasId) {
+      filtros.grupoPrestacaoContasId = this.grupoPrestacaoContasId;
+    } else if (this.consignacaoId != null) {
+      filtros.consignacaoId = this.consignacaoId;
+    }
     if (this.tipoMovimentacao) filtros.tipoMovimentacao = this.tipoMovimentacao;
     if (this.correlationId) filtros.correlationId = this.correlationId;
-    if (this.grupoPrestacaoContasId) filtros.grupoPrestacaoContasId = this.grupoPrestacaoContasId;
     if (this.dataInicio && this.dataFim) {
       filtros.dataInicio = this.dataInicio;
       filtros.dataFim = this.dataFim;

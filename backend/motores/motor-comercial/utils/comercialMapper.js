@@ -185,6 +185,7 @@ function mapConsignacaoFromRow(row) {
     documento: mapDocumentoComercialFromRow(row),
     prestacaoContasAtiva: mapGrupoPrestacaoContasFromRow(row),
     valorTotalEntregue: Number(row.valor_total_entregue ?? 0),
+    quantidadeItens: row.quantidade_itens != null ? Number(row.quantidade_itens) : undefined,
     valorTotalAcertado: Number(row.valor_total_acertado ?? 0),
     valorTotalPago: Number(row.valor_total_pago ?? 0),
     saldoAberto: Number(row.saldo_aberto ?? 0),

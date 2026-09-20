@@ -84,6 +84,10 @@ function mapItemConsignacao(item = {}) {
   return {
     itemId: item.itemId ?? item.id ?? null,
     id: item.id ?? item.itemId ?? null,
+    consignacaoId: item.consignacaoId ?? item.consignacao_id ?? null,
+    documentoConsignacao: item.documentoConsignacao
+      || item.consignacaoDocumento
+      || (item.consignacaoId != null ? `CONS-${item.consignacaoId}` : null),
     produtoId: item.produtoId ?? item.produto_id ?? null,
     produtoNome: displayNome,
     produto: displayNome,

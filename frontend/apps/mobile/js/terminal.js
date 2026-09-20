@@ -137,6 +137,8 @@ export function getTerminalRequestBody(body) {
   const next = Object.assign({}, body || {});
   const t = getStoredTerminal();
   if (t.id) next.terminal_id = t.id;
+  next.origem_pdv = 'PDV_MOBILE';
+  next.origem = next.origem || 'PDV_MOBILE';
   return next;
 }
 

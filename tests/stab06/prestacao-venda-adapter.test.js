@@ -47,12 +47,15 @@ async function run() {
       emitirFiscal: true
     });
     assert.strictEqual(payload.origem, ORIGEM_CONSIGNACAO);
+    assert.strictEqual(payload.origem_pdv, 'CONSIGNACAO');
     assert.strictEqual(payload.politicaEstoque, POLITICA_ESTOQUE_JA_BAIXADO);
     assert.strictEqual(payload.metadata.politicaEstoque, POLITICA_ESTOQUE_JA_BAIXADO);
     assert.strictEqual(payload.total, 50);
     assert.strictEqual(payload.emitir_fiscal, true);
+    assert.strictEqual(payload.itens[0].quantidade_fiscal, 1);
     assert.strictEqual(payload.pagamentos.length, 1);
     assert.strictEqual(payload.pagamentos[0].valor, 50);
+    assert.strictEqual(payload.pagamentos[0].tipo_recebimento, 'fiscal');
     assert.notStrictEqual(payload.forma_pagamento, 'prazo');
   });
 

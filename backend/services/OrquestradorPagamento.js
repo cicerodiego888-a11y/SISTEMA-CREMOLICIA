@@ -57,6 +57,7 @@ function mapearMidpParaDistribuicao(midpResult) {
 async function processarFluxoPagamentoVenda({
   totalFiscal,
   totalNaoFiscal,
+  descontoFiscal,
   formaPagamento,
   pagamentos,
   tefHabilitado,
@@ -81,7 +82,8 @@ async function processarFluxoPagamentoVenda({
 
   // RC4.31 — única validação de pagamento fiscal (total líquido / vNF)
   const totalFiscalFinal = obterTotalFiscalFinal({
-    valorProdutosFiscal: totalFiscal
+    valorProdutosFiscal: totalFiscal,
+    descontoFiscal: Number(descontoFiscal || 0)
   });
   let distribuicaoEfetiva = distribuicao;
   let resultadoMidpEfetivo = resultadoMidp;
@@ -114,7 +116,7 @@ async function processarFluxoPagamentoVenda({
     classe: 'OrquestradorPagamento',
     metodo: 'processarFluxoPagamentoVenda',
     valorProdutos: totalFiscal,
-    valorDesconto: 0,
+    valorDesconto: Number(descontoFiscal || 0),
     valorLiquido: totalFiscalFinal,
     valorFiscal: totalFiscalFinal,
     valorPago: valorPagoFiscal,

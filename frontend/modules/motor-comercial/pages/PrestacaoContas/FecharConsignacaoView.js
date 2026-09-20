@@ -50,6 +50,12 @@ function _financeiroFromState(state) {
     || null;
 }
 
+/** Apresentação: sem venda real — não exibir R$ 0,00 como quitada. */
+function _isSemVenda(fin = {}) {
+  return String(fin?.situacaoFinanceira || '').toUpperCase() === 'SEM_VENDA'
+    || Number(fin?.valorVenda || 0) <= 0.01;
+}
+
 class FecharConsignacaoView {
   static renderMomento(momento, state, ctx) {
     switch (momento) {
@@ -308,6 +314,7 @@ class FecharConsignacaoView {
     tr.className = 'cds-fechar-consignacao__grade-head cds-fechar-consignacao__grade-head--retornos';
     const cols = [
       { key: 'check', label: '', always: true },
+      { key: 'consignacao', label: 'Consignação', always: true },
       { key: 'produto', label: 'Produto', always: true },
       { key: 'entregue', label: 'Entregue' },
       { key: 'devolvido', label: 'Devolvido' },
@@ -432,6 +439,18 @@ class FecharConsignacaoView {
     tdCheck.dataset.col = 'check';
     tdCheck.innerHTML = '<input type="checkbox" aria-label="Selecionar linha" disabled />';
     row.appendChild(tdCheck);
+
+    const tdConsig = document.createElement('td');
+    tdConsig.dataset.col = 'consignacao';
+    tdConsig.className = 'cds-retornos-table__consignacao';
+    const docLabel = item.documentoConsignacao
+      || (item.consignacaoId != null ? `CONS-${item.consignacaoId}` : '—');
+    const docText = typeof docLabel === 'object'
+      ? (docLabel.numero || `CONS-${item.consignacaoId}`)
+      : String(docLabel);
+    tdConsig.textContent = docText.length > 18 ? `${docText.slice(0, 16)}…` : docText;
+    tdConsig.title = docText;
+    row.appendChild(tdConsig);
 
     const tdProd = document.createElement('td');
     tdProd.dataset.col = 'produto';
@@ -602,6 +621,7 @@ class FecharConsignacaoView {
       || labelSituacaoFinanceira(fin.situacaoFinanceira)
       || '—';
     const tone = FecharConsignacaoView._situacaoSidebarTone(fin.situacaoFinanceira);
+    const semVenda = _isSemVenda(fin);
 
     const aside = document.createElement('aside');
     aside.className = 'cds-op-card cds-retornos-sidebar cds-fechar-consignacao__painel';
@@ -609,6 +629,7 @@ class FecharConsignacaoView {
     aside.innerHTML = `
       <h3 class="cds-op-card__titulo">Resumo Financeiro</h3>
       <div class="cds-retornos-sidebar__fin">
+        ${semVenda ? '' : `
         <div class="cds-retornos-sidebar__metric cds-retornos-sidebar__metric--venda">
           <span>Valor da Venda</span>
           <strong data-painel="valorVenda">${formatCurrency(fin.valorVenda)}</strong>
@@ -621,6 +642,7 @@ class FecharConsignacaoView {
           <span>Saldo em Aberto</span>
           <strong data-painel="saldoEmAberto">${formatCurrency(fin.saldoEmAberto)}</strong>
         </div>
+        `}
         <div class="cds-retornos-sidebar__metric cds-retornos-sidebar__metric--sit cds-retornos-sidebar__metric--${tone}">
           <span>Situação Financeira</span>
           <strong data-painel="situacaoFinanceira">${safeText(situacaoLabel)}</strong>
@@ -699,20 +721,29 @@ class FecharConsignacaoView {
     const situacaoLabel = labelSituacaoFinanceiraOficial(fin.situacaoFinanceira)
       || labelSituacaoFinanceira(fin.situacaoFinanceira)
       || '—';
+    const semVenda = _isSemVenda(fin);
     const fields = {
       vendidos: String(painel.produtosVendidos ?? 0),
       devolvidos: String(painel.produtosDevolvidos ?? 0),
       perdas: String(painel.perdas ?? 0),
       cortesias: String(painel.cortesias ?? 0),
       pendentes: String(painel.pendentes ?? 0),
-      valorVenda: formatCurrency(fin.valorVenda),
-      valorRecebido: formatCurrency(fin.valorRecebido),
-      saldoEmAberto: formatCurrency(fin.saldoEmAberto),
       situacaoFinanceira: situacaoLabel
     };
+    if (!semVenda) {
+      fields.valorVenda = formatCurrency(fin.valorVenda);
+      fields.valorRecebido = formatCurrency(fin.valorRecebido);
+      fields.saldoEmAberto = formatCurrency(fin.saldoEmAberto);
+    }
     Object.entries(fields).forEach(([key, value]) => {
       const el = asideEl.querySelector(`[data-painel="${key}"]`);
       if (el) el.textContent = value;
+    });
+    ['valorVenda', 'valorRecebido', 'saldoEmAberto'].forEach((key) => {
+      const metric = asideEl.querySelector(`[data-painel="${key}"]`)?.closest('.cds-retornos-sidebar__metric');
+      if (metric) metric.hidden = semVenda;
+      const legacy = asideEl.querySelector(`[data-painel="${key}"]`)?.closest('.cds-fechar-consignacao__painel-campo');
+      if (legacy) legacy.hidden = semVenda;
     });
 
     const sitMetric = asideEl.querySelector('.cds-retornos-sidebar__metric--sit');
@@ -778,6 +809,12 @@ class FecharConsignacaoView {
   }
 
   static _htmlCardFinanceiro(fin, situacaoLabel) {
+    if (_isSemVenda(fin)) {
+      return `
+      <h3 class="cds-op-card__titulo">Resumo Financeiro</h3>
+      <p class="cds-op-card__meta">Situação Financeira<br><strong data-kpi="situacao">${safeText(situacaoLabel)}</strong></p>
+    `;
+    }
     return `
       <h3 class="cds-op-card__titulo">Resumo Financeiro</h3>
       <div class="cds-op-kpis">
@@ -826,7 +863,13 @@ class FecharConsignacaoView {
     section.dataset.card = 'pagamentos';
     section.innerHTML = '<h3 class="cds-op-card__titulo">Pagamento</h3>';
 
-    if (Number(fin.saldoEmAberto) <= 0.01) {
+    if (_isSemVenda(fin)) {
+      section.appendChild(Alert.create({
+        message: 'Situação Financeira: Sem Venda — ainda não há venda registrada nesta prestação.',
+        variant: 'info',
+        dismissible: false
+      }));
+    } else if (Number(fin.saldoEmAberto) <= 0.01) {
       section.appendChild(Alert.create({
         message: MENSAGENS.PRESTACAO_QUITADA,
         variant: 'success',
@@ -1282,9 +1325,11 @@ class FecharConsignacaoView {
       { label: 'Devolvidos', key: 'devolvidos', value: String(painel.produtosDevolvidos) },
       { label: 'Perdas', key: 'perdas', value: String(painel.perdas) },
       { label: 'Cortesias', key: 'cortesias', value: String(painel.cortesias) },
-      { label: 'Valor da Venda', key: 'valorVenda', value: formatCurrency(financeiro.valorVenda), destaque: true },
-      { label: 'Já Recebido', key: 'valorRecebido', value: formatCurrency(financeiro.valorRecebido), destaque: true },
-      { label: 'Saldo em Aberto', key: 'saldoEmAberto', value: formatCurrency(financeiro.saldoEmAberto), destaque: true },
+      ...(_isSemVenda(financeiro) ? [] : [
+        { label: 'Valor da Venda', key: 'valorVenda', value: formatCurrency(financeiro.valorVenda), destaque: true },
+        { label: 'Já Recebido', key: 'valorRecebido', value: formatCurrency(financeiro.valorRecebido), destaque: true },
+        { label: 'Saldo em Aberto', key: 'saldoEmAberto', value: formatCurrency(financeiro.saldoEmAberto), destaque: true }
+      ]),
       {
         label: 'Situação Financeira',
         key: 'situacaoFinanceira',

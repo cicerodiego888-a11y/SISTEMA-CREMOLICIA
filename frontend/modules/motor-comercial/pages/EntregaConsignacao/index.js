@@ -21,6 +21,7 @@ const {
   navigate,
   confirmDialog,
   choiceDialog,
+  promptDialog,
   withLoading,
   carregarConsignacaoCompleta,
   isOperadorAutorizado,
@@ -65,6 +66,28 @@ const {
   notifyRecovery,
   loadingText
 } = require('../../messages');
+const {
+  podeEditarItensEntrega,
+  itemUnidadeSnapshot,
+  itemPrecoSnapshot,
+  itemQuantidade,
+  itemTotalSnapshot,
+  totalEntrega,
+  impactoLimite,
+  validarQuantidadeEdicao,
+  aplicarQuantidadeLocal,
+  aplicarTrocaProduto,
+  produtoJaExisteNaConsignacao,
+  unidadePermiteFracao,
+  MENSAGEM_EDICAO_BLOQUEADA
+} = require('./entregaItensEdicao');
+const LIP = require('../../../../shared/components/LIP');
+const {
+  MOTIVOS_CANCELAMENTO,
+  podeCancelarPreparacao
+} = require('../Consignacoes/cancelamentoPreparacao');
+
+const CANAL_OPERACAO_CONSIGNACAO = 'CONSIGNADO';
 
 class EntregaConsignacaoPage {
   constructor(consignacaoId, routeQuery = {}) {
@@ -90,7 +113,13 @@ class EntregaConsignacaoPage {
     
     // Errors
     this.error = null;
-    
+    this.itemError = null;
+    this.edicaoItemId = null;
+    this.edicaoRascunho = null;
+    this.salvandoItem = false;
+    this._modalEdicao = null;
+    this._lipTroca = null;
+
     // Checklist state
     this.checklist = {
       clienteValido: false,
@@ -146,7 +175,7 @@ class EntregaConsignacaoPage {
       title: 'Entrega',
       subtitle: 'Confirme os itens e entregue',
       context: `Documento: ${doc} · Cliente: ${cliente}`,
-      onBack: () => this._handleCancel()
+      onBack: () => this._handleVoltar()
     });
   }
 
@@ -181,8 +210,7 @@ class EntregaConsignacaoPage {
   }
 
   _podeEditarRascunho() {
-    const st = String(this.consignacao?.status || '').toUpperCase();
-    return st === 'RASCUNHO' && !!this.consignacaoId;
+    return podeEditarItensEntrega(this.consignacao?.status) && !!this.consignacaoId;
   }
 
   _abrirRascunhoParaRevisar() {
@@ -241,9 +269,13 @@ class EntregaConsignacaoPage {
       (sum, item) => sum + (this._itemQuantidade(item) * this._itemPreco(item)),
       0
     );
+    const limite = Number(this.resumoPrestacao?.limiteDisponivel ?? this.consignacao.limite ?? 0);
+    const impacto = impactoLimite({ limite, valorEntrega: totalValue });
     wrap.innerHTML = `
       <span>Itens: <strong>${(this.consignacao.itens || []).length}</strong></span>
-      <span>Total: <strong>${this._formatCurrency(totalValue)}</strong></span>
+      <span>Total da entrega: <strong>${this._formatCurrency(totalValue)}</strong></span>
+      <span>Limite: <strong>${this._formatCurrency(limite)}</strong></span>
+      <span>Saldo após entrega: <strong>${this._formatCurrency(impacto.saldoAposEntrega)}</strong></span>
       <span>Status: <strong>${this.consignacao.status || '—'}</strong></span>
     `;
     return wrap;
@@ -279,24 +311,6 @@ class EntregaConsignacaoPage {
         list.appendChild(li);
       });
       banner.appendChild(list);
-    }
-
-    if (this._podeEditarRascunho()) {
-      const hint = document.createElement('p');
-      hint.className = 'cds-entrega-status-banner__hint';
-      hint.textContent = this.checklist.itensCadastrados
-        ? 'Abra o rascunho para corrigir os dados e voltar à entrega.'
-        : 'Esta consignação ainda não tem itens. Abra o rascunho para incluir produtos.';
-      banner.appendChild(hint);
-
-      const actions = document.createElement('div');
-      actions.className = 'cds-entrega-status-banner__actions';
-      actions.appendChild(Button.create({
-        text: this.checklist.itensCadastrados ? 'Abrir rascunho' : 'Incluir itens no rascunho',
-        variant: 'secondary',
-        onClick: () => this._abrirRascunhoParaRevisar()
-      }));
-      banner.appendChild(actions);
     }
 
     return banner;
@@ -351,13 +365,19 @@ class EntregaConsignacaoPage {
   }
 
   _itemQuantidade(item) {
-    const q = Number(item?.quantidade ?? item?.quantidadeEntregue ?? 0);
-    return Number.isFinite(q) ? q : 0;
+    return itemQuantidade(item);
   }
 
   _itemPreco(item) {
-    const p = Number(item?.preco ?? item?.precoUnitario ?? 0);
-    return Number.isFinite(p) ? p : 0;
+    return itemPrecoSnapshot(item);
+  }
+
+  _itemUnidade(item) {
+    return itemUnidadeSnapshot(item);
+  }
+
+  _totalEntregaAtual() {
+    return totalEntrega(this.consignacao?.itens || []);
   }
 
   /**
@@ -452,37 +472,349 @@ class EntregaConsignacaoPage {
 
     const title = document.createElement('h3');
     title.className = 'cds-entrega-items__title';
-    title.textContent = 'Itens da Consignação';
+    title.textContent = 'Itens da consignação';
     container.appendChild(title);
 
-    const columns = [
-      { key: 'produto', label: 'Produto' },
-      { key: 'quantidade', label: 'Quantidade' },
-      { key: 'unidade', label: 'Unidade' },
-      { key: 'preco', label: 'Preço' },
-      { key: 'valor', label: 'Valor' },
-      { key: 'observacao', label: 'Observação' },
-      { key: 'status', label: 'Status' }
-    ];
+    if (this.itemError) {
+      container.appendChild(Alert.create({
+        message: this.itemError,
+        variant: 'error',
+        dismissible: true
+      }));
+    }
 
-    const data = (this.consignacao.itens || []).map(item => {
-      const qtd = this._itemQuantidade(item);
-      const preco = this._itemPreco(item);
-      return {
-        produto: item.produto || item.produtoNome || `Produto #${item.produtoId}`,
-        quantidade: qtd,
-        unidade: item.unidade || 'UN',
-        preco: this._formatCurrency(preco),
-        valor: this._formatCurrency(qtd * preco),
-        observacao: item.observacao || '-',
-        status: Badge.createStatus(item.status || 'ATIVO')
-      };
-    });
+    const itens = this.consignacao.itens || [];
+    if (!itens.length) {
+      container.appendChild(EmptyState.create({
+        title: 'Nenhum item',
+        description: 'Esta consignação não possui itens'
+      }));
+      return container;
+    }
 
-    const table = Table.create({ columns, data });
-    container.appendChild(table);
-
+    container.appendChild(Table.create({
+      columns: [
+        { key: 'produto', label: 'Produto' },
+        { key: 'quantidade', label: 'Quantidade' },
+        { key: 'unidade', label: 'Unidade' },
+        { key: 'preco', label: 'Preço' },
+        { key: 'valor', label: 'Valor' },
+        { key: 'observacao', label: 'Observação' },
+        { key: 'status', label: 'Status' },
+        { key: 'editar', label: 'Editar' }
+      ],
+      data: itens.map((item) => this._mapItemRow(item))
+    }));
     return container;
+  }
+
+  _mapItemRow(item) {
+    const qtd = this._itemQuantidade(item);
+    const preco = this._itemPreco(item);
+    return {
+      produto: item.produto || item.produtoNome || `Produto #${item.produtoId}`,
+      quantidade: String(qtd),
+      unidade: this._itemUnidade(item),
+      preco: this._formatCurrency(preco),
+      valor: this._formatCurrency((Number.isFinite(qtd) ? qtd : 0) * preco),
+      observacao: item.observacao || '—',
+      status: Badge.createStatus(item.status || 'ATIVO'),
+      editar: this._botaoEditarItem(item),
+      _raw: item
+    };
+  }
+
+  _botaoEditarItem(item) {
+    const editar = document.createElement('button');
+    editar.type = 'button';
+    editar.className = 'cds-entrega-items__editar';
+    editar.textContent = 'Editar';
+    editar.addEventListener('click', (event) => {
+      event.stopPropagation();
+      this._iniciarEdicaoItem(item);
+    });
+    return editar;
+  }
+
+  _iniciarEdicaoItem(item) {
+    if (!this._podeEditarRascunho()) {
+      notify(MENSAGEM_EDICAO_BLOQUEADA, 'warning');
+      return;
+    }
+    this.edicaoItemId = item.id || item.itemId;
+    this.edicaoRascunho = {
+      quantidade: this._itemQuantidade(item),
+      observacao: item.observacao || '',
+      produtoId: item.produtoId,
+      produtoNome: item.produto || item.produtoNome || `Produto #${item.produtoId}`,
+      precoUnitario: this._itemPreco(item),
+      unidadeComercial: this._itemUnidade(item),
+      linhaComercialId: item.linhaComercialId ?? null,
+      tabelaPrecoId: item.tabelaPrecoId ?? null,
+      canalVenda: item.canalVenda || CANAL_OPERACAO_CONSIGNACAO,
+      precoOrigem: item.precoOrigem ?? null,
+      precoFallback: !!item.precoFallback,
+      trocouProduto: false
+    };
+    this.itemError = null;
+    this._abrirModalEdicao(item);
+  }
+
+  _cancelarEdicaoItem() {
+    this.edicaoItemId = null;
+    this.edicaoRascunho = null;
+    this._fecharModalEdicao();
+  }
+
+  _abrirModalEdicao(item) {
+    this._fecharModalEdicao();
+    const rascunho = this.edicaoRascunho || {};
+    const unidade = rascunho.unidadeComercial || this._itemUnidade(item);
+    const preco = Number(rascunho.precoUnitario ?? this._itemPreco(item));
+    const produto = rascunho.produtoNome || item.produto || item.produtoNome || `Produto #${item.produtoId}`;
+    const overlay = document.createElement('div');
+    overlay.className = 'cds-entrega-editar-modal';
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+    overlay.innerHTML = `
+      <div class="cds-entrega-editar-modal__painel">
+        <h3>Editar item</h3>
+        <p data-produto-nome><strong></strong></p>
+        <p data-produto-preco></p>
+        <button type="button" class="cds-entrega-editar-modal__trocar" data-action="trocar">Trocar produto</button>
+        <div id="entrega-lip-troca-host" class="cds-entrega-editar-modal__lip" hidden></div>
+        <label>
+          Quantidade
+          <input type="number" data-field="quantidade"
+            min="${unidadePermiteFracao(unidade) ? '0.001' : '1'}"
+            step="${unidadePermiteFracao(unidade) ? '0.001' : '1'}"
+            value="${rascunho.quantidade}">
+        </label>
+        <label>
+          Observação
+          <input type="text" data-field="observacao" value="${String(rascunho.observacao || '').replace(/"/g, '&quot;')}">
+        </label>
+        <p class="cds-entrega-editar-modal__valor">Valor: <strong data-valor>${this._formatCurrency(Number(rascunho.quantidade) * preco)}</strong></p>
+        <div class="cds-entrega-editar-modal__acoes">
+          <button type="button" data-action="cancelar">Cancelar</button>
+          <button type="button" data-action="salvar">Salvar</button>
+        </div>
+      </div>
+    `;
+    overlay.querySelector('[data-produto-nome] strong').textContent = produto;
+    overlay.querySelector('[data-produto-preco]').textContent = `Preço: ${this._formatCurrency(preco)}/${unidade}`;
+    const inputQtd = overlay.querySelector('[data-field="quantidade"]');
+    const inputObs = overlay.querySelector('[data-field="observacao"]');
+    inputQtd.addEventListener('input', () => {
+      this.edicaoRascunho = { ...this.edicaoRascunho, quantidade: inputQtd.value };
+      this._atualizarValorModal();
+    });
+    inputObs.addEventListener('input', () => {
+      this.edicaoRascunho = { ...this.edicaoRascunho, observacao: inputObs.value };
+    });
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay) this._cancelarEdicaoItem();
+    });
+    overlay.querySelector('[data-action="trocar"]').addEventListener('click', () => this._exibirBuscaTrocaProduto());
+    overlay.querySelector('[data-action="cancelar"]').addEventListener('click', () => this._cancelarEdicaoItem());
+    overlay.querySelector('[data-action="salvar"]').addEventListener('click', () => this._salvarEdicaoItem(item));
+    this._modalEdicao = overlay;
+    (this.root || document.body).appendChild(overlay);
+  }
+
+  _atualizarValorModal() {
+    if (!this._modalEdicao || !this.edicaoRascunho) return;
+    const unidade = this.edicaoRascunho.unidadeComercial;
+    const preco = Number(this.edicaoRascunho.precoUnitario) || 0;
+    const inputQtd = this._modalEdicao.querySelector('[data-field="quantidade"]');
+    const check = validarQuantidadeEdicao(this.edicaoRascunho.quantidade, unidade);
+    const valorEl = this._modalEdicao.querySelector('[data-valor]');
+    const nomeEl = this._modalEdicao.querySelector('[data-produto-nome] strong');
+    const precoEl = this._modalEdicao.querySelector('[data-produto-preco]');
+    if (nomeEl) nomeEl.textContent = this.edicaoRascunho.produtoNome;
+    if (precoEl) precoEl.textContent = `Preço: ${this._formatCurrency(preco)}/${unidade}`;
+    if (inputQtd) {
+      inputQtd.min = unidadePermiteFracao(unidade) ? '0.001' : '1';
+      inputQtd.step = unidadePermiteFracao(unidade) ? '0.001' : '1';
+    }
+    if (valorEl && check.ok) valorEl.textContent = this._formatCurrency(check.quantidade * preco);
+  }
+
+  _exibirBuscaTrocaProduto() {
+    const host = this._modalEdicao?.querySelector('#entrega-lip-troca-host');
+    if (!host) return;
+    host.hidden = false;
+    this._modalEdicao.querySelector('.cds-entrega-editar-modal__painel')
+      ?.classList.add('cds-entrega-editar-modal__painel--troca');
+    if (this._lipTroca?.destroy) this._lipTroca.destroy();
+    this._lipTroca = LIP.create({
+      addButtonLabel: 'Selecionar',
+      placeholder: 'Buscar produto para trocar...',
+      onSelect: (produto, quantidade) => this._aplicarProdutoTrocado(produto, quantidade)
+    });
+    this._lipTroca.mount(host);
+    this._lipTroca.focus();
+  }
+
+  async _aplicarProdutoTrocado(produto, quantidadeLip) {
+    if (!produto?.id || !this.edicaoRascunho) return;
+    const itemId = this.edicaoItemId;
+    if (Number(produto.id) === Number(this.edicaoRascunho.produtoId) && !this.edicaoRascunho.trocouProduto) {
+      this._ocultarBuscaTrocaProduto();
+      return;
+    }
+    if (produtoJaExisteNaConsignacao(this.consignacao?.itens || [], produto.id, itemId)) {
+      notify('Este produto já está na consignação.', 'warning');
+      return;
+    }
+
+    try {
+      const resolvido = await this.api.resolverPrecosVenda([{
+        produtoId: produto.id,
+        quantidade: Number(this.edicaoRascunho.quantidade) || Number(quantidadeLip) || 1,
+        categoriaId: produto.categoria_id ?? produto.categoriaId ?? null,
+        linhaComercialId: produto.linha_comercial_id ?? produto.linhaComercialId ?? null
+      }], {
+        canal: CANAL_OPERACAO_CONSIGNACAO,
+        documento: 'consignacao'
+      });
+      const row = (resolvido?.itens || [])[0] || {};
+      const preco = Number(row.preco_venda ?? produto.preco ?? produto.precoVenda ?? 0);
+      const unidade = String(row.unidade_comercial || row.unidadeComercial || produto.unidade || 'UN')
+        .trim()
+        .toUpperCase();
+      const qtdAtual = this.edicaoRascunho.quantidade;
+      const check = validarQuantidadeEdicao(qtdAtual, unidade);
+      this.edicaoRascunho = {
+        ...this.edicaoRascunho,
+        produtoId: produto.id,
+        produtoNome: produto.nome || produto.produtoNome || produto.descricao || `Produto #${produto.id}`,
+        precoUnitario: Number.isFinite(preco) ? preco : 0,
+        unidadeComercial: unidade,
+        linhaComercialId: row.linha_comercial_id ?? produto.linha_comercial_id ?? null,
+        tabelaPrecoId: row.tabela_preco_id ?? null,
+        canalVenda: CANAL_OPERACAO_CONSIGNACAO,
+        precoOrigem: row.preco_origem || null,
+        precoFallback: !!row.preco_fallback,
+        quantidade: check.ok ? check.quantidade : qtdAtual,
+        trocouProduto: true
+      };
+      this._atualizarValorModal();
+      this._ocultarBuscaTrocaProduto();
+    } catch (error) {
+      notify(operationalMessage(error, { context: 'entrega' }) || error.message || 'Não foi possível resolver o produto.', 'error');
+    }
+  }
+
+  _ocultarBuscaTrocaProduto() {
+    const host = this._modalEdicao?.querySelector('#entrega-lip-troca-host');
+    if (host) {
+      host.hidden = true;
+      host.innerHTML = '';
+    }
+    this._modalEdicao?.querySelector('.cds-entrega-editar-modal__painel')
+      ?.classList.remove('cds-entrega-editar-modal__painel--troca');
+    if (this._lipTroca?.destroy) this._lipTroca.destroy();
+    this._lipTroca = null;
+  }
+
+  _fecharModalEdicao() {
+    this._ocultarBuscaTrocaProduto();
+    if (this._modalEdicao?.parentNode) {
+      this._modalEdicao.parentNode.removeChild(this._modalEdicao);
+    }
+    this._modalEdicao = null;
+  }
+
+  async _salvarEdicaoItem(item) {
+    if (!this._podeEditarRascunho()) {
+      notify(MENSAGEM_EDICAO_BLOQUEADA, 'warning');
+      this._fecharModalEdicao();
+      return;
+    }
+    const rascunho = this.edicaoRascunho || {};
+    const unidade = rascunho.unidadeComercial || this._itemUnidade(item);
+    const check = validarQuantidadeEdicao(rascunho.quantidade, unidade);
+    if (!check.ok) {
+      notify(check.motivo, 'warning');
+      return;
+    }
+
+    const itemId = item.id || item.itemId;
+    const trocou = !!rascunho.trocouProduto
+      && Number(rascunho.produtoId) !== Number(item.produtoId);
+    if (trocou && produtoJaExisteNaConsignacao(this.consignacao?.itens || [], rascunho.produtoId, itemId)) {
+      notify('Este produto já está na consignação.', 'warning');
+      return;
+    }
+
+    const local = trocou
+      ? aplicarTrocaProduto({ ...item, observacao: rascunho.observacao ?? item.observacao }, rascunho, check.quantidade)
+      : aplicarQuantidadeLocal(
+        { ...item, observacao: rascunho.observacao ?? item.observacao },
+        check.quantidade
+      );
+    this.consignacao.itens = (this.consignacao.itens || []).map((atual) => (
+      String(atual.id || atual.itemId) === String(itemId) ? { ...atual, ...local } : atual
+    ));
+    this._updateChecklist();
+
+    this.salvandoItem = true;
+    this.itemError = null;
+    try {
+      if (trocou) {
+        await this.api.adicionarItem(this.consignacaoId, {
+          produtoId: rascunho.produtoId,
+          quantidade: check.quantidade,
+          precoUnitario: Number(rascunho.precoUnitario) || 0,
+          unidadeComercial: rascunho.unidadeComercial,
+          linhaComercialId: rascunho.linhaComercialId,
+          tabelaPrecoId: rascunho.tabelaPrecoId,
+          canalVenda: CANAL_OPERACAO_CONSIGNACAO,
+          precoOrigem: rascunho.precoOrigem,
+          precoFallback: !!rascunho.precoFallback,
+          observacao: rascunho.observacao ?? '',
+          usuarioId: getUsuarioId()
+        });
+        await this.api.removerItem(this.consignacaoId, itemId, { usuarioId: getUsuarioId() });
+      } else {
+        await this.api.alterarItem(this.consignacaoId, itemId, {
+          novaQuantidade: check.quantidade,
+          usuarioId: getUsuarioId()
+        });
+        await this.api.atualizarObservacaoItem(this.consignacaoId, itemId, {
+          observacao: rascunho.observacao ?? ''
+        });
+      }
+      this.edicaoItemId = null;
+      this.edicaoRascunho = null;
+      this._fecharModalEdicao();
+      await this._recarregarConsignacaoSilencioso();
+    } catch (error) {
+      this.itemError = operationalMessage(error, { context: 'entrega' })
+        || error.message
+        || 'Não foi possível salvar o item. A alteração local foi mantida.';
+      notifyError('ENTREGA_REGISTRAR', error);
+      this._updateContent();
+    } finally {
+      this.salvandoItem = false;
+    }
+  }
+
+  async _recarregarConsignacaoSilencioso() {
+    const [consignacao, resumo] = await Promise.all([
+      carregarConsignacaoCompleta(this.api, this.projectionApi, this.consignacaoId),
+      this.projectionApi.obterResumoPrestacao({ consignacaoId: this.consignacaoId }).catch(() => this.resumoPrestacao)
+    ]);
+    this.consignacao = consignacao;
+    if (resumo) this.resumoPrestacao = resumo;
+    saveEntrega(this.consignacaoId, {
+      itens: (consignacao.itens || []).map((item) => ({ ...item })),
+      statusConsignacao: consignacao.status,
+      clienteId: consignacao.clienteId
+    }, RecoveryStatus.AGUARDANDO_CONFIRMACAO);
+    this._updateChecklist();
+    this._updateContent();
   }
 
   /**
@@ -529,14 +861,16 @@ class EntregaConsignacaoPage {
    * @private
    */
   _buildWorkspaceFooter() {
+    const left = [
+      Button.create({
+        text: getBackButtonLabel(this.navigationContext, 'Voltar'),
+        variant: 'ghost',
+        onClick: () => this._handleVoltar()
+      })
+    ];
+
     return Workspace.Footer.create({
-      left: [
-        Button.create({
-          text: getBackButtonLabel(this.navigationContext, 'Voltar'),
-          variant: 'ghost',
-          onClick: () => this._handleCancel()
-        })
-      ],
+      left,
       right: this._footerRightNodes()
     });
   }
@@ -545,12 +879,16 @@ class EntregaConsignacaoPage {
     const nodes = [];
     const canDeliver = this._canDeliver();
     const needsLiberacao = this._precisaLiberacaoLimite();
+    const podeCancelar = podeCancelarPreparacao(this.consignacao)
+      || this.checklist?.consignacaoRascunho === true;
 
-    if (this._podeEditarRascunho() && !canDeliver) {
+    // RCM-8.8 — Cancelar preparação ao lado de Entregar (visível na entrega em andamento)
+    if (podeCancelar) {
       nodes.push(Button.create({
-        text: this.checklist.itensCadastrados ? 'Revisar rascunho' : 'Incluir itens no rascunho',
-        variant: 'secondary',
-        onClick: () => this._abrirRascunhoParaRevisar()
+        text: 'Cancelar',
+        variant: 'danger',
+        disabled: this.loading.delivering,
+        onClick: () => this._handleCancelarPreparacao()
       }));
     }
 
@@ -844,15 +1182,77 @@ class EntregaConsignacaoPage {
     ));
   }
 
-  async _handleCancel() {
+  /**
+   * Volta sem cancelar a consignação (permanece em preparação).
+   * @private
+   */
+  async _handleVoltar() {
     const backLabel = this.navigationContext.locked ? 'a Central do Cliente' : 'a Central de Consignações';
     const confirmed = await confirmDialog({
       ...ConfirmMessages.CANCELAR_ENTREGA,
-      message: `Deseja cancelar a entrega e voltar para ${backLabel}?`
+      title: 'Sair da entrega',
+      message: `Deseja sair da entrega e voltar para ${backLabel}?\nA consignação permanecerá em preparação.`,
+      confirmLabel: 'Sair',
+      cancelLabel: 'Continuar entrega'
     });
     if (confirmed) {
       await navigate(resolveBackPath(this.navigationContext, '/consignacoes'));
     }
+  }
+
+  /**
+   * RCM-8.8 — Cancela a preparação (RASCUNHO → CANCELADA) na entrega em andamento.
+   * @private
+   */
+  async _handleCancelarPreparacao() {
+    if (!podeCancelarPreparacao(this.consignacao)) {
+      notifyWarning('SOMENTE_RASCUNHO');
+      return;
+    }
+
+    const confirmed = await confirmDialog({
+      ...ConfirmMessages.CANCELAR_CONSIGNACAO,
+      message: 'Cancelar esta consignação?\nEsta ação cancelará a preparação e a entrega não será realizada.'
+    });
+    if (!confirmed) return;
+
+    const motivo = await choiceDialog({
+      title: 'Motivo do cancelamento',
+      message: 'Selecione o motivo:',
+      choices: MOTIVOS_CANCELAMENTO.map((m) => ({
+        label: m.label,
+        value: m.value,
+        variant: m.value === 'OUTRO' ? 'secondary' : 'primary'
+      }))
+    });
+    if (!motivo) return;
+
+    let observacao = null;
+    if (motivo === 'OUTRO') {
+      observacao = await promptDialog({
+        title: 'Descreva o motivo',
+        label: 'Observação',
+        placeholder: 'Informe o motivo do cancelamento'
+      });
+      if (observacao == null) return;
+      observacao = String(observacao).trim() || null;
+    }
+
+    try {
+      await withLoading(loadingText('CANCELANDO_CONSIGNACAO'), () => this.api.cancelarConsignacao(this.consignacaoId, {
+        motivo,
+        observacao
+      }));
+      notifySuccess('CONSIGNACAO_CANCELADA');
+      await navigate(resolveBackPath(this.navigationContext, '/consignacoes'));
+    } catch (error) {
+      notifyError('CONSIGNACAO_CANCELAR', error);
+    }
+  }
+
+  /** @deprecated use _handleVoltar / _handleCancelarPreparacao */
+  async _handleCancel() {
+    return this._handleVoltar();
   }
 
   /**

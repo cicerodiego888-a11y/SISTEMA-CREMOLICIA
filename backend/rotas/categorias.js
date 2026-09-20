@@ -87,6 +87,13 @@ router.put('/:id/comercial', async (req, res) => {
 
 router.post('/:id/desativar', async (req, res) => {
   try {
+    const catAntes = await dbGet('SELECT * FROM categorias WHERE id = ?', [req.params.id]);
+    if (!catAntes) return res.status(404).json({ erro: 'Categoria não encontrada' });
+
+    const produtosAfetados = await dbGet(
+      'SELECT COUNT(*) AS total FROM produtos WHERE categoria_id = ?',
+      [req.params.id]
+    );
     const linha = await CategoriaLinhaComercialService.desativarPorCategoria(req.params.id);
     const cat = await dbGet('SELECT * FROM categorias WHERE id = ?', [req.params.id]);
     gravarAuditoria({
@@ -96,12 +103,59 @@ router.post('/:id/desativar', async (req, res) => {
       acao: 'desativar_categoria',
       referencia_tipo: 'categoria',
       referencia_id: req.params.id,
-      detalhes: { linha_comercial_id: linha?.id || null },
+      detalhes: {
+        linha_comercial_id: linha?.id || null,
+        produtos_desabilitados: Number(produtosAfetados?.total || 0),
+        cascade_produtos: true,
+        cascade_subcategorias: true
+      },
       ip_requisicao: req.ip || null
     }).catch(() => {});
-    res.json({ message: 'Categoria desativada', ...cat, linha });
+    res.json({
+      message: 'Categoria desativada. Produtos e subcategorias da categoria também foram desabilitados.',
+      ...cat,
+      linha,
+      produtos_desabilitados: Number(produtosAfetados?.total || 0)
+    });
   } catch (error) {
     res.status(error.statusCode || 500).json({ erro: error.message || 'Erro ao desativar' });
+  }
+});
+
+router.post('/:id/ativar', async (req, res) => {
+  try {
+    const catAntes = await dbGet('SELECT * FROM categorias WHERE id = ?', [req.params.id]);
+    if (!catAntes) return res.status(404).json({ erro: 'Categoria não encontrada' });
+
+    const produtosAfetados = await dbGet(
+      'SELECT COUNT(*) AS total FROM produtos WHERE categoria_id = ?',
+      [req.params.id]
+    );
+    const linha = await CategoriaLinhaComercialService.ativarPorCategoria(req.params.id);
+    const cat = await dbGet('SELECT * FROM categorias WHERE id = ?', [req.params.id]);
+    gravarAuditoria({
+      usuario_id: req.user?.id || null,
+      usuario_nome: req.user?.nome || req.user?.username || null,
+      modulo: 'categorias',
+      acao: 'ativar_categoria',
+      referencia_tipo: 'categoria',
+      referencia_id: req.params.id,
+      detalhes: {
+        linha_comercial_id: linha?.id || null,
+        produtos_habilitados: Number(produtosAfetados?.total || 0),
+        cascade_produtos: true,
+        cascade_subcategorias: true
+      },
+      ip_requisicao: req.ip || null
+    }).catch(() => {});
+    res.json({
+      message: 'Categoria habilitada. Produtos e subcategorias da categoria também foram reabilitados.',
+      ...cat,
+      linha,
+      produtos_habilitados: Number(produtosAfetados?.total || 0)
+    });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ erro: error.message || 'Erro ao ativar' });
   }
 });
 

@@ -101,15 +101,16 @@ export function normalizeText(value) {
  * @returns {{ key: string, label: string, tone: string, icon: string }}
  */
 export function resolveStatus(status) {
-  const raw = asText(status, '');
+  const raw = asText(status, '').trim();
   const s = raw.toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
   // RCM-04.B — badges comerciais padronizados (ordem específica antes dos genéricos)
   if (/CANCEL/.test(s)) return { key: 'cancelada', label: 'CANCELADA', tone: 'danger', icon: 'warning' };
-  if (/FINALIZ|ACERTAD|QUITAD|ENCERRAD/.test(s) && !/PREST/.test(s)) {
+  if (/^(FINALIZADA|ACERTADA|QUITADA|ENCERRADA|FECHADA)$/.test(s)
+    || ((/FINALIZ|ACERTAD|QUITAD|ENCERRAD/.test(s) || s === 'FECHADA') && !/PRESTACAO/.test(s))) {
     return { key: 'finalizada', label: 'FINALIZADA', tone: 'ok', icon: 'check' };
   }
-  if (/PRESTACAO.?PEND|PRESTACAO.?ABERT|FECHAMENTO.?EM.?ABERT/.test(s)) {
+  if (/PRESTACAO.?PEND|PRESTACAO.?ABERT|FECHAMENTO.?EM.?ABERT|EM_PRESTACAO/.test(s)) {
     return { key: 'prestacao_pendente', label: 'PRESTAÇÃO PENDENTE', tone: 'warn', icon: 'warning' };
   }
   if (/^ENTREGUE$|STATUS.?ENTREGUE/.test(s) || s === 'ENTREGUE') {
@@ -127,13 +128,13 @@ export function resolveStatus(status) {
 
   if (/QUIT|PAGO|RECEBID|LIQUID/.test(s)) return { key: 'quitada', label: raw || 'Quitada', tone: 'ok', icon: 'check' };
   if (/FECH|ENCERR|CONCLU|FINAL/.test(s)) {
-    return { key: 'encerrada', label: raw || 'Encerrada', tone: 'ok', icon: 'check' };
+    return { key: 'encerrada', label: 'FINALIZADA', tone: 'ok', icon: 'check' };
   }
   if (/ATIVO|ATIVA|OK/.test(s)) return { key: 'ativa', label: raw || 'Ativa', tone: 'ok', icon: 'check' };
   if (/BAIXO|CRITICO/.test(s)) {
     return { key: 'baixo', label: raw || 'Baixo', tone: 'warn', icon: 'warning' };
   }
-  if (/PEND|ABERT|ANDAMENT|AGUARD|EM_/.test(s)) {
+  if (/PEND|ANDAMENT|AGUARD/.test(s) || s === 'ABERTA') {
     return { key: 'pendente', label: raw || 'Pendente', tone: 'warn', icon: 'warning' };
   }
   if (/ATRAS|VENCID|CRIT|BLOQ/.test(s)) {

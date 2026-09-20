@@ -48,30 +48,42 @@ import {
   canDoAction
 } from '../permissions.js';
 import { showToast } from '../toast.js';
-import { sharePayload, shareTextAsFile } from '../native.js';
+import { sharePayload, shareTextAsFile, openWhatsApp } from '../native.js';
 import {
   fetchDanfeHtml,
   montarHtmlCupomNaoFiscal,
   mostrarCupomNoCelular,
   mostrarCupomAposEmissao
 } from '../cupom.js';
-
-/** Encerrar prestação após NFC-e ok (paridade Desktop _encerrarAposEmissaoNfce). */
+/** Encerrar prestação após NFC-e (não recria venda — a NFC-e já gerou). */
 async function encerrarPrestacaoAposNfce(consignacaoId) {
+  const opts = { timeoutMs: 120000 };
   try {
     await window.CDSApi.post(
-      `comercial/consignacoes/${consignacaoId}/prestacao/finalizar-venda-oficial`,
-      usuarioPayload({ emitirFiscal: false, fechar: true })
+      `comercial/consignacoes/${consignacaoId}/prestacao/fechar`,
+      usuarioPayload(),
+      null,
+      opts
     );
-    return { ok: true, modo: 'finalizar' };
-  } catch (errFinalize) {
+    return { ok: true, modo: 'fechar' };
+  } catch (errFechar) {
     try {
       await window.CDSApi.post(
-        `comercial/consignacoes/${consignacaoId}/prestacao/fechar`,
-        usuarioPayload()
+        `comercial/consignacoes/${consignacaoId}/prestacao/finalizar-venda-oficial`,
+        usuarioPayload({ emitirFiscal: false, fechar: true }),
+        null,
+        opts
       );
-      return { ok: true, modo: 'fechar' };
-    } catch (errFechar) {
+      return { ok: true, modo: 'finalizar' };
+    } catch (errFinalize) {
+      try {
+        const raw = await window.CDSApi.get(`comercial/consignacoes/${consignacaoId}`);
+        const c = unwrapEntity(raw);
+        const st = String(c?.status || '').toUpperCase();
+        if (isStatusConsignacaoFinalizada(st)) {
+          return { ok: true, recuperado: true, modo: 'ja_encerrada' };
+        }
+      } catch (_e) { /* ignore */ }
       const e = errFechar || errFinalize;
       e.originalFinalize = errFinalize;
       throw e;
@@ -82,7 +94,9 @@ async function encerrarPrestacaoAposNfce(consignacaoId) {
 async function emitirNfceEEncerrar(consignacaoId, { clienteNome = '' } = {}) {
   const raw = await window.CDSApi.post(
     `comercial/consignacoes/${consignacaoId}/prestacao/emitir-nfce`,
-    usuarioPayload()
+    usuarioPayload(),
+    null,
+    { timeoutMs: 180000 }
   );
   const cupom = await mostrarCupomAposEmissao(raw, { clienteNome });
   const deveEncerrar = cupom?.tipo === 'fiscal'
@@ -115,6 +129,9 @@ import {
   preferPerfilConsignado,
   perfilLimiteOf,
   deriveComercialPhase,
+  badgeStatusConsignacao,
+  isConsignacaoAbertaOperacional,
+  isStatusConsignacaoFinalizada,
   historicoItems,
   contaCorrenteItems,
   contaCorrenteTotais,
@@ -391,6 +408,26 @@ function usuarioPayload(extra = {}) {
   };
 }
 
+async function registrarEntregaConsignacao(consignacaoId) {
+  try {
+    await window.CDSApi.post(
+      `comercial/consignacoes/${consignacaoId}/entrega`,
+      usuarioPayload(),
+      null,
+      { timeoutMs: 120000 }
+    );
+    return { ok: true, recuperado: false };
+  } catch (err) {
+    try {
+      const raw = await window.CDSApi.get(`comercial/consignacoes/${consignacaoId}`);
+      const c = unwrapEntity(raw);
+      const st = String(c?.status || '').toUpperCase();
+      if (st === 'ENTREGUE') return { ok: true, recuperado: true, erroOriginal: err };
+    } catch (_e) { /* mantém o erro da entrega */ }
+    throw err;
+  }
+}
+
 /** Step de incremento: produtos por peso usam 0,001 (paridade Desktop). */
 function qtyStepForUnidade(un) {
   const u = String(un || '').toUpperCase().trim();
@@ -575,7 +612,7 @@ function createItensDraftController(root, consignacaoId, initialItens, { c, phas
       const ok = await confirmSheet({ title: 'Entrega', message: 'Registrar entrega desta consignação?', confirmLabel: 'Entregar' });
       if (!ok) return;
       try {
-        await window.CDSApi.post(`comercial/consignacoes/${consignacaoId}/entrega`, usuarioPayload());
+        await registrarEntregaConsignacao(consignacaoId);
         showToast('Entrega registrada.', 'success');
         window.CDSMobile?.navigate?.(`comercial/${consignacaoId}/comprovante`, { replace: true });
       } catch (err) {
@@ -903,9 +940,10 @@ function buildOperacoesBar(c, phase, { itensCount, resumoFinal }) {
     return ops;
   }
 
-  /* ENTREGUE: entrada na estação de Prestação (paridade Desktop /consignacoes/:id/prestacao) */
+  /* ENTREGUE: prestação + resumo para o consignatário */
   if (phase.isEntregue && !phase.isEncerrada && operador && acerto) {
     ops.push({ action: 'prestacao', label: 'Prestação de contas', icon: 'receipt', variant: 'primary' });
+    ops.push({ action: 'comprovante', label: 'Enviar resumo', icon: 'share', variant: 'secondary' });
     return ops;
   }
 
@@ -915,6 +953,7 @@ function buildOperacoesBar(c, phase, { itensCount, resumoFinal }) {
       ops.push({ action: 'reabrir', label: 'Reabrir', icon: 'edit', variant: 'ghost' });
     }
     ops.push({ action: 'historico', label: 'Histórico', icon: 'receipt', variant: 'secondary' });
+    ops.push({ action: 'comprovante', label: 'Enviar resumo', icon: 'share', variant: 'secondary' });
     if (canComercialContaCorrente()) {
       ops.push({ action: 'conta-corrente', label: 'Conta corrente', icon: 'coins', variant: 'secondary' });
     }
@@ -1105,10 +1144,7 @@ export async function renderComercial(root) {
       ?? totais.consignacoesAbertas
       ?? totais.abertas
       ?? dashData.consignacoes_abertas
-      ?? lista.filter((c) => {
-        const s = asText(c.status || c.situacao, '').toUpperCase();
-        return s && !/FECH|CANCEL|ENCERR/.test(s);
-      }).length;
+      ?? lista.filter((c) => isConsignacaoAbertaOperacional(c)).length;
 
     const totalPend = totais.pendencias
       ?? totais.total_pendencias
@@ -1155,7 +1191,7 @@ export async function renderComercial(root) {
               title: asText(c.numero_documento || formatDocumento(c.documento, c.id) || `#${c.id}`, 'Consignação'),
               subtitle: clienteLabel(c),
               value: valorListaDisplay(c),
-              status: c.status || c.situacao,
+              status: badgeStatusConsignacao(c),
               meta: [formatDate(c.criado_em || c.data_criacao || c.created_at || '')].filter((x) => x !== '—')
             })).join('')
           : emptyHtml('Nenhuma consignação encontrada')}
@@ -1197,7 +1233,7 @@ export async function renderComercial(root) {
         title: asText(c.numero_documento || formatDocumento(c.documento, c.id) || `#${c.id}`, 'Consignação'),
         subtitle: clienteLabel(c),
         value: valorListaDisplay(c),
-        status: c.status || c.situacao,
+        status: badgeStatusConsignacao(c),
         meta: [formatDate(c.criado_em || c.data_criacao || c.created_at || '')].filter((x) => x !== '—')
       })).join('') || emptyHtml('Nenhuma consignação no filtro');
       bindGo(list);
@@ -1209,8 +1245,7 @@ export async function renderComercial(root) {
 }
 
 function isConsignacaoAberta(c) {
-  const s = asText(c.status || c.situacao, '').toUpperCase();
-  return s && !/FECH|CANCEL|ENCERR|LIQUID/.test(s);
+  return isConsignacaoAbertaOperacional(c);
 }
 
 function pendenciaGo(p) {
@@ -1239,7 +1274,7 @@ export async function renderKpiDetail(root, kpiId) {
                 title: asText(c.numero_documento || formatDocumento(c.documento, c.id) || `#${c.id}`, 'Consignação'),
                 subtitle: clienteLabel(c),
                 value: valorListaDisplay(c),
-                status: c.status || c.situacao,
+                status: badgeStatusConsignacao(c),
                 meta: [formatDate(c.criado_em || c.data_criacao || c.created_at || '')].filter((x) => x !== '—')
               })).join('')
             : emptyHtml('Nenhuma consignação aberta')}
@@ -1549,7 +1584,7 @@ export async function renderDetail(root, id) {
       <article class="cds-card cds-m-enter cds-consignacao-header">
         <div class="cds-consignacao-header__top">
           <h3 class="cds-card__title" style="margin:0">${escapeHtml(c.documentoLabel || formatDocumento(c.documento, id))}</h3>
-          ${statusBadgeHtml(c.status || c.situacao)}
+          ${statusBadgeHtml(badgeStatusConsignacao(c))}
         </div>
         <div class="cds-row"><span>Cliente</span><strong>${escapeHtml(clienteLabel(c))}</strong></div>
         ${rowIf('Perfil comercial', profile.perfilNome || c.perfilNome || profile.perfilComercial)}
@@ -1633,12 +1668,16 @@ export async function renderDetail(root, id) {
       const ok = await confirmSheet({ title: 'Entrega', message: 'Registrar entrega desta consignação?', confirmLabel: 'Entregar' });
       if (!ok) return;
       try {
-        await window.CDSApi.post(`comercial/consignacoes/${id}/entrega`, usuarioPayload());
+        await registrarEntregaConsignacao(id);
         showToast('Entrega registrada.', 'success');
         window.CDSMobile?.navigate?.(`comercial/${id}/comprovante`, { replace: true });
       } catch (err) {
         showToast(err.message || 'Falha na entrega', 'error');
       }
+    });
+
+    root.querySelector('[data-action="comprovante"]')?.addEventListener('click', () => {
+      window.CDSMobile?.navigate?.(`comercial/${id}/comprovante`);
     });
 
     root.querySelector('[data-action="prestacao"]')?.addEventListener('click', async () => {
@@ -1735,7 +1774,7 @@ export async function renderDetail(root, id) {
       const ok = await confirmSheet({ title: 'Encerrar', message: 'Fechar prestação de contas?', confirmLabel: 'Encerrar' });
       if (!ok) return;
       try {
-        await window.CDSApi.post(`comercial/consignacoes/${id}/prestacao/fechar`, usuarioPayload());
+        await window.CDSApi.post(`comercial/consignacoes/${id}/prestacao/fechar`, usuarioPayload(), null, { timeoutMs: 120000 });
         showToast('Prestação encerrada.', 'success');
         reload();
       } catch (err) {
@@ -1753,7 +1792,9 @@ export async function renderDetail(root, id) {
       try {
         await window.CDSApi.post(
           `comercial/consignacoes/${id}/prestacao/finalizar-venda-oficial`,
-          usuarioPayload({ emitirFiscal: false, fechar: true })
+          usuarioPayload({ emitirFiscal: false, fechar: true }),
+          null,
+          { timeoutMs: 120000 }
         );
         showToast('Venda oficial finalizada.', 'success');
         reload();
@@ -2360,7 +2401,7 @@ export async function renderPrestacaoGrade(root, id) {
         <article class="cds-card cds-m-enter">
           <div class="cds-consignacao-header__top">
             <h3 class="cds-card__title" style="margin:0">Grade de retornos</h3>
-            ${statusBadgeHtml(c.status || c.situacao)}
+            ${statusBadgeHtml(badgeStatusConsignacao(c))}
           </div>
           <div class="cds-row"><span>Documento</span><strong>${escapeHtml(c.documentoLabel || formatDocumento(c.documento, id))}</strong></div>
           <div class="cds-row"><span>Cliente</span><strong>${escapeHtml(clienteLabel(c))}</strong></div>
@@ -2432,6 +2473,241 @@ export async function renderPrestacaoGrade(root, id) {
   }
 }
 
+const CMP_CACHE_PREFIX = 'cds-comprovante-entrega:';
+
+function cmpCacheKey(id) {
+  return `${CMP_CACHE_PREFIX}${id}`;
+}
+
+function saveCmpOffline(id, snapshot) {
+  try {
+    sessionStorage.setItem(cmpCacheKey(id), JSON.stringify({ savedAt: Date.now(), snapshot }));
+  } catch (_e) { /* ignore */ }
+}
+
+function loadCmpOffline(id) {
+  try {
+    const raw = sessionStorage.getItem(cmpCacheKey(id));
+    if (!raw) return null;
+    return JSON.parse(raw)?.snapshot || null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+function unwrapComprovante(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  let c = raw;
+  if (c.data && typeof c.data === 'object' && !Array.isArray(c.data)) c = c.data;
+  if (c.dados && typeof c.dados === 'object' && !Array.isArray(c.dados)) c = c.dados;
+  if (c.comprovante && typeof c.comprovante === 'object') c = c.comprovante;
+  return c;
+}
+
+function montarTextoResumo(comprovante) {
+  const snap = comprovante?.snapshot || comprovante || {};
+  const existente = String(
+    comprovante?.textoCompartilhavel || snap.textoCompartilhavel || ''
+  ).trim();
+  if (existente) return existente;
+  const h = snap.cabecalho || {};
+  const prod = snap.cards?.produtos || {};
+  const sit = snap.cards?.situacaoComercial || {};
+  const linhas = [
+    '*COMPROVANTE DE ENTREGA*',
+    h.empresaNome || 'CDS Sistemas',
+    `Nº ${h.numeroComprovante || snap.numeroComprovante || '—'}`,
+    `${h.data || ''} ${h.hora || ''}`.trim(),
+    '',
+    `*Cliente:* ${h.clienteNome || '—'}`,
+    '',
+    '*PRODUTOS*'
+  ];
+  (prod.itens || []).forEach((i) => {
+    linhas.push(`• ${i.produto} — ${i.quantidade} ${i.unidade || 'UN'} = ${formatMoney(i.total)}`);
+  });
+  linhas.push(`Valor comercial: ${formatMoney(prod.valorComercial)}`);
+  linhas.push(`Saldo atual: ${formatMoney(sit.saldoAtual)}`);
+  linhas.push('');
+  linhas.push('Enviado pelo CDS Sistemas');
+  return linhas.filter((l, i, arr) => !(l === '' && arr[i - 1] === '')).join('\n');
+}
+
+async function auditComprovante(id, acao, comprovante) {
+  try {
+    await window.CDSApi.post(`comercial/consignacoes/${id}/comprovante/acoes`, {
+      acao,
+      comprovanteId: comprovante?.id,
+      numeroComprovante: comprovante?.numeroComprovante
+    });
+  } catch (_e) { /* ignore */ }
+}
+
+function downloadCmpPdf(pdf) {
+  if (!pdf?.base64) {
+    showToast('PDF indisponível. Use Copiar resumo ou WhatsApp.', 'warning');
+    return;
+  }
+  const bin = atob(pdf.base64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+  const blob = new Blob([bytes], { type: pdf.contentType || 'application/pdf' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = pdf.fileName || 'comprovante-entrega.pdf';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function cmpCardHtml(title, body) {
+  return `
+    <section class="cds-card" style="margin-bottom:12px">
+      <h3 style="margin:0 0 8px;font-size:15px">${escapeHtml(title)}</h3>
+      ${body}
+    </section>
+  `;
+}
+
+async function renderComprovanteEntrega(root, id) {
+  root.innerHTML = loadingHtml('Montando resumo para o consignatário…');
+  let comprovante = null;
+  let offline = false;
+
+  try {
+    const raw = await window.CDSApi.get(
+      `comercial/consignacoes/${id}/comprovante`,
+      { _t: Date.now() },
+      { timeoutMs: 60000 }
+    );
+    comprovante = unwrapComprovante(raw);
+    if (comprovante) saveCmpOffline(id, comprovante);
+  } catch (err) {
+    const cached = loadCmpOffline(id);
+    if (cached) {
+      comprovante = cached;
+      offline = true;
+    } else {
+      root.innerHTML = `
+        ${backBarHtml('Comercial')}
+        ${errorHtml(apiErrorMessage(err) || err.message || 'Falha ao carregar o resumo', err.status)}
+        <button type="button" class="cds-mobile-btn" data-go="comercial/${escapeHtml(String(id))}" style="margin-top:12px">Voltar à consignação</button>
+      `;
+      bindBack(root);
+      bindGo(root);
+      return;
+    }
+  }
+
+  if (!comprovante || typeof comprovante !== 'object') {
+    root.innerHTML = `
+      ${backBarHtml('Comercial')}
+      ${errorHtml('Resumo da entrega indisponível.', 404)}
+      <button type="button" class="cds-mobile-btn" data-go="comercial/${escapeHtml(String(id))}" style="margin-top:12px">Voltar à consignação</button>
+    `;
+    bindBack(root);
+    bindGo(root);
+    return;
+  }
+
+  const snap = comprovante.snapshot || comprovante;
+  const h = snap.cabecalho || {};
+  const prod = snap.cards?.produtos || {};
+  const sit = snap.cards?.situacaoComercial || {};
+  const hist = snap.cards?.historico || {};
+  const obs = snap.cards?.observacoes || {};
+  const texto = montarTextoResumo(comprovante);
+  const pdf = comprovante.pdf || snap.pdf;
+  const status = sit.statusComercial || snap.indicadores?.statusCredito || '—';
+  const phone = String(h.clienteTelefone || '').replace(/\D/g, '');
+
+  root.innerHTML = `
+    ${backBarHtml('Comercial')}
+    ${offline ? `<div class="cds-mobile-banner">${icon('warning')} <span>Modo offline — último resumo salvo.</span></div>` : ''}
+    ${cmpCardHtml('Resumo para o consignatário', `
+      <p class="cds-muted" style="margin:0 0 8px">Revise e envie pelo WhatsApp ou copie o texto.</p>
+      <pre class="cds-comprovante-texto" style="white-space:pre-wrap;word-break:break-word;font-size:13px;line-height:1.4;margin:0;font-family:inherit">${escapeHtml(texto)}</pre>
+    `)}
+    <div class="cds-card" style="display:grid;gap:8px;margin-bottom:12px">
+      <button type="button" class="cds-mobile-btn" id="cmp-whatsapp">Enviar ao consignatário (WhatsApp)</button>
+      <button type="button" class="cds-mobile-btn cds-mobile-btn--secondary" id="cmp-copiar">Copiar resumo</button>
+      <button type="button" class="cds-mobile-btn cds-mobile-btn--secondary" id="cmp-pdf">Gerar PDF</button>
+      <button type="button" class="cds-mobile-btn cds-mobile-btn--ghost" id="cmp-print">Imprimir</button>
+    </div>
+    ${cmpCardHtml('Comprovante de Entrega', `
+      <p class="cds-muted" style="margin:0">${escapeHtml(h.empresaNome || '')}</p>
+      <p style="margin:4px 0 0"><strong>${escapeHtml(h.numeroComprovante || snap.numeroComprovante || '')}</strong></p>
+      <p class="cds-muted">${escapeHtml(h.data || '')} ${escapeHtml(h.hora || '')}</p>
+      <span class="cds-badge cds-badge--${status === 'VERDE' ? 'ok' : status === 'AMARELO' ? 'warn' : status === 'VERMELHO' ? 'danger' : 'neutral'}">${escapeHtml(status)}</span>
+    `)}
+    ${cmpCardHtml('Cliente', `
+      <p style="margin:0"><strong>${escapeHtml(h.clienteNome || '—')}</strong></p>
+      <p class="cds-muted">Código ${escapeHtml(h.clienteCodigo || '—')} · ${escapeHtml(h.clienteDocumento || '—')}</p>
+    `)}
+    ${cmpCardHtml('Produtos', `
+      ${(prod.itens || []).map((i) => `
+        <div class="cds-row" style="justify-content:space-between;gap:8px">
+          <span>${escapeHtml(i.produto)} · ${escapeHtml(i.quantidade)} ${escapeHtml(i.unidade || 'UN')}</span>
+          <strong>${escapeHtml(formatMoney(i.total))}</strong>
+        </div>`).join('') || '<p class="cds-muted">Sem itens</p>'}
+      <div class="cds-row" style="margin-top:8px"><span>Valor comercial</span><strong>${escapeHtml(formatMoney(prod.valorComercial))}</strong></div>
+      <div class="cds-row"><span>Volumes</span><strong>${escapeHtml(asText(prod.volumes))}</strong></div>
+    `)}
+    ${cmpCardHtml('Situação Comercial', `
+      <div class="cds-row"><span>Saldo anterior</span><strong>${escapeHtml(formatMoney(sit.saldoAnterior))}</strong></div>
+      <div class="cds-row"><span>Nova remessa</span><strong>${escapeHtml(formatMoney(sit.novaRemessa))}</strong></div>
+      <div class="cds-row"><span>Saldo atual</span><strong>${escapeHtml(formatMoney(sit.saldoAtual))}</strong></div>
+      <div class="cds-row"><span>Limite</span><strong>${escapeHtml(formatMoney(sit.limite))}</strong></div>
+      <div class="cds-row"><span>Crédito disponível</span><strong>${escapeHtml(formatMoney(sit.creditoDisponivel))}</strong></div>
+      <div class="cds-row"><span>Valor em aberto</span><strong>${escapeHtml(formatMoney(sit.valorEmAberto))}</strong></div>
+    `)}
+    ${cmpCardHtml('Histórico', `
+      <div class="cds-row"><span>Última entrega</span><strong>${escapeHtml(hist.ultimaEntrega || '—')}</strong></div>
+      <div class="cds-row"><span>Maior remessa</span><strong>${escapeHtml(formatMoney(hist.maiorRemessa))}</strong></div>
+      <div class="cds-row"><span>Média remessas</span><strong>${escapeHtml(formatMoney(hist.mediaRemessas))}</strong></div>
+      <div class="cds-row"><span>Índice perdas</span><strong>${escapeHtml(hist.indicePerdas != null ? `${hist.indicePerdas}%` : '—')}</strong></div>
+    `)}
+    ${cmpCardHtml('Observações', `<p style="margin:0">${escapeHtml(obs.entrega || '—')}</p>`)}
+  `;
+
+  bindBack(root);
+
+  root.querySelector('#cmp-copiar')?.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(texto);
+      await auditComprovante(id, 'resumo_copiado', comprovante);
+      showToast('Resumo copiado. Cole no WhatsApp do consignatário.', 'success');
+    } catch (_e) {
+      showToast('Não foi possível copiar. Selecione o texto na tela.', 'error');
+    }
+  });
+
+  root.querySelector('#cmp-whatsapp')?.addEventListener('click', async () => {
+    if (!texto) {
+      showToast('Não há texto de resumo para enviar.', 'warning');
+      return;
+    }
+    await auditComprovante(id, 'whatsapp', comprovante);
+    if (phone) openWhatsApp(phone, texto);
+    else window.open(`https://wa.me/?text=${encodeURIComponent(texto)}`, '_blank', 'noopener');
+    if (pdf?.base64) downloadCmpPdf(pdf);
+  });
+
+  root.querySelector('#cmp-pdf')?.addEventListener('click', async () => {
+    await auditComprovante(id, 'pdf', comprovante);
+    downloadCmpPdf(pdf);
+  });
+
+  root.querySelector('#cmp-print')?.addEventListener('click', async () => {
+    await auditComprovante(id, 'impressao', comprovante);
+    const w = window.open('', '_blank');
+    if (w && (pdf?.html || texto)) {
+      w.document.write(pdf?.html || `<pre>${escapeHtml(texto)}</pre>`);
+      w.document.close();
+      setTimeout(() => w.print(), 250);
+    }
+  });
+}
+
 export async function render(root, parsed) {
   const sub = parsed?.parts?.[1];
   const sub2 = parsed?.parts?.[2];
@@ -2451,8 +2727,7 @@ export async function render(root, parsed) {
   if (sub === 'nova') return renderNova(root);
   if (sub === 'abertas' || sub === 'pendencias') return renderKpiDetail(root, sub);
   if (sub && sub2 === 'comprovante') {
-    const mod = await import('./comercial-comprovante.js');
-    return mod.renderComprovanteEntrega(root, sub);
+    return renderComprovanteEntrega(root, sub);
   }
   if (sub) return renderDetail(root, sub);
   return renderComercial(root);

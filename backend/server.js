@@ -36,6 +36,27 @@ app.get('/api/ping', (req, res) => {
     res.json({ status: 'ok' });
 });
 
+const mobileIconsDir = path.join(__dirname, '../frontend/apps/mobile/icons');
+function sendMobileIcon(res, fileName, contentType) {
+  res.type(contentType);
+  res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+  res.sendFile(path.join(mobileIconsDir, fileName));
+}
+
+// Ícones na RAIZ do domínio — iOS/Android buscam aqui ao salvar o atalho/link
+app.get('/favicon.ico', (req, res) => sendMobileIcon(res, 'favicon-32.png', 'image/png'));
+app.get(['/apple-touch-icon.png', '/apple-touch-icon-precomposed.png', '/apple-touch-icon-180x180.png', '/apple-touch-icon-180x180-precomposed.png'], (req, res) => {
+  sendMobileIcon(res, 'apple-touch-icon.png', 'image/png');
+});
+app.get('/icon-192.png', (req, res) => sendMobileIcon(res, 'icon-192.png', 'image/png'));
+app.get('/icon-512.png', (req, res) => sendMobileIcon(res, 'icon-512.png', 'image/png'));
+app.get('/icon-512-maskable.png', (req, res) => sendMobileIcon(res, 'icon-512-maskable.png', 'image/png'));
+app.get('/manifest.webmanifest', (req, res) => {
+  res.type('application/manifest+json');
+  res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+  res.sendFile(path.join(__dirname, '../frontend/manifest.webmanifest'));
+});
+
 // MIME correto para PWA (atalho/ícone no celular)
 express.static.mime.define({
   'application/manifest+json': ['webmanifest'],
@@ -44,16 +65,11 @@ express.static.mime.define({
 });
 app.use(express.static(path.join(__dirname, '../frontend'), {
   setHeaders(res, filePath) {
-    if (/\.(png|ico|webmanifest)$/i.test(filePath)) {
+    if (/\.(png|ico|webmanifest|js|css)$/i.test(filePath)) {
       res.setHeader('Cache-Control', 'no-cache, must-revalidate');
     }
   }
 }));
-// Favicon raiz → logo CDS (aba/atalho do navegador)
-app.get('/favicon.ico', (req, res) => {
-  res.type('image/x-icon');
-  res.sendFile(path.join(__dirname, '../frontend/apps/mobile/icons/favicon.ico'));
-});
 
 function getWritableStoragePath() {
     if (process.platform === 'win32') {

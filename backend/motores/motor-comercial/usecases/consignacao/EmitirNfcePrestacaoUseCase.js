@@ -127,8 +127,8 @@ class EmitirNfcePrestacaoUseCase extends BaseUseCase {
     let vendaCriada = false;
 
     if (!vendaId) {
-      // STAB-06.3.2: marcar itens como fiscais para NFC-e (criarVenda com emitir_fiscal:false
-      // + JA_BAIXADO sem split → quantidade_fiscal=0 → sem_itens_fiscais).
+      // POST /vendas não emite NFC-e (endpoint dedicado). emitir_fiscal:true
+      // faz a venda oficial nascer fiscal (mesmo contrato do PDV Mobile).
       const itensParaEmissao = itensVendidos.map((i) => ({
         ...i,
         quantidade_fiscal: Number(i.quantidadeFiscal ?? i.quantidade_fiscal ?? i.quantidade),
@@ -143,10 +143,10 @@ class EmitirNfcePrestacaoUseCase extends BaseUseCase {
         itensVendidos: itensParaEmissao,
         totalVendido,
         totalRecebido,
-        emitirFiscal: false
+        emitirFiscal: true
       });
       payload.metadata.correlationId = correlationId;
-      payload.emitir_fiscal = false;
+      payload.emitir_fiscal = true;
 
       const venda = await this._criarVendaFn(payload);
       vendaId = Number(venda.id || venda.venda_id);
@@ -263,8 +263,8 @@ function interpretarResultadoFiscal(fiscal = {}, store = faturamentoStore) {
 }
 
 /**
- * STAB-06.3.2 — se a venda consignada ficou sem quantidade_fiscal (criar com emitir_fiscal:false),
- * promove o subtotal para o lado fiscal antes de emitirPorVendaId.
+ * STAB-06.3.2 — legado: venda consignada sem split fiscal (qty/valor zerados)
+ * não entra na NFC-e (itemEntraNaNfce exige quantidade_fiscal e valor_fiscal > 0).
  */
 function promoverItensVendaParaNfce(vendaId) {
   if (!vendaId) return Promise.resolve();
@@ -273,6 +273,7 @@ function promoverItensVendaParaNfce(vendaId) {
       `
       SELECT
         COALESCE(SUM(COALESCE(quantidade_fiscal, 0)), 0) AS qtd_fiscal,
+        COALESCE(SUM(COALESCE(valor_fiscal, 0)), 0) AS valor_fiscal,
         COALESCE(SUM(COALESCE(quantidade, 0)), 0) AS qtd_total
       FROM vendas_itens
       WHERE venda_id = ?
@@ -281,8 +282,10 @@ function promoverItensVendaParaNfce(vendaId) {
       (err, row) => {
         if (err) return reject(err);
         const qFiscal = Number(row?.qtd_fiscal || 0);
+        const vFiscal = Number(row?.valor_fiscal || 0);
         const qTotal = Number(row?.qtd_total || 0);
-        if (qFiscal > 0 || qTotal <= 0) return resolve();
+        if (qTotal <= 0) return resolve();
+        if (qFiscal > 0 && vFiscal > 0) return resolve();
 
         db.run(
           `

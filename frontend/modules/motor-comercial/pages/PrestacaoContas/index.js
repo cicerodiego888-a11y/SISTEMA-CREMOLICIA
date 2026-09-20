@@ -101,14 +101,25 @@ const {
   buildRouteWithCentralTrabalhoContext,
   resolveBackPath,
   getBackButtonLabel,
+  routeWithActiveContext,
   ORIGEM_CENTRAL_TRABALHO,
   ORIGEM_CLIENTE_360
 } = require('../../utils/cliente360Context');
+const {
+  podeAdicionarProdutoComplementar
+} = require('../EntregaComplementar/entregaComplementarMappers');
 const {
   markCentralArrivalGuard,
   logElectronFlow
 } = require('../../utils/electronNavigationGuard');
 const gradeForense = require('./gradeForenseAudit');
+const {
+  createOperacaoContext,
+  captureContextToken,
+  isContextCurrent,
+  bumpOperacaoContext,
+  patchOperacaoContext
+} = require('./prestacaoOperacaoContext');
 
 class PrestacaoContasPage {
   constructor(consignacaoId, routeQuery = {}) {
@@ -117,6 +128,15 @@ class PrestacaoContasPage {
     this.api = new MotorComercialApi();
     this.projectionApi = new ProjectionApi();
     this.consignacaoId = consignacaoId;
+    /** RCM-8.6 — contexto imutável da operação aberta (cliente/consignação/prestação). */
+    this._disposed = false;
+    this._loadTimeout = null;
+    this.operacaoContext = createOperacaoContext({
+      clienteId: this.navigationContext?.clienteId || null,
+      consignacaoId,
+      prestacaoId: routeQuery?.prestacaoId || routeQuery?.grupoPrestacaoContasId || null,
+      contextVersion: 1
+    });
 
     this.consignacao = null;
     this.resumoPrestacao = null;
@@ -204,6 +224,7 @@ class PrestacaoContasPage {
   }
 
   render() {
+    this._disposed = false;
     this.root = Workspace.create({
       variant: 'station',
       className: 'cds-prestacao-estacao-workspace',
@@ -219,13 +240,96 @@ class PrestacaoContasPage {
     this.root.dataset.uxSprint = 'STAB-07.5';
     this.root.dataset.sharedUiReference = 'prestacao-estacao';
     this.root.dataset.estacaoTrabalho = 'prestacao';
+    this.root.dataset.pageDestroyable = 'true';
+    this.root.dataset.consignacaoId = String(this.consignacaoId || '');
+    this.root.dataset.contextVersion = String(this.operacaoContext.contextVersion);
+    this.root.__cdsPageInstance = this;
 
-    setTimeout(() => {
+    this._loadTimeout = setTimeout(() => {
+      this._loadTimeout = null;
+      if (!this._isAlive()) return;
       this._loadData();
       this._startAutoRefresh();
     }, 0);
 
     return this.root;
+  }
+
+  /**
+   * RCM-8.6 — encerra timers/listeners e invalida o contexto da operação.
+   * Chamado pelo Router ao desmontar a página.
+   */
+  destroy() {
+    if (this._disposed) return;
+    this._disposed = true;
+    if (this._loadTimeout) {
+      clearTimeout(this._loadTimeout);
+      this._loadTimeout = null;
+    }
+    if (this.refreshTimer) {
+      clearInterval(this.refreshTimer);
+      this.refreshTimer = null;
+    }
+    this.operacaoContext = bumpOperacaoContext(this.operacaoContext);
+    if (this.root) {
+      try {
+        delete this.root.__cdsPageInstance;
+      } catch (_e) {
+        this.root.__cdsPageInstance = null;
+      }
+    }
+  }
+
+  /** @private */
+  _isAlive() {
+    return !this._disposed && Boolean(this.root);
+  }
+
+  /** @private — token da requisição atual */
+  _captureContextToken() {
+    return captureContextToken(this.operacaoContext);
+  }
+
+  /**
+   * @private
+   * Aceita resposta somente se a tela ainda estiver montada e no mesmo contexto.
+   */
+  _acceptContextToken(token) {
+    if (!this._isAlive()) return false;
+    if (this.root && this.root.isConnected === false) {
+      this.destroy();
+      return false;
+    }
+    return isContextCurrent(token, this.operacaoContext, { disposed: this._disposed });
+  }
+
+  /** @private — sincroniza prestacaoId/clienteId sem invalidar a versão */
+  _syncOperacaoContextFromConsignacao(consignacao = {}) {
+    const prestacaoId = consignacao?.prestacaoContasAtiva?.id
+      || consignacao?.grupoPrestacaoContasId
+      || this.operacaoContext?.prestacaoId
+      || null;
+    const clienteId = consignacao?.clienteId
+      || this.navigationContext?.clienteId
+      || this.operacaoContext?.clienteId
+      || null;
+    this.operacaoContext = patchOperacaoContext(this.operacaoContext, {
+      consignacaoId: this.consignacaoId,
+      clienteId,
+      prestacaoId
+    });
+    if (this.root) {
+      this.root.dataset.contextVersion = String(this.operacaoContext.contextVersion);
+      if (clienteId != null) this.root.dataset.clienteId = String(clienteId);
+      if (prestacaoId != null) this.root.dataset.prestacaoId = String(prestacaoId);
+    }
+  }
+
+  /** @private — queries escopadas ao root da operação (evita IDs globais de outra tela) */
+  _qs(selector) {
+    if (!this.root) return null;
+    if (this.root.matches?.(selector)) return this.root;
+    return this.root.querySelector(selector);
   }
 
   _buildWorkspaceHeader() {
@@ -244,7 +348,9 @@ class PrestacaoContasPage {
     wrap.id = 'prestacao-estacao-context';
     wrap.innerHTML = `
       <span>Cliente: <strong id="prestacao-cliente">—</strong></span>
-      <span>Documento: <strong id="prestacao-documento">—</strong></span>
+      <span>Prestação: <strong id="prestacao-grupo">—</strong></span>
+      <span>Consignações: <strong id="prestacao-qtd-consig">—</strong></span>
+      <span>Origem: <strong id="prestacao-documento">—</strong></span>
       <span>Estado: <strong id="prestacao-situacao">—</strong></span>
       <span>Financeiro: <strong id="prestacao-financeiro">—</strong></span>
       <span>Fiscal: <strong id="prestacao-fiscal">—</strong></span>
@@ -420,7 +526,7 @@ class PrestacaoContasPage {
       loading: this.loading.operation,
       dirty: false
     });
-    return [
+    const nodes = [
       aplicarTooltipDesabilitado(Button.create({
         text: getBackButtonLabel(this.navigationContext, 'Voltar'),
         variant: 'ghost',
@@ -429,6 +535,47 @@ class PrestacaoContasPage {
         onClick: () => this._handleCancel()
       }), disabled ? title : '')
     ];
+
+    // RCM-8.7 — na Prestação, complementar na MESMA consignação (não criar documento novo)
+    if (this.currentStep === STEP_RETORNOS) {
+      const check = podeAdicionarProdutoComplementar(this.consignacao);
+      if (check.elegivel) {
+        nodes.push(Button.create({
+          text: '+ Adicionar produto',
+          variant: 'secondary',
+          disabled,
+          title: 'Adiciona produtos nesta mesma consignação (Entrega Complementar)',
+          onClick: () => this._abrirEntregaComplementar()
+        }));
+      }
+    }
+    return nodes;
+  }
+
+  async _abrirEntregaComplementar() {
+    const check = podeAdicionarProdutoComplementar(this.consignacao);
+    if (!check.elegivel) {
+      notify(check.mensagem || 'Entrega complementar indisponível.', 'warning');
+      return;
+    }
+    const dirty = temAlteracoesPendentes(this.resumoPrestacao?.itens || []);
+    if (dirty) {
+      const ok = await confirmDialog({
+        title: 'Alterações não salvas',
+        message: 'Há alterações na grade ainda não salvas. Deseja continuar para a Entrega Complementar?'
+      });
+      if (!ok) return;
+    }
+    const path = routeWithActiveContext(
+      `/consignacoes/${this.consignacaoId}/entrega-complementar`,
+      this.navigationContext,
+      { retorno: 'prestacao' }
+    );
+    // routeWithActiveContext sem lock devolve path puro — garantir query retorno
+    const url = path.includes('retorno=')
+      ? path
+      : `${path}${path.includes('?') ? '&' : '?'}retorno=prestacao`;
+    await navigate(url);
   }
 
   _footerRightNodes() {
@@ -649,8 +796,10 @@ class PrestacaoContasPage {
   }
 
   async _carregarFaturamentoResumo() {
+    const token = this._captureContextToken();
     try {
       const data = await this.api.obterResumoFinalPrestacao(this.consignacaoId);
+      if (!this._acceptContextToken(token)) return;
       this.faturamento = data?.faturamento || data?.data?.faturamento || null;
     } catch (_e) {
       /* resumo fiscal opcional até primeira emissão */
@@ -939,6 +1088,9 @@ class PrestacaoContasPage {
    * @param {{ skipUi?: boolean }} [options] STAB-07.3 — recarrega dados sem remontar a estação
    */
   async _loadData(silent = false, options = {}) {
+    const token = this._captureContextToken();
+    if (!this._acceptContextToken(token)) return;
+
     const skipUi = Boolean(options.skipUi);
     if (!silent) {
       this.loading.consignacao = true;
@@ -947,21 +1099,34 @@ class PrestacaoContasPage {
     }
 
     try {
+      const consignacaoId = this.consignacaoId;
+      const clienteIdHint = this.operacaoContext?.clienteId
+        || this.navigationContext.clienteId
+        || undefined;
+
       const [consignacao, prestacao, historico, contaCorrente, rateioPerda] = await Promise.all([
-        carregarConsignacaoCompleta(this.api, this.projectionApi, this.consignacaoId),
-        this.projectionApi.obterResumoPrestacao({ consignacaoId: this.consignacaoId }).catch(() => null),
-        this.projectionApi.listarMovimentacoes({ consignacaoId: this.consignacaoId }).catch(() => []),
+        carregarConsignacaoCompleta(this.api, this.projectionApi, consignacaoId),
+        this.projectionApi.obterResumoPrestacao({ consignacaoId }).catch(() => null),
+        this.projectionApi.listarMovimentacoes({ consignacaoId }).catch(() => []),
         this.projectionApi.obterProjecaoContaCorrente({
-          consignacaoId: this.consignacaoId,
-          clienteId: this.navigationContext.clienteId || undefined
+          consignacaoId,
+          clienteId: clienteIdHint
         }).catch(() => null),
-        this.api.obterRateioPerda(this.consignacaoId).catch(() => null)
+        this.api.obterRateioPerda(consignacaoId).catch(() => null)
       ]);
+
+      if (!this._acceptContextToken(token)) return;
+
+      // Resposta de outra consignação nunca aplica (defesa extra além da versão).
+      if (consignacao?.id != null && String(consignacao.id) !== String(consignacaoId)) {
+        return;
+      }
 
       this.consignacao = consignacao;
       this.historico = historico;
       this.contaCorrente = contaCorrente;
       this.rateioPerda = rateioPerda;
+      this._syncOperacaoContextFromConsignacao(consignacao);
       this.resumoPrestacao = this._buildResumoFromData(prestacao, historico, consignacao, contaCorrente);
       limparDirtyTodos(this.resumoPrestacao?.itens || []);
       this._capturarBaseline();
@@ -991,13 +1156,26 @@ class PrestacaoContasPage {
           } catch (_error) {
             this.clienteDetalhe = null;
           }
+          if (!this._acceptContextToken(token)) return;
         }
       }
 
       this.error = null;
     } catch (error) {
+      if (!this._acceptContextToken(token)) return;
       this.error = error;
     } finally {
+      // Sempre libera loading se a página ainda é desta consignação (evita "Carregando..." eterno)
+      const mesmaConsignacao = String(token?.consignacaoId || '') === String(this.consignacaoId || '');
+      if (this._disposed) return;
+      if (!this._acceptContextToken(token)) {
+        if (mesmaConsignacao) {
+          this.loading.consignacao = false;
+          this.loading.prestacao = false;
+          this._updateUI();
+        }
+        return;
+      }
       this.loading.consignacao = false;
       this.loading.prestacao = false;
       if (skipUi) {
@@ -1013,7 +1191,7 @@ class PrestacaoContasPage {
 
   _devePreservarGradeRetornos() {
     return this.currentStep === STEP_RETORNOS
-      && document.getElementById('fechar-retornos-grade')
+      && Boolean(this._qs('#fechar-retornos-grade'))
       && (
         temAlteracoesPendentes(this.resumoPrestacao?.itens || [])
         || this.editing.rowIndex >= 0
@@ -1026,19 +1204,20 @@ class PrestacaoContasPage {
   }
 
   _atualizarIndicadorPersistencia() {
+    if (!this._isAlive()) return;
     const itens = this.resumoPrestacao?.itens || [];
     if (this.salvandoConferencia) {
       this.persistenciaStatus = 'saving';
     } else {
       this.persistenciaStatus = statusPersistencia(itens);
     }
-    const host = document.getElementById('fechar-persistencia-status');
+    const host = this._qs('#fechar-persistencia-status');
     if (host) {
       host.dataset.status = this.persistenciaStatus;
       host.textContent = labelStatusPersistencia(this.persistenciaStatus);
       host.hidden = this.currentStep !== STEP_RETORNOS && this.persistenciaStatus === 'saved';
     }
-    const headerStatus = document.getElementById('prestacao-persistencia');
+    const headerStatus = this._qs('#prestacao-persistencia');
     if (headerStatus) {
       headerStatus.textContent = labelStatusPersistencia(this.persistenciaStatus);
       headerStatus.dataset.status = this.persistenciaStatus;
@@ -1101,12 +1280,16 @@ class PrestacaoContasPage {
       valorCortesia: Number(prestacao?.valorCortesia ?? prestacao?.totalCortesia ?? 0)
     };
 
-    // STAB-06.6.1 — SSOT dos itens: DTO oficial da consignação (mesmo objeto da Entrega)
+    // RCM-8.11 — preferir itens do ciclo (grupo) no resumo; fallback consignação da URL
     let itens = null;
-    if (Array.isArray(consignacao.itens) && consignacao.itens.length) {
-      itens = consignacao.itens.map((item) => mapItemConsignacao(item));
-    } else if (Array.isArray(resumo.itens) && resumo.itens.length) {
+    if (Array.isArray(resumo.itens) && resumo.itens.length) {
       itens = resumo.itens.map((item) => mapItemConsignacao(item));
+    } else if (Array.isArray(consignacao.itens) && consignacao.itens.length) {
+      itens = consignacao.itens.map((item) => mapItemConsignacao({
+        ...item,
+        consignacaoId: item.consignacaoId ?? consignacao.id,
+        documentoConsignacao: consignacao.documento
+      }));
     }
 
     if (!itens?.length) {
@@ -1128,7 +1311,8 @@ class PrestacaoContasPage {
     ).map((item, index) => {
       const prev = prevItens.find((p) => (
         (p.itemId && item.itemId && String(p.itemId) === String(item.itemId))
-        || (p.produtoId && item.produtoId && String(p.produtoId) === String(item.produtoId))
+        || (p.produtoId && item.produtoId && String(p.produtoId) === String(item.produtoId)
+          && String(p.consignacaoId || '') === String(item.consignacaoId || ''))
       )) || prevItens[index];
       if (prev?.observacao && !item.observacao) {
         item.observacao = prev.observacao;
@@ -1139,6 +1323,17 @@ class PrestacaoContasPage {
     if (!Number(resumo.valorConsignado ?? resumo.valorTotal ?? 0)) {
       resumo.valorConsignado = calcularValorEntregue(consignacao, resumo, resumo.itens);
     }
+
+    resumo.quantidadeConsignacoes = Number(
+      prestacao?.quantidadeConsignacoes
+      || prestacao?.consignacoes?.length
+      || 1
+    );
+    resumo.consignacoesCiclo = prestacao?.consignacoes || [];
+    resumo.grupoPrestacaoContasId = prestacao?.grupoPrestacaoContasId
+      || consignacao.prestacaoContasAtiva?.id
+      || null;
+    resumo.consolidado = Boolean(prestacao?.consolidado) || resumo.quantidadeConsignacoes > 1;
 
     const fin = buildResumoLegacy(resumo, contaCorrente);
     Object.assign(resumo, fin);
@@ -1602,17 +1797,26 @@ class PrestacaoContasPage {
   }
 
   async _reloadResumoSilencioso({ force = false } = {}) {
+    const token = this._captureContextToken();
+    if (!this._acceptContextToken(token)) return;
+
     const stateAntes = (this.resumoPrestacao?.itens || []).map((item) => ({ ...item }));
     const tinhaDirty = temAlteracoesPendentes(stateAntes);
+    const consignacaoId = this.consignacaoId;
 
     const [prestacao, historico, contaCorrente] = await Promise.all([
-      this.projectionApi.obterResumoPrestacao({ consignacaoId: this.consignacaoId }).catch(() => null),
-      this.projectionApi.listarMovimentacoes({ consignacaoId: this.consignacaoId }).catch(() => []),
+      this.projectionApi.obterResumoPrestacao({ consignacaoId }).catch(() => null),
+      this.projectionApi.listarMovimentacoes({ consignacaoId }).catch(() => []),
       this.projectionApi.obterProjecaoContaCorrente({
-        consignacaoId: this.consignacaoId,
-        clienteId: this.navigationContext.clienteId || undefined
+        consignacaoId,
+        clienteId: this.operacaoContext?.clienteId
+          || this.navigationContext.clienteId
+          || undefined
       }).catch(() => null)
     ]);
+
+    if (!this._acceptContextToken(token)) return;
+
     this.historico = historico;
     this.contaCorrente = contaCorrente;
     const novo = this._buildResumoFromData(prestacao, historico, this.consignacao, contaCorrente);
@@ -1637,10 +1841,14 @@ class PrestacaoContasPage {
   }
 
   _patchPainelLateral(painel = this.painel) {
-    const aside = document.getElementById('fechar-painel-lateral');
+    if (!this._isAlive()) return;
+    const aside = this._qs('#fechar-painel-lateral');
     if (!aside) {
       this._updateSidebar();
-      requestAnimationFrame(() => this._atualizarPainelPreview());
+      requestAnimationFrame(() => {
+        if (!this._isAlive()) return;
+        this._atualizarPainelPreview();
+      });
       return;
     }
     FecharConsignacaoView.patchPainelLateral(aside, painel, this._viewState());
@@ -1648,6 +1856,7 @@ class PrestacaoContasPage {
   }
 
   _atualizarPainelPreview() {
+    if (!this._isAlive()) return;
     if (this.currentStep !== STEP_RETORNOS || !this.resumoPrestacao?.itens?.length) return;
     const itens = this.resumoPrestacao.itens;
     // Qtds + estimativa R$ da grade; SSOT oficial no snapshot após flush
@@ -1656,7 +1865,7 @@ class PrestacaoContasPage {
     this.painel = painelPreview;
     this._patchPainelLateral(painelPreview);
     FecharConsignacaoView.patchResumoRapido(
-      document.getElementById('fechar-retornos-resumo-rapido'),
+      this._qs('#fechar-retornos-resumo-rapido'),
       painelPreview
     );
     this._atualizarIndicadorPersistencia();
@@ -1702,7 +1911,9 @@ class PrestacaoContasPage {
    * RC4.2 — persiste rateio inteligente de perdas.
    */
   async _salvarRateioPerda(payload = {}) {
+    const token = this._captureContextToken();
     if (!(await this._garantirPrestacaoAberta())) return false;
+    if (!this._acceptContextToken(token)) return false;
     this.loading.operation = true;
     this._updateFooter();
     try {
@@ -1717,6 +1928,7 @@ class PrestacaoContasPage {
           usuarioId: getUsuarioId()
         })
       );
+      if (!this._acceptContextToken(token)) return false;
       this.rateioPerda = {
         ...(this.rateioPerda || {}),
         rateio: resultado?.rateio || resultado?.data?.rateio || payload,
@@ -1741,12 +1953,15 @@ class PrestacaoContasPage {
         }
       });
       await this._loadData(true, { skipUi: true });
+      if (!this._acceptContextToken(token)) return false;
       this._updateContent();
       return true;
     } catch (error) {
+      if (!this._acceptContextToken(token)) return false;
       notify(humanizarErroOperacional(error).mensagem, 'error');
       return false;
     } finally {
+      if (!this._acceptContextToken(token)) return false;
       this.loading.operation = false;
       this._updateFooter();
     }
@@ -1757,8 +1972,10 @@ class PrestacaoContasPage {
    * Navegação nunca chama este método.
    */
   async _registrarPagamento() {
+    const token = this._captureContextToken();
     this._sincronizarPagamentoDoDom();
     if (!(await this._garantirPrestacaoAberta())) return false;
+    if (!this._acceptContextToken(token)) return false;
 
     let valor = Number(String(this.pagamentoDraft.valor).replace(',', '.'));
     if (!valor || valor <= 0) {
@@ -1785,6 +2002,7 @@ class PrestacaoContasPage {
         observacao: this.pagamentoDraft.observacoes || null,
         usuarioId: getUsuarioId()
       }));
+      if (!this._acceptContextToken(token)) return false;
       notify(MENSAGENS_HARDENING.PAGAMENTO_REGISTRADO, 'success');
       this._pushLogOperacional('Pagamento registrado', {
         valor,
@@ -1799,6 +2017,7 @@ class PrestacaoContasPage {
       this.pagamentoDraft.observacoes = '';
       // STAB-07.3 — soft refresh + patch só dos cards financeiros
       await this._loadData(true, { skipUi: true });
+      if (!this._acceptContextToken(token)) return false;
       this._recalcularPainel();
       if (this.currentStep === STEP_RESUMO) {
         const patched = this._patchCentralOperacional(['financeiro', 'pagamentos']);
@@ -1810,11 +2029,13 @@ class PrestacaoContasPage {
       }
       return true;
     } catch (error) {
+      if (!this._acceptContextToken(token)) return false;
       const humanizado = humanizarErroOperacional(error, 'pagamento');
       this.pagamentoErro = humanizado.mensagem;
       this._updateContent();
       return false;
     } finally {
+      if (!this._acceptContextToken(token)) return false;
       this.loading.operation = false;
       this._updateFooter();
     }
@@ -2020,17 +2241,22 @@ class PrestacaoContasPage {
   }
 
   async _loadProximoAtendimento() {
+    const token = this._captureContextToken();
     try {
-      const clienteId = this.consignacao?.clienteId || this.navigationContext.clienteId;
+      const clienteId = this.consignacao?.clienteId
+        || this.operacaoContext?.clienteId
+        || this.navigationContext.clienteId;
       if (!clienteId) return;
 
       const { items } = await this.api.listarConsignacoes({ clienteId, pageSize: 20 });
+      if (!this._acceptContextToken(token)) return;
       this.proximoAtendimento = (items || []).find((c) => {
         const status = String(c.status || '').toUpperCase();
         return String(c.id) !== String(this.consignacaoId)
           && (status === 'EM_PRESTACAO' || status === 'ENTREGUE');
       }) || null;
     } catch {
+      if (!this._acceptContextToken(token)) return;
       this.proximoAtendimento = null;
     }
   }
@@ -2160,6 +2386,7 @@ class PrestacaoContasPage {
   }
 
   _updateUI() {
+    if (!this._isAlive()) return;
     this._ensureStartAtRetornos();
     this._updateContent();
     this._updateHeaderMeta();
@@ -2181,14 +2408,16 @@ class PrestacaoContasPage {
   }
 
   _updateHeaderMeta() {
-    if (!this.root) return;
-    const cliente = document.getElementById('prestacao-cliente');
-    const documento = document.getElementById('prestacao-documento');
-    const situacao = document.getElementById('prestacao-situacao');
-    const financeiroEl = document.getElementById('prestacao-financeiro');
-    const fiscalEl = document.getElementById('prestacao-fiscal');
-    const synced = document.getElementById('prestacao-synced');
-    const persist = document.getElementById('prestacao-persistencia');
+    if (!this._isAlive() || !this.root) return;
+    const cliente = this._qs('#prestacao-cliente');
+    const grupoEl = this._qs('#prestacao-grupo');
+    const qtdEl = this._qs('#prestacao-qtd-consig');
+    const documento = this._qs('#prestacao-documento');
+    const situacao = this._qs('#prestacao-situacao');
+    const financeiroEl = this._qs('#prestacao-financeiro');
+    const fiscalEl = this._qs('#prestacao-fiscal');
+    const synced = this._qs('#prestacao-synced');
+    const persist = this._qs('#prestacao-persistencia');
     const subtitle = this.root.querySelector('.cds-workspace__subtitle');
 
     const nome = this.consignacao?.clienteNome
@@ -2198,6 +2427,12 @@ class PrestacaoContasPage {
     const doc = this.consignacao?.documento?.numero
       || this.consignacao?.documento
       || (this.consignacao?.id != null ? `C-${this.consignacao.id}` : '—');
+    const grupoId = this.resumoPrestacao?.grupoPrestacaoContasId
+      || this.consignacao?.prestacaoContasAtiva?.id
+      || '—';
+    const qtd = this.resumoPrestacao?.quantidadeConsignacoes
+      || this.resumoPrestacao?.consignacoesCiclo?.length
+      || 1;
 
     const financeiro = this.snapshot?.financeiro || this._syncSnapshotFinanceiro();
     const estado = this._estadoOperacionalAtual();
@@ -2207,6 +2442,17 @@ class PrestacaoContasPage {
     });
 
     if (cliente) cliente.textContent = safeText(typeof nome === 'object' ? (nome.nome || '—') : nome);
+    if (grupoEl) {
+      const raw = String(grupoId);
+      // Nunca exibir "—" se houver ponteiro de prestação na consignação
+      const fromConsig = this.consignacao?.prestacaoContasAtiva?.id;
+      const display = (raw && raw !== '—')
+        ? raw
+        : (fromConsig ? String(fromConsig) : '—');
+      grupoEl.textContent = display.length > 28 ? `${display.slice(0, 24)}…` : display;
+      grupoEl.title = display;
+    }
+    if (qtdEl) qtdEl.textContent = String(qtd);
     if (documento) documento.textContent = safeText(typeof doc === 'object' ? (doc.numero || '—') : doc);
     if (situacao) situacao.textContent = safeText(labelEstadoPrestacao(estado));
     if (financeiroEl) {
@@ -2225,7 +2471,8 @@ class PrestacaoContasPage {
   }
 
   _updateContent() {
-    const shell = document.getElementById('fechar-consignacao-content');
+    if (!this._isAlive()) return;
+    const shell = this._qs('#fechar-consignacao-content');
     if (!shell) return;
 
     const focusSnapshot = this.focus?.campo
@@ -2253,11 +2500,15 @@ class PrestacaoContasPage {
     }
 
     if (focusSnapshot && focusSnapshot.rowIndex >= 0) {
-      requestAnimationFrame(() => this._focusCampo(focusSnapshot.rowIndex, focusSnapshot.campo));
+      requestAnimationFrame(() => {
+        if (!this._isAlive()) return;
+        this._focusCampo(focusSnapshot.rowIndex, focusSnapshot.campo);
+      });
     } else {
       const auto = shell.querySelector('[data-autofocus="true"]');
       if (auto) {
         requestAnimationFrame(() => {
+          if (!this._isAlive()) return;
           auto.focus();
           if (typeof auto.select === 'function') auto.select();
         });
@@ -2265,9 +2516,15 @@ class PrestacaoContasPage {
     }
 
     if (this.currentStep === STEP_RETORNOS && this.resumoPrestacao?.itens?.length) {
-      requestAnimationFrame(() => this._atualizarPainelPreview());
+      requestAnimationFrame(() => {
+        if (!this._isAlive()) return;
+        this._atualizarPainelPreview();
+      });
     } else if (this.currentStep >= STEP_RESUMO && this.resumoPrestacao?.itens?.length) {
-      requestAnimationFrame(() => this._recalcularPainel());
+      requestAnimationFrame(() => {
+        if (!this._isAlive()) return;
+        this._recalcularPainel();
+      });
     }
   }
 
@@ -2280,7 +2537,7 @@ class PrestacaoContasPage {
   }
 
   _updateFooter() {
-    if (!this.root) return;
+    if (!this._isAlive() || !this.root) return;
     Workspace.compose(this.root, {
       footer: this._buildWorkspaceFooter()
     });
@@ -2289,13 +2546,24 @@ class PrestacaoContasPage {
   _startAutoRefresh() {
     if (this.refreshTimer) clearInterval(this.refreshTimer);
     this.refreshTimer = setInterval(() => {
-      if (!document.getElementById('fechar-consignacao-content')
-        && !document.getElementById('prestacao-estacao-root')) {
-        clearInterval(this.refreshTimer);
+      if (!this._isAlive()) {
+        if (this.refreshTimer) {
+          clearInterval(this.refreshTimer);
+          this.refreshTimer = null;
+        }
+        return;
+      }
+      // Só refresca se ESTE root ainda estiver no documento (não o da próxima tela).
+      if (!this.root?.isConnected) {
+        this.destroy();
         return;
       }
       if (this.loading.operation || this.encerrado || this.editing.rowIndex >= 0) return;
-      if (document.activeElement?.closest('#fechar-retornos-grade')) return;
+      if (this.root.querySelector('#fechar-retornos-grade')
+        && document.activeElement?.closest?.('#fechar-retornos-grade')) {
+        return;
+      }
+      // Consulta SOMENTE a consignação/prestação aberta nesta estação.
       this._loadData(true);
     }, 45000);
   }

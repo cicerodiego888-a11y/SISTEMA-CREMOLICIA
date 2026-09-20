@@ -6,6 +6,13 @@
  * @module motores/motor-comercial/http/dto/ConsignacaoDTO
  */
 
+const {
+  mapStatusConsultaConsignacao,
+  extrairCanalOperacao,
+  extrairTabelaPrecoId
+} = require('../../services/consultaConsignacaoReadOnly');
+const { extrairCancelamento } = require('../../usecases/consignacao/cancelamentoConsignacaoHelpers');
+
 class CriarConsignacaoRequest {
   /**
    * @param {Object} data
@@ -65,6 +72,46 @@ class EditarConsignacaoRequest {
       dataEntregaPrevista: data.dataEntregaPrevista,
       usuarioId: data.usuarioId || null
     };
+  }
+}
+
+/**
+ * RCM-8.8 — Cancelamento voluntário da preparação.
+ */
+class CancelarConsignacaoRequest {
+  static MOTIVOS = Object.freeze([
+    'CLIENTE_DESISTIU',
+    'ERRO_PREPARACAO',
+    'PRODUTO_INDISPONIVEL',
+    'PEDIDO_DUPLICADO',
+    'OUTRO'
+  ]);
+
+  /**
+   * @param {Object} data
+   * @returns {Object}
+   */
+  static fromJSON(data = {}) {
+    return {
+      motivo: data.motivo ? String(data.motivo).toUpperCase() : 'OUTRO',
+      observacao: data.observacao || data.observacaoCancelamento || null,
+      usuarioId: data.usuarioId || null
+    };
+  }
+
+  /**
+   * @param {Object} data
+   * @returns {{ errors: string[] }|null}
+   */
+  static validate(data = {}) {
+    const errors = [];
+    if (data.motivo != null && data.motivo !== '') {
+      const codigo = String(data.motivo).toUpperCase();
+      if (!CancelarConsignacaoRequest.MOTIVOS.includes(codigo)) {
+        errors.push(`motivo inválido. Use: ${CancelarConsignacaoRequest.MOTIVOS.join(', ')}`);
+      }
+    }
+    return errors.length > 0 ? { errors } : null;
   }
 }
 
@@ -175,6 +222,64 @@ class RegistrarEntregaRequest {
           ? { autorizado: true, supervisorToken: data.supervisorToken }
           : null)
     };
+  }
+}
+
+/**
+ * RCM-8.7 — Entrega Complementar (itens novos em consignação ENTREGUE).
+ */
+class RegistrarEntregaComplementarRequest {
+  /**
+   * @param {Object} data
+   */
+  static fromJSON(data = {}) {
+    const liberacao = data.liberacaoGerencial || null;
+    const itens = Array.isArray(data.itens) ? data.itens : [];
+    return {
+      observacao: data.observacao || data.motivo || null,
+      motivo: data.motivo || data.observacao || null,
+      usuarioId: data.usuarioId || null,
+      correlationId: data.correlationId || null,
+      liberacaoGerencial: liberacao
+        ? {
+            ...liberacao,
+            autorizado: liberacao.autorizado === true || liberacao.autorizado === 'true',
+            supervisorToken: liberacao.supervisorToken || data.supervisorToken || null
+          }
+        : (data.supervisorToken
+          ? { autorizado: true, supervisorToken: data.supervisorToken }
+          : null),
+      itens: itens.map((item) => ({
+        produtoId: item.produtoId != null ? Number(item.produtoId) : null,
+        quantidade: item.quantidade != null ? Number(item.quantidade) : null,
+        precoUnitario: item.precoUnitario != null ? Number(item.precoUnitario) : undefined,
+        unidadeComercial: item.unidadeComercial || item.unidade_comercial || null,
+        linhaComercialId: item.linhaComercialId ?? item.linha_comercial_id ?? null,
+        tabelaPrecoId: item.tabelaPrecoId ?? item.tabela_preco_id ?? null,
+        canalVenda: item.canalVenda || item.canal_venda || item.canal || 'CONSIGNADO',
+        precoOrigem: item.precoOrigem || item.preco_origem || null,
+        precoFallback: item.precoFallback ?? item.preco_fallback ?? null
+      }))
+    };
+  }
+
+  /**
+   * @param {Object} data
+   * @returns {{ errors: string[] }|null}
+   */
+  static validate(data = {}) {
+    const errors = [];
+    if (!Array.isArray(data.itens) || !data.itens.length) {
+      errors.push('itens é obrigatório');
+    } else {
+      data.itens.forEach((item, idx) => {
+        if (!item.produtoId) errors.push(`itens[${idx}].produtoId é obrigatório`);
+        if (!(Number(item.quantidade) > 0)) {
+          errors.push(`itens[${idx}].quantidade deve ser positiva`);
+        }
+      });
+    }
+    return errors.length ? { errors } : null;
   }
 }
 
@@ -475,10 +580,17 @@ class ConsignacaoResponse {
   /**
    * Converte entidade de domínio para DTO de resposta.
    * @param {Object} consignacao
+   * @param {Object} [extras]
    * @returns {Object}
    */
-  static toJSON(consignacao) {
+  static toJSON(consignacao, extras = {}) {
     if (!consignacao) return null;
+
+    const itens = extras.itens || consignacao.itens || [];
+    const statusConsulta = mapStatusConsultaConsignacao(consignacao);
+    const quantidadeItens = consignacao.quantidadeItens != null
+      ? Number(consignacao.quantidadeItens)
+      : (Array.isArray(itens) ? itens.length : 0);
 
     return {
       id: consignacao.id,
@@ -497,10 +609,13 @@ class ConsignacaoResponse {
         ?? null,
       perfilComercialId: consignacao.perfilComercialId,
       status: consignacao.status,
+      statusLabel: statusConsulta.label,
+      statusConsulta,
       documento: consignacao.documento,
       documentoExterno: consignacao.documentoExterno ?? null,
       observacao: consignacao.observacao,
       usuarioAberturaId: consignacao.usuarioAberturaId,
+      usuarioEncerramentoId: consignacao.usuarioEncerramentoId ?? null,
       dataAbertura: consignacao.dataAbertura,
       dataEntrega: consignacao.dataEntrega,
       dataEntregaPrevista: consignacao.dataEntregaPrevista,
@@ -508,10 +623,15 @@ class ConsignacaoResponse {
       dataEncerramento: consignacao.dataEncerramento ?? consignacao.dataFechamento ?? null,
       // Cache financeiro (ledger) — necessário para Central E5 / saldo a receber
       valorTotalEntregue: Number(consignacao.valorTotalEntregue ?? 0),
+      valorTotal: Number(consignacao.valorTotalEntregue ?? consignacao.valorTotal ?? 0),
       valorTotalAcertado: Number(consignacao.valorTotalAcertado ?? 0),
       valorTotalPago: Number(consignacao.valorTotalPago ?? 0),
       saldoAberto: Number(consignacao.saldoAberto ?? consignacao.saldo ?? 0),
+      quantidadeItens,
+      canalOperacao: extrairCanalOperacao(consignacao, itens),
+      tabelaPrecoId: extrairTabelaPrecoId(consignacao, itens),
       prestacaoContasAtiva: consignacao.prestacaoContasAtiva ?? null,
+      cancelamento: extrairCancelamento(consignacao),
       createdAt: consignacao.createdAt,
       updatedAt: consignacao.updatedAt
     };
@@ -595,9 +715,11 @@ class ItemConsignacaoResponse {
 module.exports = {
   CriarConsignacaoRequest,
   EditarConsignacaoRequest,
+  CancelarConsignacaoRequest,
   AdicionarItemRequest,
   AlterarQuantidadeItemRequest,
   RegistrarEntregaRequest,
+  RegistrarEntregaComplementarRequest,
   RegistrarEmissaoTermoEntregaRequest,
   AbrirPrestacaoRequest,
   RegistrarDevolucaoRequest,

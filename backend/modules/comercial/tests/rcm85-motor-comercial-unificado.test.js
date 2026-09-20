@@ -48,6 +48,9 @@ async function main() {
   assert.ok(mobile.includes("canal: 'CONSIGNADO'"), 'mobile canal consignado');
   assert.ok(mobile.includes('precoOrigem') || mobile.includes('preco_origem'), 'mobile snapshot');
   assert.ok(mobile.includes('[RCM-8.5][COMERCIAL][Resolver]'), 'mobile log');
+  assert.ok(mobile.includes('emitirNfceEEncerrar'), 'emite NFC-e da prestação');
+  assert.ok(mobile.includes('timeoutMs: 180000'), 'NFC-e consignada com timeout do PDV');
+  assert.ok(mobile.includes('mostrarCupomAposEmissao'), 'cupom na tela após NFC-e');
   console.log('OK 1 — Mobile Consignação via Motor Oficial');
 
   assert.ok(addUc.includes('clienteTrouxeSnapshot') || addUc.includes('RCM-8.5'), 'UC harden');

@@ -299,29 +299,154 @@ class CentralTrabalhoView {
     lista.className = 'cds-central-ops__fila';
 
     itens.forEach((item) => {
-      const formatCurrency = ctx.formatCurrency || ((v) => String(v));
-      const valor = formatCurrency(item.valor ?? item.saldoDevedor ?? 0);
-      const itensLabel = `${item.itens ?? 0} itens`;
-      const tempo = item.tempoAguardando || '—';
-      const card = EntityCard.create({
-        variant: 'compact',
-        title: `👤 ${item.clienteNome || 'Cliente'}`,
-        subtitle: `📄 ${item.entregaLabel || item.documento || '—'}`,
-        status: `● ${item.statusLabel || item.situacao || 'Atendimento'}`,
-        description: `💰 ${valor} • 📦 ${itensLabel} • ⏱ ${tempo}`,
-        badges: item.estado ? [{ text: item.estado, variant: item.nivel || 'info' }] : [],
-        kind: 'fila-trabalho',
-        className: `cds-central-ops__entity cds-central-ops__entity--${item.nivel || 'info'}`,
-        primaryAction: {
-          label: item.acaoLabel || 'Continuar Atendimento',
-          onClick: () => ctx.onAcao && ctx.onAcao(item)
-        }
-      });
-      lista.appendChild(card);
+      const ops = Array.isArray(item.consignacoes) ? item.consignacoes : null;
+      if (item.agrupado && ops && ops.length) {
+        lista.appendChild(CentralTrabalhoView._renderCardClienteAgrupado(item, ops, ctx));
+        return;
+      }
+      lista.appendChild(CentralTrabalhoView._renderCardOperacaoSimples(item, ctx));
     });
 
     section.appendChild(lista);
     return section;
+  }
+
+  /**
+   * RCM-8.10 — 1 cliente = 1 card; N consignações com ações por consignacaoId.
+   */
+  static _renderCardClienteAgrupado(item, operacoes, ctx = {}) {
+    const formatCurrency = ctx.formatCurrency || ((v) => String(v));
+    const valor = formatCurrency(item.valor ?? item.saldoDevedor ?? 0);
+    const qtdConsig = item.quantidadeConsignacoes ?? operacoes.length;
+    const itensTotal = item.itens ?? 0;
+    const consigLabel = qtdConsig === 1 ? '1 consignação' : `${qtdConsig} consignações`;
+    const itensLabel = itensTotal === 1 ? '1 item' : `${itensTotal} itens`;
+
+    const card = EntityCard.create({
+      variant: 'compact',
+      title: `👤 ${item.clienteNome || 'Cliente'}`,
+      subtitle: item.documento && item.documento !== '—' ? `📄 ${item.documento}` : '',
+      status: `● ${item.statusLabel || item.situacao || 'Operações'}`,
+      description: `💰 ${valor} · 📦 ${itensLabel} · ${consigLabel}`,
+      badges: (item.estados || (item.estado ? [item.estado] : [])).map((e) => ({
+        text: e,
+        variant: item.nivel || 'info'
+      })),
+      kind: 'fila-trabalho-cliente',
+      className: `cds-central-ops__entity cds-central-ops__entity--cliente cds-central-ops__entity--${item.nivel || 'info'}`
+    });
+
+    const opsList = document.createElement('div');
+    opsList.className = 'cds-central-ops__ops';
+    opsList.setAttribute('role', 'list');
+
+    operacoes.forEach((op) => {
+      opsList.appendChild(CentralTrabalhoView._renderOperacaoNoCard(op, ctx, formatCurrency));
+    });
+
+    card.appendChild(opsList);
+    return card;
+  }
+
+  static _renderOperacaoNoCard(op, ctx, formatCurrency) {
+    const row = document.createElement('div');
+    row.className = 'cds-central-ops__op';
+    row.setAttribute('role', 'listitem');
+    row.dataset.consignacaoId = String(op.consignacaoId ?? '');
+    row.dataset.estado = op.estado || '';
+
+    const head = document.createElement('div');
+    head.className = 'cds-central-ops__op-head';
+
+    const title = document.createElement('strong');
+    title.className = 'cds-central-ops__op-doc';
+    title.textContent = op.entregaLabel || op.documentoConsignacao || `Consignação #${op.consignacaoId}`;
+
+    const badge = document.createElement('span');
+    badge.className = 'cds-central-ops__op-badge';
+    badge.textContent = op.estado || '';
+    if (op.nivel) badge.dataset.variant = op.nivel;
+
+    head.appendChild(title);
+    if (op.estado) head.appendChild(badge);
+
+    const meta = document.createElement('p');
+    meta.className = 'cds-central-ops__op-meta';
+    const valorOp = formatCurrency(op.valor ?? op.saldoDevedor ?? 0);
+    const itensOp = Number(op.itens || 0);
+    meta.textContent = `💰 ${valorOp} · 📦 ${itensOp === 1 ? '1 item' : `${itensOp} itens`} · ${op.statusLabel || op.situacao || ''}`;
+
+    const actions = document.createElement('div');
+    actions.className = 'cds-central-ops__op-actions';
+
+    if (op.podeEntregaComplementar && op.consignacaoId != null) {
+      const btnComp = document.createElement('button');
+      btnComp.type = 'button';
+      btnComp.className = 'cds-central-ops__op-btn cds-central-ops__op-btn--ghost';
+      btnComp.textContent = 'Ent. Complementar';
+      btnComp.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (ctx.onAcao) {
+          ctx.onAcao({
+            ...op,
+            acaoTipo: 'entrega-complementar',
+            acaoLabel: 'Ent. Complementar'
+          });
+        }
+      });
+      actions.appendChild(btnComp);
+    }
+
+    const btnPrimary = document.createElement('button');
+    btnPrimary.type = 'button';
+    btnPrimary.className = 'cds-central-ops__op-btn cds-central-ops__op-btn--primary';
+    btnPrimary.textContent = op.acaoLabel || 'Abrir';
+    btnPrimary.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (ctx.onAcao) ctx.onAcao(op);
+    });
+    actions.appendChild(btnPrimary);
+
+    row.appendChild(head);
+    row.appendChild(meta);
+    row.appendChild(actions);
+    return row;
+  }
+
+  /** Card legado / risco sem lista aninhada (1 operação = ações no card). */
+  static _renderCardOperacaoSimples(item, ctx = {}) {
+    const formatCurrency = ctx.formatCurrency || ((v) => String(v));
+    const valor = formatCurrency(item.valor ?? item.saldoDevedor ?? 0);
+    const itensLabel = `${item.itens ?? 0} itens`;
+    const tempo = item.tempoAguardando || '—';
+    const cardOpts = {
+      variant: 'compact',
+      title: `👤 ${item.clienteNome || 'Cliente'}`,
+      subtitle: `📄 ${item.entregaLabel || item.documento || '—'}`,
+      status: `● ${item.statusLabel || item.situacao || 'Atendimento'}`,
+      description: `💰 ${valor} • 📦 ${itensLabel} • ⏱ ${tempo}`,
+      badges: item.estado ? [{ text: item.estado, variant: item.nivel || 'info' }] : [],
+      kind: 'fila-trabalho',
+      className: `cds-central-ops__entity cds-central-ops__entity--${item.nivel || 'info'}`,
+      primaryAction: {
+        label: item.acaoLabel || 'Continuar Atendimento',
+        onClick: () => ctx.onAcao && ctx.onAcao(item)
+      }
+    };
+
+    if (item.podeEntregaComplementar && item.consignacaoId != null) {
+      cardOpts.secondaryAction = {
+        label: 'Ent. Complementar',
+        variant: 'ghost',
+        onClick: () => ctx.onAcao && ctx.onAcao({
+          ...item,
+          acaoTipo: 'entrega-complementar',
+          acaoLabel: 'Ent. Complementar'
+        })
+      };
+    }
+
+    return EntityCard.create(cardOpts);
   }
 
   static _renderConsignados(itens = [], ctx = {}) {

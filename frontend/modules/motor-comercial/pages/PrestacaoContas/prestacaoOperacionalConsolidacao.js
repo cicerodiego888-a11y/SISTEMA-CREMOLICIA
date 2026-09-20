@@ -39,7 +39,7 @@ const SITUACAO_FINANCEIRA_LABEL = Object.freeze({
   // aliases internos → oficiais
   PARCIALMENTE_RECEBIDA: 'Parcial',
   EM_ABERTO: 'Em Aberto',
-  SEM_VENDA: 'Quitada'
+  SEM_VENDA: 'Sem Venda'
 });
 
 /** Situação fiscal — textos únicos do operador. */

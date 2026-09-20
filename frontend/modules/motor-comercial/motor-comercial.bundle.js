@@ -6135,6 +6135,15 @@ ${collectAllStyles()}`;
           }
         },
         {
+          path: "/consignacoes/:id/entrega-complementar",
+          name: "entrega-complementar",
+          component: "EntregaComplementar",
+          meta: {
+            title: "Entrega Complementar",
+            requiresAuth: true
+          }
+        },
+        {
           path: "/consignacoes/:id/comprovante",
           name: "comprovante-entrega",
           component: "ComprovanteEntrega",
@@ -6632,8 +6641,27 @@ ${collectAllStyles()}`;
           if (!target) {
             throw new Error(`Elemento de montagem n\xE3o encontrado: ${this.mountTarget}`);
           }
+          this._disposeMountedPages(target);
           target.innerHTML = "";
           target.appendChild(element);
+        }
+        /**
+         * RCM-8.6 — destrói páginas com destroy() antes de trocar o DOM
+         * (timers/polling/callbacks da Prestação não sobrevivem à navegação).
+         * @private
+         */
+        _disposeMountedPages(target) {
+          if (!target) return;
+          const nodes = target.querySelectorAll('[data-page-destroyable="true"]');
+          nodes.forEach((node2) => {
+            const instance = node2.__cdsPageInstance;
+            if (instance && typeof instance.destroy === "function") {
+              try {
+                instance.destroy();
+              } catch (_e2) {
+              }
+            }
+          });
         }
         /**
          * @private
@@ -6781,7 +6809,7 @@ ${lines.join("\n")}
         "module": "motor-comercial",
         "version": "1.0.3",
         "sprint": "UX-10",
-        "buildTime": "2026-08-06 12:14:41",
+        "buildTime": "2026-09-20 08:32:50",
         "hash": null,
         "ambiente": "development"
       };
@@ -7211,18 +7239,24 @@ ${lines.join("\n")}
         return data;
       }
       function unwrapList(response) {
-        var _a2, _b2;
+        var _a2, _b2, _c, _d, _e2, _f, _g, _h;
         const raw = unwrapData(response);
         if (Array.isArray(raw)) {
           return {
             items: raw,
             total: ((_a2 = response == null ? void 0 : response.metadata) == null ? void 0 : _a2.total) ?? raw.length,
+            page: (_b2 = response == null ? void 0 : response.metadata) == null ? void 0 : _b2.page,
+            pageSize: (_c = response == null ? void 0 : response.metadata) == null ? void 0 : _c.pageSize,
+            hasMore: (_d = response == null ? void 0 : response.metadata) == null ? void 0 : _d.hasMore,
             metadata: (response == null ? void 0 : response.metadata) || null
           };
         }
         return {
           items: (raw == null ? void 0 : raw.items) || (raw == null ? void 0 : raw.movimentacoes) || (raw == null ? void 0 : raw.registros) || (raw == null ? void 0 : raw.eventos) || [],
-          total: (raw == null ? void 0 : raw.total) ?? ((_b2 = response == null ? void 0 : response.metadata) == null ? void 0 : _b2.total) ?? 0,
+          total: (raw == null ? void 0 : raw.total) ?? ((_e2 = response == null ? void 0 : response.metadata) == null ? void 0 : _e2.total) ?? 0,
+          page: (raw == null ? void 0 : raw.page) ?? ((_f = response == null ? void 0 : response.metadata) == null ? void 0 : _f.page),
+          pageSize: (raw == null ? void 0 : raw.pageSize) ?? ((_g = response == null ? void 0 : response.metadata) == null ? void 0 : _g.pageSize),
+          hasMore: (raw == null ? void 0 : raw.hasMore) ?? ((_h = response == null ? void 0 : response.metadata) == null ? void 0 : _h.hasMore),
           metadata: (response == null ? void 0 : response.metadata) || (raw == null ? void 0 : raw.metadata) || null
         };
       }
@@ -7305,7 +7339,7 @@ ${lines.join("\n")}
           valor: valorResolvido,
           saldo: saldoResolvido,
           aguardandoEntrega: isRascunho,
-          quantidadeItens: itens.length,
+          quantidadeItens: consignacao.quantidadeItens != null ? Number(consignacao.quantidadeItens) : itens.length,
           prestacaoContasAtiva: consignacao.prestacaoContasAtiva ?? extras.prestacaoContasAtiva ?? null,
           ultimaMovimentacao: consignacao.updatedAt,
           usuario: consignacao.usuarioAberturaId,
@@ -7435,9 +7469,14 @@ ${lines.join("\n")}
               try {
                 errorBody = await response.json();
               } catch (_parseError) {
-                throw new Error(`HTTP ${response.status}`);
+                const httpErr = new Error(`HTTP ${response.status}`);
+                httpErr.status = response.status;
+                throw httpErr;
               }
-              throw new Error(extractErrorMessage(errorBody));
+              const err2 = new Error(extractErrorMessage(errorBody));
+              err2.status = response.status;
+              err2.body = errorBody;
+              throw err2;
             }
             return await response.json();
           } catch (error) {
@@ -7557,8 +7596,20 @@ ${lines.join("\n")}
           const response = await this.client.get("/consignacoes", { params: filters });
           return unwrapList(response);
         }
-        async obterConsignacao(id) {
-          const response = await this.client.get(`/consignacoes/${id}`);
+        /**
+         * RCM-8.5 — histórico paginado do cliente. Nunca solicita a lista inteira.
+         */
+        async listarHistoricoConsignacoesCliente(clienteId, { page = 1, pageSize = 20 } = {}) {
+          return this.listarConsignacoes({
+            clienteId,
+            cliente_id: clienteId,
+            page,
+            pageSize,
+            limite: pageSize
+          });
+        }
+        async obterConsignacao(id, params = {}) {
+          const response = await this.client.get(`/consignacoes/${id}`, { params });
           return unwrapData(response);
         }
         /**
@@ -7591,8 +7642,18 @@ ${lines.join("\n")}
           return unwrapData(response);
         }
         async cancelarConsignacao(id, data = {}) {
-          const response = await this.client.delete(`/consignacoes/${id}`, this._withUsuario(data));
-          return unwrapData(response);
+          const payload = this._withUsuario(data);
+          try {
+            const response = await this.client.post(`/consignacoes/${id}/cancelar`, payload);
+            return unwrapData(response);
+          } catch (error) {
+            const status = Number((error == null ? void 0 : error.status) || (error == null ? void 0 : error.statusCode) || 0);
+            if (status === 404 || status === 405) {
+              const response = await this.client.delete(`/consignacoes/${id}`, payload);
+              return unwrapData(response);
+            }
+            throw error;
+          }
         }
         async adicionarItem(id, data) {
           const response = await this.client.post(`/consignacoes/${id}/itens`, this._withUsuario(data));
@@ -7617,11 +7678,44 @@ ${lines.join("\n")}
           return unwrapData(response);
         }
         async entregarConsignacao(id, data = {}) {
-          const response = await this.client.post(`/consignacoes/${id}/entrega`, this._withUsuario(data));
+          const response = await this.client.post(
+            `/consignacoes/${id}/entrega`,
+            this._withUsuario(data),
+            { timeout: 12e4 }
+          );
+          return unwrapData(response);
+        }
+        /**
+         * RCM-8.7 — Entrega Complementar (somente itens novos).
+         */
+        async registrarEntregaComplementar(id, data = {}) {
+          const response = await this.client.post(
+            `/consignacoes/${id}/entrega-complementar`,
+            this._withUsuario(data),
+            { timeout: 12e4 }
+          );
+          return unwrapUseCaseData(response);
+        }
+        /**
+         * RCM-8.7 — Histórico Entrega Original + Complementares (somente leitura).
+         */
+        async consultarEntregasConsignacao(id, params = {}) {
+          const response = await this.client.get(`/consignacoes/${id}/entregas`, {
+            params: { ...params, _t: Date.now() }
+          });
           return unwrapData(response);
         }
         async obterComprovanteEntrega(id, params = {}) {
-          const response = await this.client.get(`/consignacoes/${id}/comprovante`, { params: { ...params, _t: Date.now() } });
+          const response = await this.client.get(`/consignacoes/${id}/comprovante`, {
+            params: { ...params, _t: Date.now() },
+            timeout: 6e4
+          });
+          return unwrapData(response);
+        }
+        async obterComprovantePrestacao(id, params = {}) {
+          const response = await this.client.get(`/consignacoes/${id}/comprovante`, {
+            params: { ...params, tipo: "PRESTACAO", _t: Date.now() }
+          });
           return unwrapData(response);
         }
         async registrarAcaoComprovante(id, data = {}) {
@@ -7686,7 +7780,8 @@ ${lines.join("\n")}
         async emitirNfcePrestacao(id, data = {}) {
           const response = await this.client.post(
             `/consignacoes/${id}/prestacao/emitir-nfce`,
-            this._withUsuario(data)
+            this._withUsuario(data),
+            { timeout: 18e4 }
           );
           return unwrapData(response);
         }
@@ -7736,9 +7831,9 @@ ${lines.join("\n")}
           return unwrapData(response);
         }
         /**
-         * Canal + preços da venda (RCM-04.5 / RA-6) — compartilhado com PDV/Pedidos.
+         * Canal + preços da venda (RCM-04.5 / RA-6 / RCM-8.5) — compartilhado com PDV/Pedidos/Orçamentos.
          * @param {Array} itens
-         * @param {Object} [opts] — { canal, tabela_preco_id }
+         * @param {Object} [opts] — { canal, tabela_preco_id, documento }
          */
         async resolverPrecosVenda(itens = [], opts = {}) {
           const payload = {
@@ -7747,7 +7842,8 @@ ${lines.join("\n")}
               quantidade: Number(item.quantidade ?? 0),
               categoria_id: item.categoria_id ?? item.categoriaId ?? null,
               linha_comercial_id: item.linha_comercial_id ?? item.linhaComercialId ?? null
-            }))
+            })),
+            documento: opts.documento || "comercial"
           };
           if (opts.canal) payload.canal = String(opts.canal).toUpperCase();
           if (opts.tabela_preco_id) payload.tabela_preco_id = Number(opts.tabela_preco_id);
@@ -7766,12 +7862,32 @@ ${lines.join("\n")}
             body: JSON.stringify(payload)
           });
           if (!response.ok) {
-            let body = null;
-            try {
-              body = await response.json();
-            } catch (_e2) {
-            }
-            throw new Error(extractErrorMessage(body) || `HTTP ${response.status}`);
+            const errBody = await response.json().catch(() => ({}));
+            throw new Error(errBody.erro || errBody.message || `HTTP ${response.status}`);
+          }
+          return response.json();
+        }
+        /**
+         * RCM-8.5 — Comparar Tabelas (informativo).
+         */
+        async compararTabelasPrecificacao({ produtoId, canais } = {}) {
+          const base = String(this.client.baseURL || "http://localhost:3000/api/comercial").replace(/\/comercial\/?$/, "");
+          const headers = { "Content-Type": "application/json" };
+          if (typeof localStorage !== "undefined") {
+            const token = localStorage.getItem("token");
+            if (token) headers.Authorization = `Bearer ${token}`;
+          }
+          const response = await fetch(`${base}/configuracao-comercial/comparar-tabelas`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              produto_id: Number(produtoId),
+              canais: canais || void 0
+            })
+          });
+          if (!response.ok) {
+            const errBody = await response.json().catch(() => ({}));
+            throw new Error(errBody.erro || errBody.message || `HTTP ${response.status}`);
           }
           return response.json();
         }
@@ -10324,16 +10440,28 @@ ${lines.join("\n")}
     "frontend/modules/motor-comercial/messages/ConfirmMessages.js"(exports, module) {
       var ConfirmMessages = Object.freeze({
         CANCELAR_CONSIGNACAO: {
-          title: "Cancelar consigna\xE7\xE3o",
-          message: "Deseja cancelar esta consigna\xE7\xE3o em rascunho?\nEsta a\xE7\xE3o n\xE3o pode ser desfeita."
+          title: "Cancelar prepara\xE7\xE3o",
+          message: "Cancelar esta consigna\xE7\xE3o?\nEsta a\xE7\xE3o cancelar\xE1 a prepara\xE7\xE3o e a entrega n\xE3o ser\xE1 realizada.",
+          cancelLabel: "Voltar",
+          confirmLabel: "Confirmar cancelamento",
+          danger: true
         },
         DUPLICAR_CONSIGNACAO: {
           title: "Duplicar consigna\xE7\xE3o",
           message: "Deseja duplicar esta consigna\xE7\xE3o?"
         },
         CONFIRMAR_ENTREGA: {
-          title: "Confirmar entrega",
-          message: "Deseja confirmar a entrega desta consigna\xE7\xE3o?"
+          title: "Confirmar entrega?",
+          message: "Ap\xF3s confirmar a entrega, os itens ser\xE3o registrados como entregues e n\xE3o poder\xE3o mais ser editados.",
+          cancelLabel: "Voltar e revisar",
+          confirmLabel: "Confirmar entrega"
+        },
+        REMOVER_ITEM_ENTREGA: {
+          title: "Remover este produto da entrega?",
+          message: "O produto ser\xE1 removido somente desta consigna\xE7\xE3o em prepara\xE7\xE3o.",
+          cancelLabel: "Cancelar",
+          confirmLabel: "Remover",
+          danger: true
         },
         CANCELAR_ENTREGA: {
           title: "Cancelar entrega",
@@ -12125,7 +12253,8 @@ ${lines.join("\n")}
           });
           footer.appendChild(cancelBtn);
           footer.appendChild(confirmBtn);
-          const content = document.createElement("p");
+          const content = document.createElement("div");
+          content.style.whiteSpace = "pre-wrap";
           content.textContent = options.message || "Deseja continuar?";
           const backdrop = Modal.create({
             title: options.title || "Confirma\xE7\xE3o",
@@ -12785,28 +12914,135 @@ ${lines.join("\n")}
           const lista = document.createElement("div");
           lista.className = "cds-central-ops__fila";
           itens.forEach((item) => {
-            const formatCurrency = ctx.formatCurrency || ((v3) => String(v3));
-            const valor = formatCurrency(item.valor ?? item.saldoDevedor ?? 0);
-            const itensLabel = `${item.itens ?? 0} itens`;
-            const tempo = item.tempoAguardando || "\u2014";
-            const card = EntityCard.create({
-              variant: "compact",
-              title: `\u{1F464} ${item.clienteNome || "Cliente"}`,
-              subtitle: `\u{1F4C4} ${item.entregaLabel || item.documento || "\u2014"}`,
-              status: `\u25CF ${item.statusLabel || item.situacao || "Atendimento"}`,
-              description: `\u{1F4B0} ${valor} \u2022 \u{1F4E6} ${itensLabel} \u2022 \u23F1 ${tempo}`,
-              badges: item.estado ? [{ text: item.estado, variant: item.nivel || "info" }] : [],
-              kind: "fila-trabalho",
-              className: `cds-central-ops__entity cds-central-ops__entity--${item.nivel || "info"}`,
-              primaryAction: {
-                label: item.acaoLabel || "Continuar Atendimento",
-                onClick: () => ctx.onAcao && ctx.onAcao(item)
-              }
-            });
-            lista.appendChild(card);
+            const ops = Array.isArray(item.consignacoes) ? item.consignacoes : null;
+            if (item.agrupado && ops && ops.length) {
+              lista.appendChild(_CentralTrabalhoView._renderCardClienteAgrupado(item, ops, ctx));
+              return;
+            }
+            lista.appendChild(_CentralTrabalhoView._renderCardOperacaoSimples(item, ctx));
           });
           section.appendChild(lista);
           return section;
+        }
+        /**
+         * RCM-8.10 — 1 cliente = 1 card; N consignações com ações por consignacaoId.
+         */
+        static _renderCardClienteAgrupado(item, operacoes, ctx = {}) {
+          const formatCurrency = ctx.formatCurrency || ((v3) => String(v3));
+          const valor = formatCurrency(item.valor ?? item.saldoDevedor ?? 0);
+          const qtdConsig = item.quantidadeConsignacoes ?? operacoes.length;
+          const itensTotal = item.itens ?? 0;
+          const consigLabel = qtdConsig === 1 ? "1 consigna\xE7\xE3o" : `${qtdConsig} consigna\xE7\xF5es`;
+          const itensLabel = itensTotal === 1 ? "1 item" : `${itensTotal} itens`;
+          const card = EntityCard.create({
+            variant: "compact",
+            title: `\u{1F464} ${item.clienteNome || "Cliente"}`,
+            subtitle: item.documento && item.documento !== "\u2014" ? `\u{1F4C4} ${item.documento}` : "",
+            status: `\u25CF ${item.statusLabel || item.situacao || "Opera\xE7\xF5es"}`,
+            description: `\u{1F4B0} ${valor} \xB7 \u{1F4E6} ${itensLabel} \xB7 ${consigLabel}`,
+            badges: (item.estados || (item.estado ? [item.estado] : [])).map((e2) => ({
+              text: e2,
+              variant: item.nivel || "info"
+            })),
+            kind: "fila-trabalho-cliente",
+            className: `cds-central-ops__entity cds-central-ops__entity--cliente cds-central-ops__entity--${item.nivel || "info"}`
+          });
+          const opsList = document.createElement("div");
+          opsList.className = "cds-central-ops__ops";
+          opsList.setAttribute("role", "list");
+          operacoes.forEach((op) => {
+            opsList.appendChild(_CentralTrabalhoView._renderOperacaoNoCard(op, ctx, formatCurrency));
+          });
+          card.appendChild(opsList);
+          return card;
+        }
+        static _renderOperacaoNoCard(op, ctx, formatCurrency) {
+          const row = document.createElement("div");
+          row.className = "cds-central-ops__op";
+          row.setAttribute("role", "listitem");
+          row.dataset.consignacaoId = String(op.consignacaoId ?? "");
+          row.dataset.estado = op.estado || "";
+          const head = document.createElement("div");
+          head.className = "cds-central-ops__op-head";
+          const title = document.createElement("strong");
+          title.className = "cds-central-ops__op-doc";
+          title.textContent = op.entregaLabel || op.documentoConsignacao || `Consigna\xE7\xE3o #${op.consignacaoId}`;
+          const badge = document.createElement("span");
+          badge.className = "cds-central-ops__op-badge";
+          badge.textContent = op.estado || "";
+          if (op.nivel) badge.dataset.variant = op.nivel;
+          head.appendChild(title);
+          if (op.estado) head.appendChild(badge);
+          const meta = document.createElement("p");
+          meta.className = "cds-central-ops__op-meta";
+          const valorOp = formatCurrency(op.valor ?? op.saldoDevedor ?? 0);
+          const itensOp = Number(op.itens || 0);
+          meta.textContent = `\u{1F4B0} ${valorOp} \xB7 \u{1F4E6} ${itensOp === 1 ? "1 item" : `${itensOp} itens`} \xB7 ${op.statusLabel || op.situacao || ""}`;
+          const actions = document.createElement("div");
+          actions.className = "cds-central-ops__op-actions";
+          if (op.podeEntregaComplementar && op.consignacaoId != null) {
+            const btnComp = document.createElement("button");
+            btnComp.type = "button";
+            btnComp.className = "cds-central-ops__op-btn cds-central-ops__op-btn--ghost";
+            btnComp.textContent = "Ent. Complementar";
+            btnComp.addEventListener("click", (e2) => {
+              e2.stopPropagation();
+              if (ctx.onAcao) {
+                ctx.onAcao({
+                  ...op,
+                  acaoTipo: "entrega-complementar",
+                  acaoLabel: "Ent. Complementar"
+                });
+              }
+            });
+            actions.appendChild(btnComp);
+          }
+          const btnPrimary = document.createElement("button");
+          btnPrimary.type = "button";
+          btnPrimary.className = "cds-central-ops__op-btn cds-central-ops__op-btn--primary";
+          btnPrimary.textContent = op.acaoLabel || "Abrir";
+          btnPrimary.addEventListener("click", (e2) => {
+            e2.stopPropagation();
+            if (ctx.onAcao) ctx.onAcao(op);
+          });
+          actions.appendChild(btnPrimary);
+          row.appendChild(head);
+          row.appendChild(meta);
+          row.appendChild(actions);
+          return row;
+        }
+        /** Card legado / risco sem lista aninhada (1 operação = ações no card). */
+        static _renderCardOperacaoSimples(item, ctx = {}) {
+          const formatCurrency = ctx.formatCurrency || ((v3) => String(v3));
+          const valor = formatCurrency(item.valor ?? item.saldoDevedor ?? 0);
+          const itensLabel = `${item.itens ?? 0} itens`;
+          const tempo = item.tempoAguardando || "\u2014";
+          const cardOpts = {
+            variant: "compact",
+            title: `\u{1F464} ${item.clienteNome || "Cliente"}`,
+            subtitle: `\u{1F4C4} ${item.entregaLabel || item.documento || "\u2014"}`,
+            status: `\u25CF ${item.statusLabel || item.situacao || "Atendimento"}`,
+            description: `\u{1F4B0} ${valor} \u2022 \u{1F4E6} ${itensLabel} \u2022 \u23F1 ${tempo}`,
+            badges: item.estado ? [{ text: item.estado, variant: item.nivel || "info" }] : [],
+            kind: "fila-trabalho",
+            className: `cds-central-ops__entity cds-central-ops__entity--${item.nivel || "info"}`,
+            primaryAction: {
+              label: item.acaoLabel || "Continuar Atendimento",
+              onClick: () => ctx.onAcao && ctx.onAcao(item)
+            }
+          };
+          if (item.podeEntregaComplementar && item.consignacaoId != null) {
+            cardOpts.secondaryAction = {
+              label: "Ent. Complementar",
+              variant: "ghost",
+              onClick: () => ctx.onAcao && ctx.onAcao({
+                ...item,
+                acaoTipo: "entrega-complementar",
+                acaoLabel: "Ent. Complementar"
+              })
+            };
+          }
+          return EntityCard.create(cardOpts);
         }
         static _renderConsignados(itens = [], ctx = {}) {
           const section = _CentralTrabalhoView._renderSectionShell("Consignados Pendentes", "sec-consignados-pendentes", "0ms");
@@ -13732,11 +13968,312 @@ ${lines.join("\n")}
     }
   });
 
+  // frontend/modules/motor-comercial/pages/PerfilComercial/historicoConsignacoesMappers.js
+  var require_historicoConsignacoesMappers = __commonJS({
+    "frontend/modules/motor-comercial/pages/PerfilComercial/historicoConsignacoesMappers.js"(exports, module) {
+      var STATUS_LABEL = {
+        RASCUNHO: "Em prepara\xE7\xE3o",
+        ENTREGUE: "Entregue",
+        ACERTADA: "Acertada",
+        QUITADA: "Quitada",
+        ENCERRADA: "Encerrada",
+        CANCELADA: "Cancelada"
+      };
+      function formatDocumentoNumero(consignacao) {
+        const doc = consignacao == null ? void 0 : consignacao.documento;
+        if (doc && typeof doc === "object" && doc.numero) return String(doc.numero);
+        if (typeof doc === "string" && doc.trim()) return doc.trim();
+        const id = consignacao == null ? void 0 : consignacao.id;
+        if (id == null) return "\u2014";
+        return String(id).padStart(6, "0");
+      }
+      function mapStatusConsulta(consignacao = {}) {
+        var _a2;
+        if ((_a2 = consignacao.statusConsulta) == null ? void 0 : _a2.label) {
+          return {
+            codigo: consignacao.statusConsulta.codigo || consignacao.status,
+            label: consignacao.statusConsulta.label
+          };
+        }
+        if (consignacao.statusLabel) {
+          return { codigo: consignacao.status, label: consignacao.statusLabel };
+        }
+        const status = String(consignacao.status || "").toUpperCase();
+        const prestacao = consignacao.prestacaoContasAtiva || {};
+        const prestacaoStatus = String(prestacao.status || "").toUpperCase();
+        const saldo = Number(consignacao.saldoAberto ?? consignacao.saldo ?? 0);
+        const pago = Number(consignacao.valorTotalPago ?? 0);
+        const acertado = Number(consignacao.valorTotalAcertado ?? 0);
+        if (status === "CANCELADA") return { codigo: status, label: "Cancelada" };
+        if (status === "RASCUNHO") return { codigo: status, label: "Em prepara\xE7\xE3o" };
+        if (status === "QUITADA") return { codigo: status, label: "Quitada" };
+        if (status === "ENCERRADA" || status === "FECHADA" || prestacaoStatus === "FECHADA") {
+          return {
+            codigo: status === "ENCERRADA" || status === "FECHADA" ? status : status || "ENCERRADA",
+            label: "Encerrada"
+          };
+        }
+        if (status === "ACERTADA") return { codigo: status, label: saldo > 0 ? "Parcial" : "Acertada" };
+        if (pago > 0 && saldo > 0 || acertado > 0 && saldo > 0) {
+          return { codigo: status || "ENTREGUE", label: "Parcial" };
+        }
+        if (STATUS_LABEL[status]) return { codigo: status, label: STATUS_LABEL[status] };
+        return { codigo: status || "DESCONHECIDO", label: status || "\u2014" };
+      }
+      function valorTotalSnapshot(consignacao = {}, itens = []) {
+        const header = consignacao.valorTotalEntregue ?? consignacao.valorTotal ?? consignacao.valor;
+        if (header != null && Number.isFinite(Number(header))) return Number(header);
+        return itens.reduce((acc, item) => acc + Number(item.precoTotal ?? item.subtotalEntregue ?? 0), 0);
+      }
+      function quantidadeItensSnapshot(consignacao = {}, itens = []) {
+        if (consignacao.quantidadeItens != null) return Number(consignacao.quantidadeItens);
+        return itens.length;
+      }
+      function pertenceAoClienteNaLista(consignacao, clienteId) {
+        if (clienteId == null || clienteId === "") return true;
+        const atual = (consignacao == null ? void 0 : consignacao.clienteId) ?? (consignacao == null ? void 0 : consignacao.cliente_id);
+        if (atual == null || atual === "") return true;
+        return Number(atual) === Number(clienteId);
+      }
+      function buildHistoricoConsignacoes(consignacoes = [], clienteId = null, opcoes = {}) {
+        const filtradas = [...consignacoes].filter((c4) => c4 && pertenceAoClienteNaLista(c4, clienteId));
+        if (!opcoes.manterOrdem) {
+          filtradas.sort((a3, b2) => new Date(b2.updatedAt || b2.dataEntrega || b2.dataAbertura || 0) - new Date(a3.updatedAt || a3.dataEntrega || a3.dataAbertura || 0));
+        }
+        return filtradas.map((c4) => {
+          const status = mapStatusConsulta(c4);
+          const itens = c4.itens || [];
+          return {
+            id: c4.id,
+            clienteId: c4.clienteId,
+            numero: formatDocumentoNumero(c4),
+            data: c4.dataEntrega || c4.dataAbertura || c4.createdAt,
+            status: status.codigo,
+            statusLabel: status.label,
+            quantidadeItens: quantidadeItensSnapshot(c4, itens),
+            valorTotal: valorTotalSnapshot(c4, itens),
+            atualizadoEm: c4.updatedAt || c4.dataEntrega || c4.dataAbertura,
+            cancelada: status.codigo === "CANCELADA",
+            somenteLeitura: true
+          };
+        });
+      }
+      function unidadeItemSnapshot(item = {}) {
+        return item.unidadeComercial || item.unidade || "UN";
+      }
+      function buildProdutoConsulta(item = {}) {
+        const quantidade = Number(item.quantidadeEntregue ?? item.quantidade ?? 0);
+        const precoUnitario = Number(item.precoUnitario ?? item.valorUnitario ?? item.preco ?? 0);
+        const total = item.precoTotal != null ? Number(item.precoTotal) : item.subtotalEntregue != null ? Number(item.subtotalEntregue) : quantidade * precoUnitario;
+        const unidadeComercial = unidadeItemSnapshot(item);
+        const unidadeBase = item.unidadeBaseProduto || item.unidade || unidadeComercial;
+        return {
+          id: item.id,
+          produtoId: item.produtoId,
+          produto: item.produtoNome || item.produto || "\u2014",
+          unidade: unidadeBase,
+          unidadeComercial,
+          quantidade,
+          quantidadeVendida: Number(item.quantidadeVendida ?? 0),
+          quantidadeDevolvida: Number(item.quantidadeDevolvida ?? 0),
+          quantidadePerdida: Number(item.quantidadePerdida ?? item.quantidadePerda ?? 0),
+          quantidadeCortesia: Number(item.quantidadeCortesia ?? 0),
+          precoUnitario,
+          total,
+          status: item.status || null,
+          statusLabel: item.statusLabel || item.status || "\u2014",
+          linhaComercialId: item.linhaComercialId ?? null,
+          tabelaPrecoId: item.tabelaPrecoId ?? null,
+          canalVenda: item.canalVenda ? String(item.canalVenda).toUpperCase() : null,
+          precoOrigem: item.precoOrigem ?? null,
+          precoFallback: !!item.precoFallback
+        };
+      }
+      function valorMovimentado(itens, campoQtd) {
+        return (itens || []).reduce((acc, item) => {
+          const qtd = Number(item[campoQtd] ?? 0);
+          const preco = Number(item.precoUnitario ?? item.preco ?? 0);
+          return acc + qtd * preco;
+        }, 0);
+      }
+      function buildResumoOperacao(consignacao = {}, itens = []) {
+        return {
+          totalEntregue: Number(consignacao.valorTotalEntregue ?? valorTotalSnapshot(consignacao, itens) ?? 0),
+          totalVendido: Number(consignacao.valorTotalAcertado ?? 0) || valorMovimentado(itens, "quantidadeVendida"),
+          totalDevolvido: valorMovimentado(itens, "quantidadeDevolvida"),
+          perdas: valorMovimentado(itens, "quantidadePerdida") || valorMovimentado(itens, "quantidadePerda"),
+          cortesias: valorMovimentado(itens, "quantidadeCortesia"),
+          recebimentos: Number(consignacao.valorTotalPago ?? 0),
+          saldo: Number(consignacao.saldoAberto ?? consignacao.saldo ?? 0)
+        };
+      }
+      function rodapeComprovante(status, statusLabel) {
+        const st2 = String(status || "").toUpperCase();
+        const label = String(statusLabel || "").toLowerCase();
+        if (st2 === "ENCERRADA" || label === "encerrada") return "Consigna\xE7\xE3o encerrada.";
+        if (st2 === "QUITADA" || label === "quitada") return "Consigna\xE7\xE3o quitada.";
+        if (st2 === "CANCELADA" || label === "cancelada") return "CONSIGNA\xC7\xC3O CANCELADA";
+        return "Documento referente \xE0 entrega de consigna\xE7\xE3o.";
+      }
+      function buildDetalheConsulta(consignacao = {}, extras = {}) {
+        var _a2, _b2;
+        const itensBrutos = extras.itens || consignacao.itens || [];
+        const produtos = itensBrutos.map(buildProdutoConsulta);
+        const status = mapStatusConsulta(consignacao);
+        const canal = consignacao.canalOperacao || ((_a2 = produtos.find((p3) => p3.canalVenda)) == null ? void 0 : _a2.canalVenda) || "CONSIGNADO";
+        const tabelaPrecoId = consignacao.tabelaPrecoId ?? ((_b2 = produtos.find((p3) => p3.tabelaPrecoId != null)) == null ? void 0 : _b2.tabelaPrecoId) ?? null;
+        return {
+          id: consignacao.id,
+          numero: formatDocumentoNumero(consignacao),
+          clienteId: consignacao.clienteId,
+          clienteNome: extras.clienteNome || consignacao.clienteNome || consignacao.cliente || "\u2014",
+          clienteDocumento: extras.clienteDocumento || consignacao.clienteDocumento || null,
+          tipoComercial: extras.tipoComercial || null,
+          canalOperacao: String(canal).toUpperCase(),
+          tabelaPrecoId,
+          situacao: status.label,
+          dataPreparacao: consignacao.dataAbertura || consignacao.createdAt || null,
+          dataEntrega: consignacao.dataEntrega || null,
+          dataHora: consignacao.dataEntrega || consignacao.dataAbertura || consignacao.createdAt,
+          atualizadoEm: consignacao.updatedAt || consignacao.dataEntrega || consignacao.dataAbertura,
+          operador: consignacao.usuarioAberturaId || consignacao.usuario || extras.operador || null,
+          status: status.codigo,
+          statusLabel: status.label,
+          valorTotal: valorTotalSnapshot(consignacao, itensBrutos),
+          resumo: buildResumoOperacao(consignacao, produtos),
+          produtos,
+          cancelada: status.codigo === "CANCELADA",
+          cancelamento: consignacao.cancelamento || null,
+          dataEncerramento: consignacao.dataEncerramento || null,
+          usuarioEncerramentoId: consignacao.usuarioEncerramentoId || null,
+          observacao: consignacao.observacao || null,
+          somenteLeitura: true
+        };
+      }
+      function escapeHtml(valor) {
+        return String(valor ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+      }
+      function formatMoneyBr(valor) {
+        return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(Number(valor) || 0);
+      }
+      function formatDateTimeBr(valor) {
+        if (!valor) return "\u2014";
+        const d2 = new Date(valor);
+        if (Number.isNaN(d2.getTime())) return String(valor);
+        return d2.toLocaleString("pt-BR", {
+          day: "2-digit",
+          month: "2-digit",
+          year: "numeric",
+          hour: "2-digit",
+          minute: "2-digit"
+        });
+      }
+      function formatDateBr(valor) {
+        if (!valor) return "\u2014";
+        const d2 = new Date(valor);
+        if (Number.isNaN(d2.getTime())) return String(valor);
+        return d2.toLocaleDateString("pt-BR");
+      }
+      function buildComprovanteConsignacaoHtml(detalhe) {
+        const linhas = (detalhe.produtos || []).map((p3) => `
+    <tr>
+      <td>${escapeHtml(p3.produto)}</td>
+      <td>${escapeHtml(p3.quantidade)}</td>
+      <td>${escapeHtml(p3.unidadeComercial || p3.unidade)}</td>
+      <td>${escapeHtml(formatMoneyBr(p3.precoUnitario))}</td>
+      <td>${escapeHtml(formatMoneyBr(p3.total))}</td>
+    </tr>`).join("");
+        const documento = detalhe.clienteDocumento ? `<p>CPF/CNPJ: ${escapeHtml(detalhe.clienteDocumento)}</p>` : "";
+        const resumo = detalhe.resumo || buildResumoOperacao(detalhe, detalhe.produtos || []);
+        const rodape = rodapeComprovante(detalhe.status, detalhe.statusLabel);
+        return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <title>Comprovante de Consigna\xE7\xE3o ${escapeHtml(detalhe.numero)}</title>
+  <style>
+    body { font-family: Arial, sans-serif; font-size: 12px; color: #111; margin: 24px; }
+    h1 { font-size: 16px; margin: 0 0 4px; letter-spacing: 0.04em; }
+    h2 { font-size: 14px; margin: 0 0 16px; }
+    table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+    th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid #ddd; }
+    th { font-size: 11px; text-transform: uppercase; }
+    .total { font-weight: 700; font-size: 14px; }
+    .sep { border-top: 1px dashed #999; margin: 12px 0; }
+    .muted { color: #444; font-size: 11px; }
+    .cancelada { color: #b00020; font-weight: 700; letter-spacing: 0.06em; }
+  </style>
+</head>
+<body>
+  <h1>COMPROVANTE DE CONSIGNA\xC7\xC3O</h1>
+  ${String(detalhe.status || "").toUpperCase() === "CANCELADA" ? '<p class="cancelada">CONSIGNA\xC7\xC3O CANCELADA</p>' : ""}
+  <h2>CONSIGNA\xC7\xC3O N\xBA ${escapeHtml(detalhe.numero)}</h2>
+  <p>Cliente: ${escapeHtml(detalhe.clienteNome)}</p>
+  ${documento}
+  <p>Data: ${escapeHtml(formatDateTimeBr(detalhe.dataHora))}</p>
+  <p>Status: ${escapeHtml(String(detalhe.statusLabel || detalhe.status || "").toUpperCase())}</p>
+  <div class="sep"></div>
+  <table>
+    <thead>
+      <tr>
+        <th>Produto</th>
+        <th>Qtd</th>
+        <th>Unidade</th>
+        <th>Pre\xE7o</th>
+        <th>Valor</th>
+      </tr>
+    </thead>
+    <tbody>${linhas}</tbody>
+  </table>
+  <div class="sep"></div>
+  <p>Total entregue: ${escapeHtml(formatMoneyBr(resumo.totalEntregue))}</p>
+  <p>Total vendido: ${escapeHtml(formatMoneyBr(resumo.totalVendido))}</p>
+  <p>Total devolvido: ${escapeHtml(formatMoneyBr(resumo.totalDevolvido))}</p>
+  <p>Perdas: ${escapeHtml(formatMoneyBr(resumo.perdas))}</p>
+  <p>Cortesias: ${escapeHtml(formatMoneyBr(resumo.cortesias))}</p>
+  <p>Recebimentos: ${escapeHtml(formatMoneyBr(resumo.recebimentos))}</p>
+  <p class="total">Saldo: ${escapeHtml(formatMoneyBr(resumo.saldo))}</p>
+  <p>Canal: ${escapeHtml(detalhe.canalOperacao || "CONSIGNADO")}</p>
+  <p class="muted">${escapeHtml(rodape)}</p>
+</body>
+</html>`;
+      }
+      function reimpressaoSomenteLeitura() {
+        return {
+          criaNovaOperacao: false,
+          alteraEstoque: false,
+          alteraPreco: false,
+          alteraLedger: false,
+          alteraStatus: false,
+          consultaTabela: false,
+          consultaResolver: false
+        };
+      }
+      module.exports = {
+        formatDocumentoNumero,
+        mapStatusConsulta,
+        pertenceAoClienteNaLista,
+        buildHistoricoConsignacoes,
+        buildProdutoConsulta,
+        buildDetalheConsulta,
+        buildComprovanteConsignacaoHtml,
+        buildResumoOperacao,
+        reimpressaoSomenteLeitura,
+        formatMoneyBr,
+        formatDateTimeBr,
+        formatDateBr,
+        HISTORICO_PAGE_SIZE: 20,
+        STATUS_CONSIGNACAO_OPERACIONAL: "RASCUNHO,VALIDADA,ENTREGUE,EM_PRESTACAO,ACERTADA"
+      };
+    }
+  });
+
   // frontend/modules/motor-comercial/pages/PerfilComercial/centralOperacoesMappers.js
   var require_centralOperacoesMappers = __commonJS({
     "frontend/modules/motor-comercial/pages/PerfilComercial/centralOperacoesMappers.js"(exports, module) {
       var { extrairCapacidadesDosPerfis } = require_capacidadesComerciais();
       var { buildHistoricoUnificado, normalizeTimelineEvents } = require_cliente360Mappers();
+      var { buildHistoricoConsignacoes } = require_historicoConsignacoesMappers();
       var STATUS_ABERTOS = /* @__PURE__ */ new Set(["RASCUNHO", "VALIDADA", "ENTREGUE", "EM_PRESTACAO"]);
       function normalizarStatus(perfil = {}, situacao = {}) {
         if (perfil.bloqueado || situacao.statusGeral === "BLOQUEADO") return "Bloqueado";
@@ -14137,7 +14674,9 @@ ${lines.join("\n")}
           consignacoes = [],
           pendencias = {},
           historico = [],
-          timeline = []
+          timeline = [],
+          consignacoesHistorico = null,
+          historicoPaginacao = null
         } = payload;
         const identificacao = buildIdentificacao({
           perfil,
@@ -14175,6 +14714,8 @@ ${lines.join("\n")}
             lancamentos: (contaCorrente.lancamentos || contaCorrente.movimentacoes || []).slice(0, 5)
           },
           historico: buildHistoricoSimplificado(historico, timeline, perfil),
+          consignacoesHistorico: Array.isArray(consignacoesHistorico) ? consignacoesHistorico : buildHistoricoConsignacoes(consignacoes, perfil == null ? void 0 : perfil.clienteId),
+          historicoPaginacao,
           documentos: buildDocumentos(consignacoes)
         };
       }
@@ -14189,7 +14730,8 @@ ${lines.join("\n")}
         limiteExcedido,
         findConsignacaoEmEntrega,
         findConsignacaoEmPrestacao,
-        findConsignacaoPrestacaoPendente
+        findConsignacaoPrestacaoPendente,
+        buildHistoricoConsignacoes
       };
     }
   });
@@ -83628,6 +84170,68 @@ ${lines.join("\n")}
     }
   });
 
+  // frontend/modules/motor-comercial/pages/EntregaComplementar/entregaComplementarMappers.js
+  var require_entregaComplementarMappers = __commonJS({
+    "frontend/modules/motor-comercial/pages/EntregaComplementar/entregaComplementarMappers.js"(exports, module) {
+      var MENSAGEM_PRESTACAO_ENCERRADA = "Esta consigna\xE7\xE3o j\xE1 possui presta\xE7\xE3o encerrada. Para adicionar novos produtos, inicie uma nova consigna\xE7\xE3o.";
+      var STATUS_TERMINAIS = Object.freeze([
+        "QUITADA",
+        "ENCERRADA",
+        "CANCELADA",
+        "ACERTADA",
+        "FECHADA"
+      ]);
+      function podeAdicionarProdutoComplementar(consignacao) {
+        if (!consignacao) {
+          return { elegivel: false, mensagem: "Consigna\xE7\xE3o n\xE3o encontrada" };
+        }
+        const status = String(consignacao.status || "").toUpperCase();
+        const prestacao = consignacao.prestacaoContasAtiva || consignacao.prestacaoContas || {};
+        const prestStatus = String(prestacao.status || "").toUpperCase();
+        if (STATUS_TERMINAIS.includes(status) || ["FECHADA", "ENCERRADA"].includes(prestStatus)) {
+          return {
+            elegivel: false,
+            mensagem: status === "CANCELADA" ? "Esta consigna\xE7\xE3o foi cancelada. Para realizar uma nova entrega, crie uma nova consigna\xE7\xE3o." : MENSAGEM_PRESTACAO_ENCERRADA
+          };
+        }
+        if (status !== "ENTREGUE") {
+          return {
+            elegivel: false,
+            mensagem: "Entrega complementar dispon\xEDvel apenas para consigna\xE7\xF5es ENTREGUE."
+          };
+        }
+        return { elegivel: true, mensagem: null };
+      }
+      function totalItensComplementares(itens = []) {
+        return (itens || []).reduce((sum, item) => {
+          const q2 = Number(item.quantidade || 0);
+          const p3 = Number(item.precoUnitario ?? item.preco ?? 0);
+          return sum + q2 * p3;
+        }, 0);
+      }
+      function snapshotDoResolver(row = {}, produto = {}) {
+        return {
+          precoUnitario: Number(row.preco ?? row.preco_unitario ?? produto.preco ?? 0),
+          unidadeComercial: String(
+            row.unidade_comercial || row.unidadeComercial || produto.unidadeComercial || produto.unidade || "UN"
+          ).toUpperCase(),
+          linhaComercialId: row.linha_comercial_id ?? row.linhaComercialId ?? produto.linhaComercialId ?? null,
+          tabelaPrecoId: row.tabela_preco_id ?? row.tabelaPrecoId ?? null,
+          canalVenda: "CONSIGNADO",
+          precoOrigem: row.preco_origem || row.precoOrigem || null,
+          precoFallback: Boolean(row.preco_fallback ?? row.precoFallback)
+        };
+      }
+      module.exports = {
+        MENSAGEM_PRESTACAO_ENCERRADA,
+        STATUS_TERMINAIS,
+        podeAdicionarProdutoComplementar,
+        totalItensComplementares,
+        snapshotDoResolver
+      };
+    }
+  });
+
   // frontend/modules/motor-comercial/pages/Dashboard/centralTrabalhoMappers.js
   var require_centralTrabalhoMappers = __commonJS({
     "frontend/modules/motor-comercial/pages/Dashboard/centralTrabalhoMappers.js"(exports, module) {
@@ -83639,6 +84243,9 @@ ${lines.join("\n")}
       } = require_centralOperacoesMappers();
       var { buildViewFromPayload } = require_pendenciasMappers();
       var { normalizeTimelineEvents } = require_cliente360Mappers();
+      var {
+        podeAdicionarProdutoComplementar
+      } = require_entregaComplementarMappers();
       var ESTADOS = {
         E1: "E1",
         E2: "E2",
@@ -83920,7 +84527,9 @@ ${lines.join("\n")}
         var _a2;
         const dataRef = consignacao.updatedAt || consignacao.dataAbertura || consignacao.dataEntrega || consignacao.createdAt || ((_a2 = consignacao.prestacaoContasAtiva) == null ? void 0 : _a2.dataAbertura);
         const qtd = Number(consignacao.quantidadeItens) || (Array.isArray(consignacao.itens) ? consignacao.itens.length : 0) || 0;
-        const valor = Number(consignacao.valor ?? consignacao.saldo ?? consignacao.saldoDevedor ?? 0) || 0;
+        const valor = Number(
+          consignacao.valor ?? consignacao.valorTotal ?? consignacao.saldo ?? consignacao.saldoDevedor ?? 0
+        ) || 0;
         return {
           valor,
           itens: qtd,
@@ -84055,6 +84664,46 @@ ${lines.join("\n")}
           prioridade: 1
         };
       }
+      function resolverOperacaoConsignacao(c4) {
+        if (isEntregaEmAndamento(c4)) {
+          return {
+            estado: ESTADOS.E2,
+            prestacaoStatus: PRESTACAO_STATUS.NENHUMA,
+            consignacao: c4,
+            saldoDevedor: saldoDevedorConsignacao(c4)
+          };
+        }
+        if (isPrestacaoEmAndamento(c4)) {
+          return {
+            estado: ESTADOS.E4,
+            prestacaoStatus: PRESTACAO_STATUS.EM_ANDAMENTO,
+            consignacao: c4,
+            saldoDevedor: saldoDevedorConsignacao(c4)
+          };
+        }
+        if (isProntoParaFechar(c4)) {
+          return {
+            estado: ESTADOS.E3,
+            prestacaoStatus: PRESTACAO_STATUS.PRONTO_PARA_FECHAR,
+            consignacao: c4,
+            saldoDevedor: saldoDevedorConsignacao(c4)
+          };
+        }
+        return null;
+      }
+      function montarOperacaoItem(c4, clienteNome, perfil = {}) {
+        const resolved = resolverOperacaoConsignacao(c4);
+        if (!resolved) return null;
+        const item = itemFromEstado(c4.clienteId, clienteNome, resolved, {
+          id: `consig-${c4.id}-${resolved.estado}`,
+          documento: perfil.cpfCnpj && perfil.cpfCnpj !== "-" ? perfil.cpfCnpj : "\u2014",
+          documentoConsignacao: c4.documento || `Consigna\xE7\xE3o #${c4.id}`
+        });
+        if (!item) return null;
+        item.statusConsignacao = c4.status || null;
+        item.podeEntregaComplementar = podeAdicionarProdutoComplementar(c4).elegivel === true;
+        return item;
+      }
       function buildFilaOperacional({ pendenciasView = {}, consignacoes = [], perfis = [] } = {}) {
         const perfilPorCliente = /* @__PURE__ */ new Map();
         perfis.forEach((p3) => {
@@ -84070,65 +84719,94 @@ ${lines.join("\n")}
           if (!consignacoesPorCliente.has(key)) consignacoesPorCliente.set(key, []);
           consignacoesPorCliente.get(key).push(c4);
         });
-        const clienteIds = /* @__PURE__ */ new Set([
-          ...consignacoesPorCliente.keys(),
-          ...perfilPorCliente.keys()
-        ]);
-        const porCliente = /* @__PURE__ */ new Map();
-        clienteIds.forEach((key) => {
-          var _a2, _b2;
-          const lista = consignacoesPorCliente.get(key) || [];
+        const cardsPorCliente = /* @__PURE__ */ new Map();
+        const consignacaoIdsNaFila = /* @__PURE__ */ new Set();
+        consignacoesPorCliente.forEach((lista, key) => {
           const perfil = (perfilPorCliente.get(key) || [])[0] || {};
-          const resolved = resolveEstadoOperacionalCliente({ consignacoes: lista, perfil });
-          if (resolved.estado === ESTADOS.E1 || resolved.estado === ESTADOS.E6) return;
           const nome = resolverNomeTrabalho(key, {
             consignacoes: lista,
             perfis: perfilPorCliente.get(key) || []
           });
-          const item = itemFromEstado(perfil.clienteId ?? key, nome, resolved, {
+          const operacoes = lista.map((c4) => montarOperacaoItem(c4, nome, perfil)).filter(Boolean).sort((a3, b2) => a3.ordemFila - b2.ordemFila || a3.prioridade - b2.prioridade);
+          if (!operacoes.length) return;
+          operacoes.forEach((op) => consignacaoIdsNaFila.add(String(op.consignacaoId)));
+          const valorTotal = operacoes.reduce((s3, op) => s3 + Number(op.valor || 0), 0);
+          const itensTotal = operacoes.reduce((s3, op) => s3 + Number(op.itens || 0), 0);
+          const principal = operacoes[0];
+          const estadosUnicos = [...new Set(operacoes.map((op) => op.estado))];
+          cardsPorCliente.set(key, {
+            id: `cli-${key}`,
+            clienteId: perfil.clienteId ?? key,
+            clienteNome: nome,
+            agrupado: true,
             documento: perfil.cpfCnpj && perfil.cpfCnpj !== "-" ? perfil.cpfCnpj : "\u2014",
-            documentoConsignacao: ((_a2 = resolved.consignacao) == null ? void 0 : _a2.documento) || (((_b2 = resolved.consignacao) == null ? void 0 : _b2.id) ? `Consigna\xE7\xE3o #${resolved.consignacao.id}` : null)
+            valor: valorTotal,
+            saldoDevedor: valorTotal,
+            itens: itensTotal,
+            quantidadeConsignacoes: operacoes.length,
+            tempoAguardando: principal.tempoAguardando || "\u2014",
+            ordemFila: principal.ordemFila,
+            prioridade: Math.min(...operacoes.map((op) => op.prioridade || 99)),
+            nivel: principal.nivel || "warning",
+            icone: principal.icone || "\u{1F7E0}",
+            // Header: não esconde estados — badge principal = prioridade; lista interna tem todos
+            estado: principal.estado,
+            estados: estadosUnicos,
+            statusLabel: estadosUnicos.length > 1 ? `${operacoes.length} opera\xE7\xF5es` : principal.statusLabel || principal.situacao,
+            situacao: estadosUnicos.length > 1 ? `${operacoes.length} consigna\xE7\xF5es em aberto` : principal.situacao || "",
+            // Compat buildAcaoPrincipal / navegação legado: aponta para a 1ª op ordenada
+            consignacaoId: principal.consignacaoId,
+            acaoTipo: principal.acaoTipo,
+            acaoLabel: principal.acaoLabel,
+            podeEntregaComplementar: operacoes.some((op) => op.podeEntregaComplementar),
+            consignacoes: operacoes
           });
-          if (item) porCliente.set(key, item);
         });
+        const clientesComOperacao = new Set(cardsPorCliente.keys());
+        const riscos = [];
         (pendenciasView.criticas || []).concat(pendenciasView.importantes || [], pendenciasView.alertas || []).forEach((alerta) => {
           if (alerta.clienteId == null) return;
           const key = String(alerta.clienteId);
+          if (clientesComOperacao.has(key)) return;
           const risco = workItemFromPendenciaRisco(
             alerta,
             consignacoesPorCliente.get(key) || [],
             perfilPorCliente.get(key) || []
           );
-          if (!risco) return;
-          const atual = porCliente.get(key);
-          if (atual && atual.estado === ESTADOS.E5) {
-            return;
+          if (risco) {
+            risco.agrupado = false;
+            risco.consignacoes = [];
+            riscos.push(risco);
           }
-          if (!atual || atual.estado === ESTADOS.E2 || atual.estado === ESTADOS.E3 || atual.estado === ESTADOS.E4) {
-            if (atual) return;
-          }
-          porCliente.set(key, risco);
         });
-        const trabalhoPrioritario = [...porCliente.values()].filter((i3) => [ESTADOS.E2, ESTADOS.E3, ESTADOS.E4, ESTADOS.RISCO].includes(i3.estado)).sort((a3, b2) => a3.ordemFila - b2.ordemFila || a3.prioridade - b2.prioridade).slice(0, 12);
-        const idsPrioritarios = new Set(trabalhoPrioritario.map((i3) => String(i3.clienteId)));
-        const consignadosPendentes = [...porCliente.values()].filter((i3) => i3.estado === ESTADOS.E5 && !idsPrioritarios.has(String(i3.clienteId)) && Number(i3.saldoDevedor) > 0).map((i3) => {
-          var _a2;
+        const trabalhoPrioritario = [...cardsPorCliente.values(), ...riscos].filter((i3) => {
+          if (i3.agrupado && Array.isArray(i3.consignacoes) && i3.consignacoes.length) return true;
+          return [ESTADOS.RISCO].includes(i3.estado);
+        }).sort((a3, b2) => a3.ordemFila - b2.ordemFila || a3.prioridade - b2.prioridade).slice(0, 20);
+        const consignadosPendentes = consignacoes.filter((c4) => isElegivelE5(c4) && !consignacaoIdsNaFila.has(String(c4.id))).map((c4) => {
+          const key = String(c4.clienteId);
+          const perfil = (perfilPorCliente.get(key) || [])[0] || {};
+          const nome = resolverNomeTrabalho(key, {
+            consignacoes: consignacoesPorCliente.get(key) || [c4],
+            perfis: perfilPorCliente.get(key) || []
+          });
           return {
-            id: i3.id,
-            clienteId: i3.clienteId,
-            clienteNome: i3.clienteNome,
-            documento: i3.documento || "\u2014",
-            valorEmAberto: i3.saldoDevedor,
-            consignacaoId: i3.consignacaoId,
-            documentoConsignacao: i3.documentoConsignacao || null,
-            statusConsignacao: i3.consignacaoId ? ((_a2 = consignacoes.find((c4) => String(c4.id) === String(i3.consignacaoId))) == null ? void 0 : _a2.status) || null : null,
+            id: `consig-${c4.id}-E5`,
+            clienteId: c4.clienteId,
+            clienteNome: nome,
+            documento: perfil.cpfCnpj && perfil.cpfCnpj !== "-" ? perfil.cpfCnpj : "\u2014",
+            valorEmAberto: saldoDevedorConsignacao(c4),
+            consignacaoId: c4.id,
+            documentoConsignacao: c4.documento || `Consigna\xE7\xE3o #${c4.id}`,
+            statusConsignacao: c4.status || null,
             acaoTipo: "receber-conta-corrente",
             origemRecebimento: "conta-corrente-comercial",
             estado: ESTADOS.E5,
-            prestacaoStatus: PRESTACAO_STATUS.ENCERRADA
+            prestacaoStatus: PRESTACAO_STATUS.ENCERRADA,
+            acaoLabel: "Receber"
           };
-        }).filter((i3) => String(i3.statusConsignacao || "").toUpperCase() !== "QUITADA").sort((a3, b2) => b2.valorEmAberto - a3.valorEmAberto).slice(0, 12);
-        return { trabalhoPrioritario, consignadosPendentes, porCliente };
+        }).filter((i3) => String(i3.statusConsignacao || "").toUpperCase() !== "QUITADA").filter((i3) => Number(i3.valorEmAberto) > 0).sort((a3, b2) => b2.valorEmAberto - a3.valorEmAberto).slice(0, 20);
+        return { trabalhoPrioritario, consignadosPendentes, porCliente: cardsPorCliente };
       }
       function buildTrabalhoPrioritario(opts = {}) {
         return buildFilaOperacional(opts).trabalhoPrioritario;
@@ -84298,11 +84976,15 @@ ${lines.join("\n")}
         const erros = [];
         const prioritario = viewModel.trabalhoPrioritario || [];
         const pendentes = viewModel.consignadosPendentes || [];
-        const idsPrioritarios = new Set(prioritario.map((i3) => String(i3.clienteId)));
-        const idsPendentes = new Set(pendentes.map((i3) => String(i3.clienteId)));
+        const idsPrioritarios = new Set(
+          prioritario.map((i3) => String(i3.consignacaoId || i3.id)).filter((id) => id && id !== "null")
+        );
+        const idsPendentes = new Set(
+          pendentes.map((i3) => String(i3.consignacaoId || i3.id)).filter((id) => id && id !== "null")
+        );
         idsPrioritarios.forEach((id) => {
           if (idsPendentes.has(id)) {
-            erros.push(`Cliente ${id} aparece em Trabalho Priorit\xE1rio e Consignados Pendentes`);
+            erros.push(`Consigna\xE7\xE3o ${id} aparece em Trabalho Priorit\xE1rio e Consignados Pendentes`);
           }
         });
         pendentes.forEach((item) => {
@@ -84407,7 +85089,8 @@ ${lines.join("\n")}
         isProntoParaFechar,
         isPrestacaoEncerrada,
         isElegivelE5,
-        isQuitada
+        isQuitada,
+        podeAdicionarProdutoComplementar
       };
     }
   });
@@ -84422,7 +85105,7 @@ ${lines.join("\n")}
         PARCIALMENTE_RECEBIDA: "PARCIALMENTE_RECEBIDA"
       });
       var SITUACAO_LABEL = Object.freeze({
-        SEM_VENDA: "Quitada",
+        SEM_VENDA: "Sem Venda",
         QUITADA: "Quitada",
         EM_ABERTO: "Em Aberto",
         PARCIALMENTE_RECEBIDA: "Parcial"
@@ -84594,6 +85277,8 @@ ${lines.join("\n")}
         return {
           itemId: item.itemId ?? item.id ?? null,
           id: item.id ?? item.itemId ?? null,
+          consignacaoId: item.consignacaoId ?? item.consignacao_id ?? null,
+          documentoConsignacao: item.documentoConsignacao || item.consignacaoDocumento || (item.consignacaoId != null ? `CONS-${item.consignacaoId}` : null),
           produtoId: item.produtoId ?? item.produto_id ?? null,
           produtoNome: displayNome,
           produto: displayNome,
@@ -85605,6 +86290,26 @@ ${lines.join("\n")}
             navigate(path);
             return;
           }
+          if (tipo === "entrega-complementar") {
+            if (consignacaoId == null || consignacaoId === "") {
+              notify("N\xE3o foi poss\xEDvel identificar a consigna\xE7\xE3o do card.", "warning");
+              return;
+            }
+            if (this._entregaComplementarNavLock) return;
+            this._entregaComplementarNavLock = true;
+            const path = clienteId ? buildRouteWithCentralTrabalhoContext(
+              `/consignacoes/${consignacaoId}/entrega-complementar`,
+              clienteId
+            ) : `/consignacoes/${consignacaoId}/entrega-complementar?origem=central`;
+            try {
+              navigate(path);
+            } finally {
+              setTimeout(() => {
+                this._entregaComplementarNavLock = false;
+              }, 800);
+            }
+            return;
+          }
           if (tipo === "prestacao" && consignacaoId) {
             const path = clienteId ? buildRouteWithCentralTrabalhoContext(`/consignacoes/${consignacaoId}/prestacao`, clienteId) : `/consignacoes/${consignacaoId}/prestacao?origem=central`;
             navigate(path);
@@ -85669,24 +86374,7 @@ ${lines.join("\n")}
             return this.api.obterConsignacao(consignacaoId);
           }
           if (status === "ACERTADA" || status === "ENCERRADA") {
-            const auditoria = getOperadorAuditoria();
-            await this.api.reabrirPrestacao(consignacaoId, {
-              motivo: "Recebimento Conta Corrente Comercial \u2014 opera\xE7\xE3o di\xE1ria do operador",
-              liberacaoGerencial: {
-                autorizado: true,
-                supervisorToken: null,
-                usuarioAdmin: auditoria.usuarioNome,
-                motivo: "Recebimento Conta Corrente Comercial (sem senha gerencial \u2014 fluxo operacional)"
-              },
-              usuarioId: auditoria.usuarioId,
-              auditoriaRecebimento: {
-                tipo: "CONTA_CORRENTE_COMERCIAL",
-                operadorId: auditoria.usuarioId,
-                operadorNome: auditoria.usuarioNome,
-                registradoEm: (/* @__PURE__ */ new Date()).toISOString()
-              }
-            });
-            return this.api.obterConsignacao(consignacaoId);
+            return consignacao;
           }
           throw new Error(
             `N\xE3o \xE9 poss\xEDvel registrar recebimento nesta Conta Corrente (status ${status || "desconhecido"}).`
@@ -85725,7 +86413,9 @@ ${lines.join("\n")}
             onConfirm: async ({ valor, formaPagamento, observacao }) => {
               var _a2, _b2, _c;
               try {
-                await this._prepararRecebimentoContaCorrente(item.consignacaoId);
+                const preparada = await this._prepararRecebimentoContaCorrente(item.consignacaoId);
+                const prest = preparada == null ? void 0 : preparada.prestacaoContasAtiva;
+                const prestAberta = Boolean(prest && String(prest.status || "").toUpperCase() === "ABERTA");
                 const auditoria = getOperadorAuditoria();
                 const resultado = await withLoading(
                   loadingText("REGISTRANDO_RECEBIMENTO"),
@@ -85749,7 +86439,7 @@ ${lines.join("\n")}
                 const valorPago = Number(valor) || 0;
                 const valorAberto = Number(item.valorEmAberto) || 0;
                 const quitou = Number.isFinite(saldoPos) && saldoPos <= 0 || valorAberto > 0 && valorPago >= valorAberto - 9e-3;
-                if (quitou) {
+                if (quitou && prestAberta) {
                   try {
                     await withLoading(
                       "Atualizando Conta Corrente...",
@@ -85758,6 +86448,8 @@ ${lines.join("\n")}
                   } catch (closeError) {
                     console.warn("[Central Conta Corrente] fecharPrestacao:", closeError);
                   }
+                }
+                if (quitou) {
                   notifySuccess("RECEBIMENTO_QUITADO");
                 } else {
                   notifySuccess("RECEBIMENTO_PARCIAL");
@@ -86113,6 +86805,35 @@ ${lines.join("\n")}
           var _a2;
           const { completa } = await this._getBundle();
           const wrap = document.createElement("div");
+          let entregas = [];
+          try {
+            const payload = await this.page.api.consultarEntregasConsignacao(this.consignacao.id);
+            entregas = (payload == null ? void 0 : payload.entregas) || [];
+          } catch (_e2) {
+            entregas = [];
+          }
+          if (entregas.length) {
+            entregas.forEach((ev) => {
+              const bloco = document.createElement("div");
+              bloco.className = "cds-cockpit-drawer__entrega-bloco";
+              const when = ev.dataHora ? new Date(ev.dataHora).toLocaleString("pt-BR") : "\u2014";
+              bloco.innerHTML = `<h4>${ev.label} \u2014 ${when}</h4>`;
+              (ev.itens || []).forEach((item) => {
+                const row = document.createElement("div");
+                row.className = "cds-cockpit-drawer__item";
+                row.innerHTML = `
+            <div class="cds-cockpit-drawer__item-name">${item.produtoNome || item.produtoId}</div>
+            <div class="cds-cockpit-drawer__item-meta">
+              <span>Qtd: ${item.quantidade}</span>
+              <span>${this.page._formatCurrency(item.valor || 0)}</span>
+            </div>
+          `;
+                bloco.appendChild(row);
+              });
+              wrap.appendChild(bloco);
+            });
+            return wrap;
+          }
           if (!((_a2 = completa.itens) == null ? void 0 : _a2.length)) {
             wrap.appendChild(EmptyState.create({ title: "Sem itens", description: "Nenhum item na consigna\xE7\xE3o" }));
             return wrap;
@@ -86299,6 +87020,45 @@ ${lines.join("\n")}
     }
   });
 
+  // frontend/modules/motor-comercial/pages/Consignacoes/cancelamentoPreparacao.js
+  var require_cancelamentoPreparacao = __commonJS({
+    "frontend/modules/motor-comercial/pages/Consignacoes/cancelamentoPreparacao.js"(exports, module) {
+      var MOTIVOS_CANCELAMENTO = Object.freeze([
+        { value: "CLIENTE_DESISTIU", label: "Cliente desistiu" },
+        { value: "ERRO_PREPARACAO", label: "Erro na prepara\xE7\xE3o" },
+        { value: "PRODUTO_INDISPONIVEL", label: "Produto indispon\xEDvel" },
+        { value: "PEDIDO_DUPLICADO", label: "Pedido duplicado" },
+        { value: "OUTRO", label: "Outro" }
+      ]);
+      var MENSAGEM_CANCELADA_NOVA = "Esta consigna\xE7\xE3o foi cancelada. Para realizar uma nova entrega, crie uma nova consigna\xE7\xE3o.";
+      function podeCancelarPreparacao(consignacao) {
+        return String((consignacao == null ? void 0 : consignacao.status) || "").toUpperCase() === "RASCUNHO";
+      }
+      function lerCancelamento(consignacao) {
+        var _a2;
+        if (!consignacao) return null;
+        if (consignacao.cancelamento) return consignacao.cancelamento;
+        if (String(consignacao.status || "").toUpperCase() !== "CANCELADA") return null;
+        const obs = String(consignacao.observacao || "");
+        const match = obs.match(/\[CANCELAMENTO\]\s*([A-Z_]+)\s*—\s*([^.\n]+)(?:\.\s*(.*))?/i);
+        return {
+          motivo: match ? String(match[1]).toUpperCase() : null,
+          motivoLabel: match ? String(match[2]).trim() : ((_a2 = MOTIVOS_CANCELAMENTO.find((m4) => m4.value === consignacao.motivo)) == null ? void 0 : _a2.label) || null,
+          observacao: match && match[3] ? String(match[3]).trim() : null,
+          canceladoEm: consignacao.dataEncerramento || consignacao.dataFechamento || null,
+          canceladoPorUsuarioId: consignacao.usuarioEncerramentoId || null,
+          mensagem: MENSAGEM_CANCELADA_NOVA
+        };
+      }
+      module.exports = {
+        MOTIVOS_CANCELAMENTO,
+        MENSAGEM_CANCELADA_NOVA,
+        podeCancelarPreparacao,
+        lerCancelamento
+      };
+    }
+  });
+
   // frontend/modules/motor-comercial/pages/Consignacoes/index.js
   var require_Consignacoes = __commonJS({
     "frontend/modules/motor-comercial/pages/Consignacoes/index.js"(exports, module) {
@@ -86333,6 +87093,12 @@ ${lines.join("\n")}
         routeWithActiveContext,
         buildRouteWithCliente360Context
       } = require_cliente360Context();
+      var {
+        MOTIVOS_CANCELAMENTO,
+        podeCancelarPreparacao,
+        lerCancelamento,
+        MENSAGEM_CANCELADA_NOVA
+      } = require_cancelamentoPreparacao();
       var {
         ErrorMessages,
         ConfirmMessages,
@@ -86738,18 +87504,45 @@ ${lines.join("\n")}
           return el;
         }
         _createActionMenu(consignacao) {
+          const status = String(consignacao.status || "").toUpperCase();
           const actions = [
-            { label: "Visualizar", icon: "\u{1F441}\uFE0F", onClick: () => this._openDrawer(consignacao) },
-            { label: "Editar", icon: "\u270F\uFE0F", onClick: () => this._editConsignacao(consignacao) },
-            { label: "Entregar", icon: "\u{1F4E6}", onClick: () => this._deliverConsignacao(consignacao) },
-            { label: "Fechar Atendimento", icon: "\u{1F4B0}", onClick: () => this._openPrestacao(consignacao) },
+            { label: "Visualizar", icon: "\u{1F441}\uFE0F", onClick: () => this._openDrawer(consignacao) }
+          ];
+          if (status === "RASCUNHO") {
+            actions.push(
+              { label: "Editar", icon: "\u270F\uFE0F", onClick: () => this._editConsignacao(consignacao) },
+              { label: "Entregar", icon: "\u{1F4E6}", onClick: () => this._deliverConsignacao(consignacao) }
+            );
+          }
+          if (status === "ENTREGUE") {
+            actions.push({
+              label: "+ Adicionar produto",
+              icon: "\u2795",
+              onClick: () => this._abrirEntregaComplementar(consignacao)
+            });
+            actions.push({
+              label: "Fechar Atendimento",
+              icon: "\u{1F4B0}",
+              onClick: () => this._openPrestacao(consignacao)
+            });
+          }
+          if (status !== "CANCELADA" && status !== "RASCUNHO") {
+          }
+          actions.push(
             { label: "Perfil Comercial", icon: "\u{1F464}", onClick: () => this._openDrawer(consignacao, "perfil") },
             { label: "Conta Corrente", icon: "\u{1F3E6}", onClick: () => this._openDrawer(consignacao, "financeiro") },
             { label: "Linha do Tempo", icon: "\u{1F4DC}", onClick: () => this._openDrawer(consignacao, "timeline") },
-            { label: "Duplicar", icon: "\u{1F4CB}", onClick: () => this._duplicateConsignacao(consignacao) },
-            { label: "Cancelar", icon: "\u274C", onClick: () => this._cancelConsignacao(consignacao), danger: true },
-            { label: "Imprimir", icon: "\u{1F5A8}\uFE0F", onClick: () => this._printConsignacao(consignacao) }
-          ];
+            { label: "Duplicar", icon: "\u{1F4CB}", onClick: () => this._duplicateConsignacao(consignacao) }
+          );
+          if (podeCancelarPreparacao(consignacao)) {
+            actions.push({
+              label: "Cancelar prepara\xE7\xE3o",
+              icon: "\u274C",
+              onClick: () => this._cancelConsignacao(consignacao),
+              danger: true
+            });
+          }
+          actions.push({ label: "Imprimir", icon: "\u{1F5A8}\uFE0F", onClick: () => this._printConsignacao(consignacao) });
           return ActionMenu.create({ actions, triggerIcon: "\u22EE" });
         }
         _createPagination() {
@@ -87126,10 +87919,58 @@ ${lines.join("\n")}
         _createDrawerFooter(consignacao) {
           const container = document.createElement("div");
           container.className = "cds-consignacao-drawer__footer";
-          container.appendChild(Button.create({ text: "Editar", variant: "secondary", onClick: () => this._editConsignacao(consignacao) }));
-          container.appendChild(Button.create({ text: "Entregar", variant: "primary", onClick: () => this._deliverConsignacao(consignacao) }));
-          container.appendChild(Button.create({ text: "Fechar Atendimento", variant: "primary", onClick: () => this._openPrestacao(consignacao) }));
+          const status = String(consignacao.status || "").toUpperCase();
+          if (status === "CANCELADA") {
+            const cancel = lerCancelamento(consignacao);
+            const info = document.createElement("p");
+            info.className = "cds-consignacao-drawer__cancelada";
+            info.textContent = (cancel == null ? void 0 : cancel.mensagem) || MENSAGEM_CANCELADA_NOVA;
+            container.appendChild(info);
+            container.appendChild(Button.create({
+              text: "Imprimir",
+              variant: "secondary",
+              onClick: () => this._printConsignacao(consignacao)
+            }));
+            return container;
+          }
+          if (status === "RASCUNHO") {
+            container.appendChild(Button.create({ text: "Editar", variant: "secondary", onClick: () => this._editConsignacao(consignacao) }));
+            container.appendChild(Button.create({ text: "Entregar", variant: "primary", onClick: () => this._deliverConsignacao(consignacao) }));
+            container.appendChild(Button.create({
+              text: "Cancelar prepara\xE7\xE3o",
+              variant: "danger",
+              onClick: () => this._cancelConsignacao(consignacao)
+            }));
+            return container;
+          }
+          if (status === "ENTREGUE") {
+            container.appendChild(Button.create({
+              text: "+ Adicionar produto",
+              variant: "secondary",
+              onClick: () => this._abrirEntregaComplementar(consignacao)
+            }));
+            container.appendChild(Button.create({
+              text: "Fechar Atendimento",
+              variant: "primary",
+              onClick: () => this._openPrestacao(consignacao)
+            }));
+          }
           return container;
+        }
+        async _abrirEntregaComplementar(consignacao) {
+          const {
+            podeAdicionarProdutoComplementar,
+            MENSAGEM_PRESTACAO_ENCERRADA
+          } = require_entregaComplementarMappers();
+          const check = podeAdicionarProdutoComplementar(consignacao);
+          if (!check.elegivel) {
+            notify(check.mensagem || MENSAGEM_PRESTACAO_ENCERRADA, "warning");
+            return;
+          }
+          await navigate(routeWithActiveContext(
+            `/consignacoes/${consignacao.id}/entrega-complementar`,
+            this.navigationContext
+          ));
         }
         _startAutoRefresh() {
           if (this.refreshTimer) clearInterval(this.refreshTimer);
@@ -87197,6 +88038,10 @@ ${lines.join("\n")}
           navigate(buildRouteWithCliente360Context("/consignacoes/nova", this.navigationContext));
         }
         async _editConsignacao(consignacao) {
+          if (String(consignacao.status || "").toUpperCase() === "CANCELADA") {
+            notify(MENSAGEM_CANCELADA_NOVA, "warning");
+            return;
+          }
           if (consignacao.status !== "RASCUNHO") {
             notify("Somente consigna\xE7\xF5es em rascunho podem ser editadas.", "warning");
             return;
@@ -87220,20 +88065,45 @@ ${lines.join("\n")}
           }
         }
         async _cancelConsignacao(consignacao) {
-          if (consignacao.status !== "RASCUNHO") {
-            notifyWarning("SOMENTE_RASCUNHO");
+          if (!podeCancelarPreparacao(consignacao)) {
+            if (String(consignacao.status || "").toUpperCase() === "CANCELADA") {
+              notify(MENSAGEM_CANCELADA_NOVA, "warning");
+            } else {
+              notifyWarning("SOMENTE_RASCUNHO");
+            }
             return;
           }
           const confirmed = await confirmDialog({
             ...ConfirmMessages.CANCELAR_CONSIGNACAO,
-            message: `Deseja cancelar a consigna\xE7\xE3o ${consignacao.documento}?
-Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
-            danger: true,
-            confirmLabel: "Cancelar consigna\xE7\xE3o"
+            message: `Cancelar esta consigna\xE7\xE3o?
+Esta a\xE7\xE3o cancelar\xE1 a prepara\xE7\xE3o e a entrega n\xE3o ser\xE1 realizada.`
           });
           if (!confirmed) return;
+          const motivo = await choiceDialog({
+            title: "Motivo do cancelamento",
+            message: "Selecione o motivo:",
+            choices: MOTIVOS_CANCELAMENTO.map((m4) => ({
+              label: m4.label,
+              value: m4.value,
+              variant: m4.value === "OUTRO" ? "secondary" : "primary"
+            }))
+          });
+          if (!motivo) return;
+          let observacao = null;
+          if (motivo === "OUTRO") {
+            observacao = await promptDialog({
+              title: "Descreva o motivo",
+              label: "Observa\xE7\xE3o",
+              placeholder: "Informe o motivo do cancelamento"
+            });
+            if (observacao == null) return;
+            observacao = String(observacao).trim() || null;
+          }
           try {
-            await withLoading(loadingText("CANCELANDO_CONSIGNACAO"), () => this.api.cancelarConsignacao(consignacao.id));
+            await withLoading(loadingText("CANCELANDO_CONSIGNACAO"), () => this.api.cancelarConsignacao(consignacao.id, {
+              motivo,
+              observacao
+            }));
             notifySuccess("CONSIGNACAO_CANCELADA");
             await this._loadData();
           } catch (error) {
@@ -87930,6 +88800,8 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
         const temPromo = row.tem_promocao === 1 || row.tem_promocao === true;
         const precoBase = Number(row.preco_venda || row.preco || 0);
         const preco = temPromo && precoPromo > 0 ? precoPromo : precoBase;
+        const ativoRaw = row.ativo;
+        const ativo = ativoRaw === void 0 || ativoRaw === null ? true : !(ativoRaw === 0 || ativoRaw === false || ativoRaw === "0");
         return {
           id: row.id,
           nome: row.nome || row.descricao || `Produto #${row.id}`,
@@ -87944,9 +88816,13 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
           preco_venda: precoBase,
           preco,
           unidade: row.unidade || "UN",
+          ativo,
           match_exato: row.match_exato === 1 || row.match_exato === true,
           frequente: Boolean(row.frequente)
         };
+      }
+      function filterActiveLipProducts(products = []) {
+        return (products || []).filter((p3) => p3 && p3.ativo !== false);
       }
       function groupLipProducts(products = []) {
         const byCategory = /* @__PURE__ */ new Map();
@@ -87981,6 +88857,7 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
         escapeHtml,
         highlightTerm,
         normalizeLipProduct,
+        filterActiveLipProducts,
         groupLipProducts,
         formatCurrency
       };
@@ -87990,7 +88867,7 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
   // frontend/shared/components/LIP/LipSearchService.js
   var require_LipSearchService = __commonJS({
     "frontend/shared/components/LIP/LipSearchService.js"(exports, module) {
-      var { normalizeLipProduct } = require_lipMappers();
+      var { normalizeLipProduct, filterActiveLipProducts } = require_lipMappers();
       var CACHE_TTL_MS = 6e4;
       var LipSearchService = class {
         /**
@@ -88080,7 +88957,9 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
           if (!response.ok) {
             throw new Error(body.error || body.message || `HTTP ${response.status}`);
           }
-          const items = (body.items || body || []).map(normalizeLipProduct);
+          const items = filterActiveLipProducts(
+            (body.items || body || []).map(normalizeLipProduct)
+          );
           return {
             items,
             hasMore: Boolean(body.hasMore),
@@ -88148,7 +89027,8 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
         highlightTerm,
         groupLipProducts,
         formatCurrency,
-        normalizeLipProduct
+        normalizeLipProduct,
+        filterActiveLipProducts
       } = require_lipMappers();
       var STYLE_ID = "cds-lip-styles";
       var DEFAULT_CSS = `
@@ -88381,7 +89261,9 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
           this.panel.hidden = false;
           this.panel.innerHTML = "";
           if (this.options.showHistory) {
-            const recent = readRecent(this.options.historyKey).map(normalizeLipProduct);
+            const recent = filterActiveLipProducts(
+              readRecent(this.options.historyKey).map(normalizeLipProduct)
+            );
             if (recent.length) {
               this.panel.appendChild(this._sectionTitle("\xDAltimos produtos utilizados"));
               const chips = document.createElement("div");
@@ -88487,7 +89369,7 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
           const btn = document.createElement("button");
           btn.type = "button";
           btn.className = "cds-lip__btn-add";
-          btn.textContent = "Adicionar";
+          btn.textContent = this.options.addButtonLabel || "Adicionar";
           btn.addEventListener("click", (e2) => {
             e2.stopPropagation();
             this._selectProduct(product);
@@ -89915,9 +90797,31 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
             row.appendChild(actions);
             table.appendChild(row);
           });
+          table.addEventListener("click", (ev) => {
+            var _a3, _b2;
+            const detalheBtn = ev.target.closest(".cds-btn-detalhe-precificacao");
+            const compararBtn = ev.target.closest(".cds-btn-comparar-tabelas");
+            if (!detalheBtn && !compararBtn) return;
+            ev.preventDefault();
+            const idx = Number(
+              (_b2 = (_a3 = (detalheBtn || compararBtn).closest(".cds-preparar-entrega__grade-row")) == null ? void 0 : _a3.dataset) == null ? void 0 : _b2.index
+            );
+            const item = state.data.itens[idx];
+            if (!item) return;
+            if (detalheBtn) {
+              _PrepararEntregaView.abrirDetalhesPrecificacao(item, "CONSIGNADO");
+              return;
+            }
+            const pid = Number(compararBtn.dataset.produtoId || item.produtoId);
+            if (typeof ctx.onCompararTabelas === "function") {
+              ctx.onCompararTabelas(pid, item);
+            } else if (ctx.api) {
+              _PrepararEntregaView.abrirCompararTabelas(ctx.api, pid, item);
+            }
+          });
           return table;
         }
-        /** Snapshot discreto da precificação (RCM-6.1 / RCM-7.5) */
+        /** Snapshot discreto da precificação (RCM-6.1 / RCM-7.5 / RCM-8.5) */
         static _htmlSnapshotItem(item, tabelaOp = null) {
           const linha = rotuloLinhaItem(item);
           const tabela = rotuloTabelaItem(item, tabelaOp);
@@ -89929,8 +90833,35 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
         <span><em>Tabela de Pre\xE7os</em> ${tabela}</span>
         <span><em>UC</em> ${uc}</span>
         <span><em>Origem</em> ${origem}</span>
+        <span class="cds-item-snapshot__acoes">
+          <button type="button" class="cds-link-btn cds-btn-detalhe-precificacao" data-produto-id="${item.produtoId || ""}">Detalhes</button>
+          <button type="button" class="cds-link-btn cds-btn-comparar-tabelas" data-produto-id="${item.produtoId || ""}">Comparar Tabelas</button>
+        </span>
       </div>
     `;
+        }
+        static abrirDetalhesPrecificacao(item, operacao = "CONSIGNADO") {
+          const linha = item.linhaComercialDescricao || item.linhaComercialCodigo || (item.linhaComercialId ? "#" + item.linhaComercialId : "Produto sem Linha");
+          const msg = "Detalhes da Precifica\xE7\xE3o\n\nProduto: " + (item.produto || item.nome || "") + "\nTabela: " + (item.tabelaPrecoNome || item.tabelaPrecoId || "\u2014") + "\nLinha: " + linha + "\nUnidade: " + (item.unidadeComercial || "\u2014") + "\nPre\xE7o: " + formatCurrency(Number(item.preco || item.precoUnitario || 0)) + "\nOrigem: " + formatOrigemPreco(item.precoOrigem, !!item.precoFallback) + "\nOpera\xE7\xE3o: " + operacao + "\nResolver: Motor Oficial";
+          window.alert(msg);
+        }
+        static async abrirCompararTabelas(api, produtoId, item) {
+          if (!api || !produtoId) {
+            window.alert("Produto inv\xE1lido para compara\xE7\xE3o.");
+            return;
+          }
+          try {
+            const res = await api.compararTabelasPrecificacao({ produtoId: Number(produtoId) });
+            const linhas = (res.comparacoes || []).map((c4) => {
+              const preco = c4.preco != null ? formatCurrency(Number(c4.preco)) + " / " + (c4.unidade_comercial || "") : "\u2014";
+              return (c4.canal_nome || c4.canal) + ": " + preco;
+            }).join("\n");
+            window.alert(
+              "Comparar Tabelas (informativo)\n\nProduto: " + (res.produto && res.produto.nome || item && item.produto || produtoId) + "\nTabela atual: " + (item && (item.tabelaPrecoNome || "Consigna\xE7\xE3o") || "Consigna\xE7\xE3o") + "\n\n" + linhas + "\n\nN\xE3o altera a tabela da opera\xE7\xE3o."
+            );
+          } catch (err2) {
+            window.alert(err2.message || "Falha ao comparar tabelas");
+          }
         }
         static renderConferencia(state, ctx) {
           var _a2;
@@ -90178,6 +91109,10 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
         ORIGEM_CLIENTE_360
       } = require_cliente360Context();
       var { extrairCapacidadesDosPerfis } = require_capacidadesComerciais();
+      var {
+        podeAdicionarProdutoComplementar
+      } = require_entregaComplementarMappers();
+      var { formatDocumento } = require_helpers();
       var PrepararEntregaView = require_PrepararEntregaView();
       var {
         FLUXO_MOMENTOS,
@@ -90236,6 +91171,7 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
           this.concluido = false;
           this.documentoCriado = null;
           this.consignacaoId = null;
+          this._skipComplementarOffer = false;
           this.data = {
             cliente: null,
             clienteId: null,
@@ -90668,6 +91604,8 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
             onItemObsChange: (i3, v3) => this._updateItemObs(i3, v3),
             onItemDuplicar: (i3) => this._duplicateItem(i3),
             onItemRemover: (i3) => this._removeItem(i3),
+            api: this.api,
+            onCompararTabelas: (pid, item) => PrepararEntregaView.abrirCompararTabelas(this.api, pid, item),
             onDocumentoExternoChange: (v3) => {
               this.data.documentoExterno = v3;
               this.dirtyState.updateValues(this.data);
@@ -90834,6 +91772,48 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
           this._scheduleAutosave();
           this._updateSidebar();
           this._renderOperacaoResumo();
+          await this._oferecerEntregaComplementarSeElegivel(cliente);
+        }
+        /**
+         * Evita o operador criar documento novo quando o desejado é somar na consignação antiga.
+         * @private
+         */
+        async _oferecerEntregaComplementarSeElegivel(cliente) {
+          if (!(cliente == null ? void 0 : cliente.id) || this._skipComplementarOffer) return;
+          try {
+            const lista = await this.api.listarConsignacoes({
+              clienteId: cliente.id,
+              cliente_id: cliente.id,
+              pageSize: 30
+            });
+            const items = (lista == null ? void 0 : lista.items) || [];
+            const elegiveis = items.filter((c4) => podeAdicionarProdutoComplementar(c4).elegivel);
+            if (!elegiveis.length) return;
+            const comPrestacaoAberta = elegiveis.find((c4) => {
+              const p3 = c4.prestacaoContasAtiva || c4.prestacaoContas || {};
+              return String(p3.status || "").toUpperCase() === "ABERTA";
+            });
+            const alvo = comPrestacaoAberta || elegiveis.sort((a3, b2) => Number(b2.id) - Number(a3.id))[0];
+            const doc = formatDocumento(alvo.documento, alvo.id);
+            const qtd = elegiveis.length;
+            const extras = qtd > 1 ? ` (h\xE1 ${qtd} consigna\xE7\xF5es eleg\xEDveis)` : "";
+            const confirmed = await confirmDialog({
+              title: "Usar a consigna\xE7\xE3o j\xE1 entregue?",
+              message: `${cliente.nome || "Este cliente"} j\xE1 possui ${doc}${extras}.
+
+Para os produtos ficarem na MESMA consigna\xE7\xE3o (e na Presta\xE7\xE3o atual), use Entrega Complementar.
+
+Nova consigna\xE7\xE3o cria outro documento separado.
+
+Abrir Entrega Complementar agora?`
+            });
+            if (!confirmed) return;
+            this._skipComplementarOffer = true;
+            await navigate(
+              `/consignacoes/${alvo.id}/entrega-complementar?retorno=prestacao&origem=nova-consignacao&clienteId=${cliente.id}`
+            );
+          } catch (_err) {
+          }
         }
         /**
          * RCM-7.2.1 / RCM-7.5 — canal_manual = CONSIGNADO tem prioridade absoluta.
@@ -90959,7 +91939,8 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
           }
           try {
             const res = await this.api.resolverPrecosVenda(this.data.itens, {
-              canal: CANAL_OPERACAO_CONSIGNACAO
+              canal: CANAL_OPERACAO_CONSIGNACAO,
+              documento: "consignacao"
             });
             this.data.canalVenda = CANAL_OPERACAO_CONSIGNACAO;
             const mapa = new Map(((res == null ? void 0 : res.itens) || []).map((row) => [Number(row.produto_id), row]));
@@ -91497,6 +92478,200 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
     }
   });
 
+  // frontend/modules/motor-comercial/pages/EntregaConsignacao/entregaItensEdicao.js
+  var require_entregaItensEdicao = __commonJS({
+    "frontend/modules/motor-comercial/pages/EntregaConsignacao/entregaItensEdicao.js"(exports, module) {
+      var STATUS_BLOQUEADOS = /* @__PURE__ */ new Set([
+        "ENTREGUE",
+        "CANCELADA",
+        "ACERTADA",
+        "QUITADA",
+        "ENCERRADA"
+      ]);
+      var MENSAGEM_EDICAO_BLOQUEADA = "Esta consigna\xE7\xE3o n\xE3o pode mais ser editada.";
+      function podeEditarItensEntrega(status) {
+        return String(status || "").toUpperCase() === "RASCUNHO";
+      }
+      function edicaoBloqueadaPorStatus(status) {
+        const st2 = String(status || "").toUpperCase();
+        return STATUS_BLOQUEADOS.has(st2);
+      }
+      function itemUnidadeSnapshot(item = {}) {
+        const uc = item.unidadeComercial || item.unidade || "UN";
+        return String(uc).trim().toUpperCase() || "UN";
+      }
+      function itemPrecoSnapshot(item = {}) {
+        const p3 = Number(item.precoUnitario ?? item.preco ?? item.valorUnitario ?? 0);
+        return Number.isFinite(p3) ? p3 : 0;
+      }
+      function itemQuantidade(item = {}) {
+        const q2 = Number(item.quantidadeEntregue ?? item.quantidade ?? 0);
+        return Number.isFinite(q2) ? q2 : 0;
+      }
+      function itemTotalSnapshot(item = {}) {
+        if (item.precoTotal != null && Number.isFinite(Number(item.precoTotal))) {
+          return Number(item.precoTotal);
+        }
+        if (item.subtotalEntregue != null && Number.isFinite(Number(item.subtotalEntregue))) {
+          return Number(item.subtotalEntregue);
+        }
+        return itemQuantidade(item) * itemPrecoSnapshot(item);
+      }
+      function totalEntrega(itens = []) {
+        return (itens || []).reduce((acc, item) => acc + itemTotalSnapshot(item), 0);
+      }
+      function impactoLimite({ limite = 0, valorEntrega = 0 } = {}) {
+        const lim = Number(limite) || 0;
+        const valor = Number(valorEntrega) || 0;
+        return {
+          valorEntrega: valor,
+          saldoAposEntrega: lim - valor,
+          excede: lim > 0 && valor > lim
+        };
+      }
+      var CAMPOS_SNAPSHOT = [
+        "linhaComercialId",
+        "tabelaPrecoId",
+        "canalVenda",
+        "unidadeComercial",
+        "precoOrigem",
+        "precoFallback",
+        "precoUnitario"
+      ];
+      function extrairSnapshot(item = {}) {
+        return {
+          linhaComercialId: item.linhaComercialId ?? null,
+          tabelaPrecoId: item.tabelaPrecoId ?? null,
+          canalVenda: item.canalVenda ? String(item.canalVenda).toUpperCase() : null,
+          unidadeComercial: itemUnidadeSnapshot(item),
+          precoOrigem: item.precoOrigem ?? null,
+          precoFallback: !!item.precoFallback,
+          precoUnitario: itemPrecoSnapshot(item)
+        };
+      }
+      function snapshotPreservado(antes, depois) {
+        const a3 = extrairSnapshot(antes);
+        const d2 = extrairSnapshot(depois);
+        return CAMPOS_SNAPSHOT.every((campo) => String(a3[campo]) === String(d2[campo]));
+      }
+      var UNIDADES_INTEIRAS = /* @__PURE__ */ new Set(["UN", "UND", "UNID", "UNIDADE", "PC", "P\xC7", "PEC", "PECA", "CX", "DZ"]);
+      var UNIDADES_DECIMAIS = /* @__PURE__ */ new Set([
+        "KG",
+        "G",
+        "GR",
+        "GRAMA",
+        "GRAMAS",
+        "L",
+        "LT",
+        "LITRO",
+        "LITROS",
+        "ML",
+        "M",
+        "MT",
+        "M2",
+        "M3"
+      ]);
+      function unidadePermiteFracao(unidade) {
+        const u3 = itemUnidadeSnapshot({ unidadeComercial: unidade });
+        if (UNIDADES_DECIMAIS.has(u3)) return true;
+        if (UNIDADES_INTEIRAS.has(u3)) return false;
+        return true;
+      }
+      function validarQuantidadeEdicao(quantidade, unidade) {
+        const qtd = Number(String(quantidade).replace(",", "."));
+        if (!Number.isFinite(qtd) || qtd <= 0) {
+          return { ok: false, motivo: "Quantidade deve ser maior que zero" };
+        }
+        if (!unidadePermiteFracao(unidade) && !Number.isInteger(qtd)) {
+          return { ok: false, motivo: "Esta unidade exige quantidade inteira" };
+        }
+        return { ok: true, quantidade: qtd };
+      }
+      function aplicarTrocaProduto(itemAtual = {}, produtoNovo = {}, quantidade) {
+        const qtd = Number(quantidade);
+        const preco = itemPrecoSnapshot(produtoNovo);
+        const unidade = itemUnidadeSnapshot(produtoNovo);
+        return aplicarQuantidadeLocal({
+          ...itemAtual,
+          produtoId: produtoNovo.produtoId ?? produtoNovo.id,
+          produtoNome: produtoNovo.produtoNome || produtoNovo.produto || produtoNovo.nome,
+          produto: produtoNovo.produtoNome || produtoNovo.produto || produtoNovo.nome,
+          precoUnitario: preco,
+          preco,
+          unidadeComercial: unidade,
+          unidade,
+          linhaComercialId: produtoNovo.linhaComercialId ?? null,
+          tabelaPrecoId: produtoNovo.tabelaPrecoId ?? null,
+          canalVenda: produtoNovo.canalVenda || "CONSIGNADO",
+          precoOrigem: produtoNovo.precoOrigem ?? null,
+          precoFallback: !!produtoNovo.precoFallback
+        }, qtd);
+      }
+      function produtoJaExisteNaConsignacao(itens = [], produtoId, itemIdIgnorar = null) {
+        return (itens || []).some((item) => {
+          const mesmoProduto = Number(item.produtoId) === Number(produtoId);
+          if (!mesmoProduto) return false;
+          if (itemIdIgnorar == null) return true;
+          return String(item.id || item.itemId) !== String(itemIdIgnorar);
+        });
+      }
+      function aplicarQuantidadeLocal(item, novaQuantidade) {
+        const preco = itemPrecoSnapshot(item);
+        const qtd = Number(novaQuantidade);
+        return {
+          ...item,
+          quantidade: qtd,
+          quantidadeEntregue: qtd,
+          precoUnitario: preco,
+          preco,
+          subtotalEntregue: qtd * preco,
+          precoTotal: qtd * preco,
+          unidadeComercial: itemUnidadeSnapshot(item),
+          linhaComercialId: item.linhaComercialId,
+          tabelaPrecoId: item.tabelaPrecoId,
+          canalVenda: item.canalVenda,
+          precoOrigem: item.precoOrigem,
+          precoFallback: item.precoFallback
+        };
+      }
+      function montarConfirmacaoEntrega({ clienteNome, quantidadeItens, valorTotal, formatCurrency }) {
+        const fmt = formatCurrency || ((v3) => String(v3));
+        return {
+          title: "Confirmar entrega?",
+          cancelLabel: "Voltar e revisar",
+          confirmLabel: "Confirmar entrega",
+          message: [
+            `Cliente: ${clienteNome || "\u2014"}`,
+            `Quantidade de itens: ${quantidadeItens ?? 0}`,
+            `Valor total: ${fmt(valorTotal || 0)}`,
+            "",
+            "Ap\xF3s confirmar, os itens ser\xE3o registrados como entregues e n\xE3o poder\xE3o mais ser editados."
+          ].join("\n")
+        };
+      }
+      module.exports = {
+        podeEditarItensEntrega,
+        edicaoBloqueadaPorStatus,
+        itemUnidadeSnapshot,
+        itemPrecoSnapshot,
+        itemQuantidade,
+        itemTotalSnapshot,
+        totalEntrega,
+        impactoLimite,
+        extrairSnapshot,
+        snapshotPreservado,
+        unidadePermiteFracao,
+        validarQuantidadeEdicao,
+        aplicarQuantidadeLocal,
+        aplicarTrocaProduto,
+        produtoJaExisteNaConsignacao,
+        montarConfirmacaoEntrega,
+        MENSAGEM_EDICAO_BLOQUEADA,
+        CAMPOS_SNAPSHOT
+      };
+    }
+  });
+
   // frontend/modules/motor-comercial/pages/EntregaConsignacao/index.js
   var require_EntregaConsignacao = __commonJS({
     "frontend/modules/motor-comercial/pages/EntregaConsignacao/index.js"(exports, module) {
@@ -91515,6 +92690,7 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
         navigate,
         confirmDialog,
         choiceDialog,
+        promptDialog,
         withLoading,
         carregarConsignacaoCompleta,
         isOperadorAutorizado,
@@ -91559,6 +92735,27 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
         notifyRecovery,
         loadingText
       } = require_messages();
+      var {
+        podeEditarItensEntrega,
+        itemUnidadeSnapshot,
+        itemPrecoSnapshot,
+        itemQuantidade,
+        itemTotalSnapshot,
+        totalEntrega,
+        impactoLimite,
+        validarQuantidadeEdicao,
+        aplicarQuantidadeLocal,
+        aplicarTrocaProduto,
+        produtoJaExisteNaConsignacao,
+        unidadePermiteFracao,
+        MENSAGEM_EDICAO_BLOQUEADA
+      } = require_entregaItensEdicao();
+      var LIP = require_LIP();
+      var {
+        MOTIVOS_CANCELAMENTO,
+        podeCancelarPreparacao
+      } = require_cancelamentoPreparacao();
+      var CANAL_OPERACAO_CONSIGNACAO = "CONSIGNADO";
       var EntregaConsignacaoPage = class _EntregaConsignacaoPage {
         constructor(consignacaoId, routeQuery = {}) {
           this.routeQuery = routeQuery;
@@ -91575,6 +92772,12 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
             delivering: false
           };
           this.error = null;
+          this.itemError = null;
+          this.edicaoItemId = null;
+          this.edicaoRascunho = null;
+          this.salvandoItem = false;
+          this._modalEdicao = null;
+          this._lipTroca = null;
           this.checklist = {
             clienteValido: false,
             perfilAtivo: false,
@@ -91626,7 +92829,7 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
             title: "Entrega",
             subtitle: "Confirme os itens e entregue",
             context: `Documento: ${doc} \xB7 Cliente: ${cliente}`,
-            onBack: () => this._handleCancel()
+            onBack: () => this._handleVoltar()
           });
         }
         _clienteLabel() {
@@ -91658,8 +92861,7 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
         }
         _podeEditarRascunho() {
           var _a2;
-          const st2 = String(((_a2 = this.consignacao) == null ? void 0 : _a2.status) || "").toUpperCase();
-          return st2 === "RASCUNHO" && !!this.consignacaoId;
+          return podeEditarItensEntrega((_a2 = this.consignacao) == null ? void 0 : _a2.status) && !!this.consignacaoId;
         }
         _abrirRascunhoParaRevisar() {
           var _a2, _b2, _c;
@@ -91705,15 +92907,20 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
           return container;
         }
         _createIdentityLine() {
+          var _a2;
           const wrap = document.createElement("div");
           wrap.className = "cds-entrega-identity";
           const totalValue = (this.consignacao.itens || []).reduce(
             (sum, item) => sum + this._itemQuantidade(item) * this._itemPreco(item),
             0
           );
+          const limite = Number(((_a2 = this.resumoPrestacao) == null ? void 0 : _a2.limiteDisponivel) ?? this.consignacao.limite ?? 0);
+          const impacto = impactoLimite({ limite, valorEntrega: totalValue });
           wrap.innerHTML = `
       <span>Itens: <strong>${(this.consignacao.itens || []).length}</strong></span>
-      <span>Total: <strong>${this._formatCurrency(totalValue)}</strong></span>
+      <span>Total da entrega: <strong>${this._formatCurrency(totalValue)}</strong></span>
+      <span>Limite: <strong>${this._formatCurrency(limite)}</strong></span>
+      <span>Saldo ap\xF3s entrega: <strong>${this._formatCurrency(impacto.saldoAposEntrega)}</strong></span>
       <span>Status: <strong>${this.consignacao.status || "\u2014"}</strong></span>
     `;
           return wrap;
@@ -91744,20 +92951,6 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
               list.appendChild(li);
             });
             banner.appendChild(list);
-          }
-          if (this._podeEditarRascunho()) {
-            const hint = document.createElement("p");
-            hint.className = "cds-entrega-status-banner__hint";
-            hint.textContent = this.checklist.itensCadastrados ? "Abra o rascunho para corrigir os dados e voltar \xE0 entrega." : "Esta consigna\xE7\xE3o ainda n\xE3o tem itens. Abra o rascunho para incluir produtos.";
-            banner.appendChild(hint);
-            const actions = document.createElement("div");
-            actions.className = "cds-entrega-status-banner__actions";
-            actions.appendChild(Button.create({
-              text: this.checklist.itensCadastrados ? "Abrir rascunho" : "Incluir itens no rascunho",
-              variant: "secondary",
-              onClick: () => this._abrirRascunhoParaRevisar()
-            }));
-            banner.appendChild(actions);
           }
           return banner;
         }
@@ -91804,12 +92997,17 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
           return container;
         }
         _itemQuantidade(item) {
-          const q2 = Number((item == null ? void 0 : item.quantidade) ?? (item == null ? void 0 : item.quantidadeEntregue) ?? 0);
-          return Number.isFinite(q2) ? q2 : 0;
+          return itemQuantidade(item);
         }
         _itemPreco(item) {
-          const p3 = Number((item == null ? void 0 : item.preco) ?? (item == null ? void 0 : item.precoUnitario) ?? 0);
-          return Number.isFinite(p3) ? p3 : 0;
+          return itemPrecoSnapshot(item);
+        }
+        _itemUnidade(item) {
+          return itemUnidadeSnapshot(item);
+        }
+        _totalEntregaAtual() {
+          var _a2;
+          return totalEntrega(((_a2 = this.consignacao) == null ? void 0 : _a2.itens) || []);
         }
         /**
          * Creates summary section.
@@ -91888,33 +93086,324 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
           container.className = "cds-entrega-items";
           const title = document.createElement("h3");
           title.className = "cds-entrega-items__title";
-          title.textContent = "Itens da Consigna\xE7\xE3o";
+          title.textContent = "Itens da consigna\xE7\xE3o";
           container.appendChild(title);
-          const columns = [
-            { key: "produto", label: "Produto" },
-            { key: "quantidade", label: "Quantidade" },
-            { key: "unidade", label: "Unidade" },
-            { key: "preco", label: "Pre\xE7o" },
-            { key: "valor", label: "Valor" },
-            { key: "observacao", label: "Observa\xE7\xE3o" },
-            { key: "status", label: "Status" }
-          ];
-          const data = (this.consignacao.itens || []).map((item) => {
-            const qtd = this._itemQuantidade(item);
-            const preco = this._itemPreco(item);
-            return {
-              produto: item.produto || item.produtoNome || `Produto #${item.produtoId}`,
-              quantidade: qtd,
-              unidade: item.unidade || "UN",
-              preco: this._formatCurrency(preco),
-              valor: this._formatCurrency(qtd * preco),
-              observacao: item.observacao || "-",
-              status: Badge.createStatus(item.status || "ATIVO")
-            };
-          });
-          const table = Table.create({ columns, data });
-          container.appendChild(table);
+          if (this.itemError) {
+            container.appendChild(Alert.create({
+              message: this.itemError,
+              variant: "error",
+              dismissible: true
+            }));
+          }
+          const itens = this.consignacao.itens || [];
+          if (!itens.length) {
+            container.appendChild(EmptyState.create({
+              title: "Nenhum item",
+              description: "Esta consigna\xE7\xE3o n\xE3o possui itens"
+            }));
+            return container;
+          }
+          container.appendChild(Table.create({
+            columns: [
+              { key: "produto", label: "Produto" },
+              { key: "quantidade", label: "Quantidade" },
+              { key: "unidade", label: "Unidade" },
+              { key: "preco", label: "Pre\xE7o" },
+              { key: "valor", label: "Valor" },
+              { key: "observacao", label: "Observa\xE7\xE3o" },
+              { key: "status", label: "Status" },
+              { key: "editar", label: "Editar" }
+            ],
+            data: itens.map((item) => this._mapItemRow(item))
+          }));
           return container;
+        }
+        _mapItemRow(item) {
+          const qtd = this._itemQuantidade(item);
+          const preco = this._itemPreco(item);
+          return {
+            produto: item.produto || item.produtoNome || `Produto #${item.produtoId}`,
+            quantidade: String(qtd),
+            unidade: this._itemUnidade(item),
+            preco: this._formatCurrency(preco),
+            valor: this._formatCurrency((Number.isFinite(qtd) ? qtd : 0) * preco),
+            observacao: item.observacao || "\u2014",
+            status: Badge.createStatus(item.status || "ATIVO"),
+            editar: this._botaoEditarItem(item),
+            _raw: item
+          };
+        }
+        _botaoEditarItem(item) {
+          const editar = document.createElement("button");
+          editar.type = "button";
+          editar.className = "cds-entrega-items__editar";
+          editar.textContent = "Editar";
+          editar.addEventListener("click", (event) => {
+            event.stopPropagation();
+            this._iniciarEdicaoItem(item);
+          });
+          return editar;
+        }
+        _iniciarEdicaoItem(item) {
+          if (!this._podeEditarRascunho()) {
+            notify(MENSAGEM_EDICAO_BLOQUEADA, "warning");
+            return;
+          }
+          this.edicaoItemId = item.id || item.itemId;
+          this.edicaoRascunho = {
+            quantidade: this._itemQuantidade(item),
+            observacao: item.observacao || "",
+            produtoId: item.produtoId,
+            produtoNome: item.produto || item.produtoNome || `Produto #${item.produtoId}`,
+            precoUnitario: this._itemPreco(item),
+            unidadeComercial: this._itemUnidade(item),
+            linhaComercialId: item.linhaComercialId ?? null,
+            tabelaPrecoId: item.tabelaPrecoId ?? null,
+            canalVenda: item.canalVenda || CANAL_OPERACAO_CONSIGNACAO,
+            precoOrigem: item.precoOrigem ?? null,
+            precoFallback: !!item.precoFallback,
+            trocouProduto: false
+          };
+          this.itemError = null;
+          this._abrirModalEdicao(item);
+        }
+        _cancelarEdicaoItem() {
+          this.edicaoItemId = null;
+          this.edicaoRascunho = null;
+          this._fecharModalEdicao();
+        }
+        _abrirModalEdicao(item) {
+          this._fecharModalEdicao();
+          const rascunho = this.edicaoRascunho || {};
+          const unidade = rascunho.unidadeComercial || this._itemUnidade(item);
+          const preco = Number(rascunho.precoUnitario ?? this._itemPreco(item));
+          const produto = rascunho.produtoNome || item.produto || item.produtoNome || `Produto #${item.produtoId}`;
+          const overlay = document.createElement("div");
+          overlay.className = "cds-entrega-editar-modal";
+          overlay.setAttribute("role", "dialog");
+          overlay.setAttribute("aria-modal", "true");
+          overlay.innerHTML = `
+      <div class="cds-entrega-editar-modal__painel">
+        <h3>Editar item</h3>
+        <p data-produto-nome><strong></strong></p>
+        <p data-produto-preco></p>
+        <button type="button" class="cds-entrega-editar-modal__trocar" data-action="trocar">Trocar produto</button>
+        <div id="entrega-lip-troca-host" class="cds-entrega-editar-modal__lip" hidden></div>
+        <label>
+          Quantidade
+          <input type="number" data-field="quantidade"
+            min="${unidadePermiteFracao(unidade) ? "0.001" : "1"}"
+            step="${unidadePermiteFracao(unidade) ? "0.001" : "1"}"
+            value="${rascunho.quantidade}">
+        </label>
+        <label>
+          Observa\xE7\xE3o
+          <input type="text" data-field="observacao" value="${String(rascunho.observacao || "").replace(/"/g, "&quot;")}">
+        </label>
+        <p class="cds-entrega-editar-modal__valor">Valor: <strong data-valor>${this._formatCurrency(Number(rascunho.quantidade) * preco)}</strong></p>
+        <div class="cds-entrega-editar-modal__acoes">
+          <button type="button" data-action="cancelar">Cancelar</button>
+          <button type="button" data-action="salvar">Salvar</button>
+        </div>
+      </div>
+    `;
+          overlay.querySelector("[data-produto-nome] strong").textContent = produto;
+          overlay.querySelector("[data-produto-preco]").textContent = `Pre\xE7o: ${this._formatCurrency(preco)}/${unidade}`;
+          const inputQtd = overlay.querySelector('[data-field="quantidade"]');
+          const inputObs = overlay.querySelector('[data-field="observacao"]');
+          inputQtd.addEventListener("input", () => {
+            this.edicaoRascunho = { ...this.edicaoRascunho, quantidade: inputQtd.value };
+            this._atualizarValorModal();
+          });
+          inputObs.addEventListener("input", () => {
+            this.edicaoRascunho = { ...this.edicaoRascunho, observacao: inputObs.value };
+          });
+          overlay.addEventListener("click", (event) => {
+            if (event.target === overlay) this._cancelarEdicaoItem();
+          });
+          overlay.querySelector('[data-action="trocar"]').addEventListener("click", () => this._exibirBuscaTrocaProduto());
+          overlay.querySelector('[data-action="cancelar"]').addEventListener("click", () => this._cancelarEdicaoItem());
+          overlay.querySelector('[data-action="salvar"]').addEventListener("click", () => this._salvarEdicaoItem(item));
+          this._modalEdicao = overlay;
+          (this.root || document.body).appendChild(overlay);
+        }
+        _atualizarValorModal() {
+          if (!this._modalEdicao || !this.edicaoRascunho) return;
+          const unidade = this.edicaoRascunho.unidadeComercial;
+          const preco = Number(this.edicaoRascunho.precoUnitario) || 0;
+          const inputQtd = this._modalEdicao.querySelector('[data-field="quantidade"]');
+          const check = validarQuantidadeEdicao(this.edicaoRascunho.quantidade, unidade);
+          const valorEl = this._modalEdicao.querySelector("[data-valor]");
+          const nomeEl = this._modalEdicao.querySelector("[data-produto-nome] strong");
+          const precoEl = this._modalEdicao.querySelector("[data-produto-preco]");
+          if (nomeEl) nomeEl.textContent = this.edicaoRascunho.produtoNome;
+          if (precoEl) precoEl.textContent = `Pre\xE7o: ${this._formatCurrency(preco)}/${unidade}`;
+          if (inputQtd) {
+            inputQtd.min = unidadePermiteFracao(unidade) ? "0.001" : "1";
+            inputQtd.step = unidadePermiteFracao(unidade) ? "0.001" : "1";
+          }
+          if (valorEl && check.ok) valorEl.textContent = this._formatCurrency(check.quantidade * preco);
+        }
+        _exibirBuscaTrocaProduto() {
+          var _a2, _b2, _c;
+          const host = (_a2 = this._modalEdicao) == null ? void 0 : _a2.querySelector("#entrega-lip-troca-host");
+          if (!host) return;
+          host.hidden = false;
+          (_b2 = this._modalEdicao.querySelector(".cds-entrega-editar-modal__painel")) == null ? void 0 : _b2.classList.add("cds-entrega-editar-modal__painel--troca");
+          if ((_c = this._lipTroca) == null ? void 0 : _c.destroy) this._lipTroca.destroy();
+          this._lipTroca = LIP.create({
+            addButtonLabel: "Selecionar",
+            placeholder: "Buscar produto para trocar...",
+            onSelect: (produto, quantidade) => this._aplicarProdutoTrocado(produto, quantidade)
+          });
+          this._lipTroca.mount(host);
+          this._lipTroca.focus();
+        }
+        async _aplicarProdutoTrocado(produto, quantidadeLip) {
+          var _a2;
+          if (!(produto == null ? void 0 : produto.id) || !this.edicaoRascunho) return;
+          const itemId = this.edicaoItemId;
+          if (Number(produto.id) === Number(this.edicaoRascunho.produtoId) && !this.edicaoRascunho.trocouProduto) {
+            this._ocultarBuscaTrocaProduto();
+            return;
+          }
+          if (produtoJaExisteNaConsignacao(((_a2 = this.consignacao) == null ? void 0 : _a2.itens) || [], produto.id, itemId)) {
+            notify("Este produto j\xE1 est\xE1 na consigna\xE7\xE3o.", "warning");
+            return;
+          }
+          try {
+            const resolvido = await this.api.resolverPrecosVenda([{
+              produtoId: produto.id,
+              quantidade: Number(this.edicaoRascunho.quantidade) || Number(quantidadeLip) || 1,
+              categoriaId: produto.categoria_id ?? produto.categoriaId ?? null,
+              linhaComercialId: produto.linha_comercial_id ?? produto.linhaComercialId ?? null
+            }], {
+              canal: CANAL_OPERACAO_CONSIGNACAO,
+              documento: "consignacao"
+            });
+            const row = ((resolvido == null ? void 0 : resolvido.itens) || [])[0] || {};
+            const preco = Number(row.preco_venda ?? produto.preco ?? produto.precoVenda ?? 0);
+            const unidade = String(row.unidade_comercial || row.unidadeComercial || produto.unidade || "UN").trim().toUpperCase();
+            const qtdAtual = this.edicaoRascunho.quantidade;
+            const check = validarQuantidadeEdicao(qtdAtual, unidade);
+            this.edicaoRascunho = {
+              ...this.edicaoRascunho,
+              produtoId: produto.id,
+              produtoNome: produto.nome || produto.produtoNome || produto.descricao || `Produto #${produto.id}`,
+              precoUnitario: Number.isFinite(preco) ? preco : 0,
+              unidadeComercial: unidade,
+              linhaComercialId: row.linha_comercial_id ?? produto.linha_comercial_id ?? null,
+              tabelaPrecoId: row.tabela_preco_id ?? null,
+              canalVenda: CANAL_OPERACAO_CONSIGNACAO,
+              precoOrigem: row.preco_origem || null,
+              precoFallback: !!row.preco_fallback,
+              quantidade: check.ok ? check.quantidade : qtdAtual,
+              trocouProduto: true
+            };
+            this._atualizarValorModal();
+            this._ocultarBuscaTrocaProduto();
+          } catch (error) {
+            notify(operationalMessage(error, { context: "entrega" }) || error.message || "N\xE3o foi poss\xEDvel resolver o produto.", "error");
+          }
+        }
+        _ocultarBuscaTrocaProduto() {
+          var _a2, _b2, _c, _d;
+          const host = (_a2 = this._modalEdicao) == null ? void 0 : _a2.querySelector("#entrega-lip-troca-host");
+          if (host) {
+            host.hidden = true;
+            host.innerHTML = "";
+          }
+          (_c = (_b2 = this._modalEdicao) == null ? void 0 : _b2.querySelector(".cds-entrega-editar-modal__painel")) == null ? void 0 : _c.classList.remove("cds-entrega-editar-modal__painel--troca");
+          if ((_d = this._lipTroca) == null ? void 0 : _d.destroy) this._lipTroca.destroy();
+          this._lipTroca = null;
+        }
+        _fecharModalEdicao() {
+          var _a2;
+          this._ocultarBuscaTrocaProduto();
+          if ((_a2 = this._modalEdicao) == null ? void 0 : _a2.parentNode) {
+            this._modalEdicao.parentNode.removeChild(this._modalEdicao);
+          }
+          this._modalEdicao = null;
+        }
+        async _salvarEdicaoItem(item) {
+          var _a2;
+          if (!this._podeEditarRascunho()) {
+            notify(MENSAGEM_EDICAO_BLOQUEADA, "warning");
+            this._fecharModalEdicao();
+            return;
+          }
+          const rascunho = this.edicaoRascunho || {};
+          const unidade = rascunho.unidadeComercial || this._itemUnidade(item);
+          const check = validarQuantidadeEdicao(rascunho.quantidade, unidade);
+          if (!check.ok) {
+            notify(check.motivo, "warning");
+            return;
+          }
+          const itemId = item.id || item.itemId;
+          const trocou = !!rascunho.trocouProduto && Number(rascunho.produtoId) !== Number(item.produtoId);
+          if (trocou && produtoJaExisteNaConsignacao(((_a2 = this.consignacao) == null ? void 0 : _a2.itens) || [], rascunho.produtoId, itemId)) {
+            notify("Este produto j\xE1 est\xE1 na consigna\xE7\xE3o.", "warning");
+            return;
+          }
+          const local = trocou ? aplicarTrocaProduto({ ...item, observacao: rascunho.observacao ?? item.observacao }, rascunho, check.quantidade) : aplicarQuantidadeLocal(
+            { ...item, observacao: rascunho.observacao ?? item.observacao },
+            check.quantidade
+          );
+          this.consignacao.itens = (this.consignacao.itens || []).map((atual) => String(atual.id || atual.itemId) === String(itemId) ? { ...atual, ...local } : atual);
+          this._updateChecklist();
+          this.salvandoItem = true;
+          this.itemError = null;
+          try {
+            if (trocou) {
+              await this.api.adicionarItem(this.consignacaoId, {
+                produtoId: rascunho.produtoId,
+                quantidade: check.quantidade,
+                precoUnitario: Number(rascunho.precoUnitario) || 0,
+                unidadeComercial: rascunho.unidadeComercial,
+                linhaComercialId: rascunho.linhaComercialId,
+                tabelaPrecoId: rascunho.tabelaPrecoId,
+                canalVenda: CANAL_OPERACAO_CONSIGNACAO,
+                precoOrigem: rascunho.precoOrigem,
+                precoFallback: !!rascunho.precoFallback,
+                observacao: rascunho.observacao ?? "",
+                usuarioId: getUsuarioId()
+              });
+              await this.api.removerItem(this.consignacaoId, itemId, { usuarioId: getUsuarioId() });
+            } else {
+              await this.api.alterarItem(this.consignacaoId, itemId, {
+                novaQuantidade: check.quantidade,
+                usuarioId: getUsuarioId()
+              });
+              await this.api.atualizarObservacaoItem(this.consignacaoId, itemId, {
+                observacao: rascunho.observacao ?? ""
+              });
+            }
+            this.edicaoItemId = null;
+            this.edicaoRascunho = null;
+            this._fecharModalEdicao();
+            await this._recarregarConsignacaoSilencioso();
+          } catch (error) {
+            this.itemError = operationalMessage(error, { context: "entrega" }) || error.message || "N\xE3o foi poss\xEDvel salvar o item. A altera\xE7\xE3o local foi mantida.";
+            notifyError("ENTREGA_REGISTRAR", error);
+            this._updateContent();
+          } finally {
+            this.salvandoItem = false;
+          }
+        }
+        async _recarregarConsignacaoSilencioso() {
+          const [consignacao, resumo] = await Promise.all([
+            carregarConsignacaoCompleta(this.api, this.projectionApi, this.consignacaoId),
+            this.projectionApi.obterResumoPrestacao({ consignacaoId: this.consignacaoId }).catch(() => this.resumoPrestacao)
+          ]);
+          this.consignacao = consignacao;
+          if (resumo) this.resumoPrestacao = resumo;
+          saveEntrega(this.consignacaoId, {
+            itens: (consignacao.itens || []).map((item) => ({ ...item })),
+            statusConsignacao: consignacao.status,
+            clienteId: consignacao.clienteId
+          }, RecoveryStatus.AGUARDANDO_CONFIRMACAO);
+          this._updateChecklist();
+          this._updateContent();
         }
         /**
          * Creates impact panel.
@@ -91952,26 +93441,30 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
          * @private
          */
         _buildWorkspaceFooter() {
+          const left = [
+            Button.create({
+              text: getBackButtonLabel(this.navigationContext, "Voltar"),
+              variant: "ghost",
+              onClick: () => this._handleVoltar()
+            })
+          ];
           return Workspace.Footer.create({
-            left: [
-              Button.create({
-                text: getBackButtonLabel(this.navigationContext, "Voltar"),
-                variant: "ghost",
-                onClick: () => this._handleCancel()
-              })
-            ],
+            left,
             right: this._footerRightNodes()
           });
         }
         _footerRightNodes() {
+          var _a2;
           const nodes = [];
           const canDeliver = this._canDeliver();
           const needsLiberacao = this._precisaLiberacaoLimite();
-          if (this._podeEditarRascunho() && !canDeliver) {
+          const podeCancelar = podeCancelarPreparacao(this.consignacao) || ((_a2 = this.checklist) == null ? void 0 : _a2.consignacaoRascunho) === true;
+          if (podeCancelar) {
             nodes.push(Button.create({
-              text: this.checklist.itensCadastrados ? "Revisar rascunho" : "Incluir itens no rascunho",
-              variant: "secondary",
-              onClick: () => this._abrirRascunhoParaRevisar()
+              text: "Cancelar",
+              variant: "danger",
+              disabled: this.loading.delivering,
+              onClick: () => this._handleCancelarPreparacao()
             }));
           }
           if (needsLiberacao) {
@@ -92219,15 +93712,72 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
             this.navigationContext
           ));
         }
-        async _handleCancel() {
+        /**
+         * Volta sem cancelar a consignação (permanece em preparação).
+         * @private
+         */
+        async _handleVoltar() {
           const backLabel = this.navigationContext.locked ? "a Central do Cliente" : "a Central de Consigna\xE7\xF5es";
           const confirmed = await confirmDialog({
             ...ConfirmMessages.CANCELAR_ENTREGA,
-            message: `Deseja cancelar a entrega e voltar para ${backLabel}?`
+            title: "Sair da entrega",
+            message: `Deseja sair da entrega e voltar para ${backLabel}?
+A consigna\xE7\xE3o permanecer\xE1 em prepara\xE7\xE3o.`,
+            confirmLabel: "Sair",
+            cancelLabel: "Continuar entrega"
           });
           if (confirmed) {
             await navigate(resolveBackPath(this.navigationContext, "/consignacoes"));
           }
+        }
+        /**
+         * RCM-8.8 — Cancela a preparação (RASCUNHO → CANCELADA) na entrega em andamento.
+         * @private
+         */
+        async _handleCancelarPreparacao() {
+          if (!podeCancelarPreparacao(this.consignacao)) {
+            notifyWarning("SOMENTE_RASCUNHO");
+            return;
+          }
+          const confirmed = await confirmDialog({
+            ...ConfirmMessages.CANCELAR_CONSIGNACAO,
+            message: "Cancelar esta consigna\xE7\xE3o?\nEsta a\xE7\xE3o cancelar\xE1 a prepara\xE7\xE3o e a entrega n\xE3o ser\xE1 realizada."
+          });
+          if (!confirmed) return;
+          const motivo = await choiceDialog({
+            title: "Motivo do cancelamento",
+            message: "Selecione o motivo:",
+            choices: MOTIVOS_CANCELAMENTO.map((m4) => ({
+              label: m4.label,
+              value: m4.value,
+              variant: m4.value === "OUTRO" ? "secondary" : "primary"
+            }))
+          });
+          if (!motivo) return;
+          let observacao = null;
+          if (motivo === "OUTRO") {
+            observacao = await promptDialog({
+              title: "Descreva o motivo",
+              label: "Observa\xE7\xE3o",
+              placeholder: "Informe o motivo do cancelamento"
+            });
+            if (observacao == null) return;
+            observacao = String(observacao).trim() || null;
+          }
+          try {
+            await withLoading(loadingText("CANCELANDO_CONSIGNACAO"), () => this.api.cancelarConsignacao(this.consignacaoId, {
+              motivo,
+              observacao
+            }));
+            notifySuccess("CONSIGNACAO_CANCELADA");
+            await navigate(resolveBackPath(this.navigationContext, "/consignacoes"));
+          } catch (error) {
+            notifyError("CONSIGNACAO_CANCELAR", error);
+          }
+        }
+        /** @deprecated use _handleVoltar / _handleCancelarPreparacao */
+        async _handleCancel() {
+          return this._handleVoltar();
         }
         /**
          * Gets friendly error message.
@@ -92270,6 +93820,435 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
         }
       };
       module.exports = EntregaConsignacaoPage;
+    }
+  });
+
+  // frontend/modules/motor-comercial/pages/EntregaComplementar/index.js
+  var require_EntregaComplementar = __commonJS({
+    "frontend/modules/motor-comercial/pages/EntregaComplementar/index.js"(exports, module) {
+      var Workspace = require_Workspace2();
+      var Button = require_Button2();
+      var Loading = require_Loading2();
+      var Alert = require_Alert2();
+      var EmptyState = require_EmptyState2();
+      var LIP = require_LIP();
+      var MotorComercialApi = require_MotorComercialApi();
+      var {
+        notify,
+        navigate,
+        withLoading,
+        confirmDialog,
+        getUsuarioId,
+        carregarConsignacaoCompleta
+      } = require_operacional();
+      var ProjectionApi = require_ProjectionApi();
+      var {
+        parseNavigationContext,
+        resolveBackPath,
+        routeWithActiveContext,
+        getBackButtonLabel
+      } = require_cliente360Context();
+      var { formatDocumento } = require_helpers();
+      var {
+        podeAdicionarProdutoComplementar,
+        totalItensComplementares,
+        snapshotDoResolver,
+        MENSAGEM_PRESTACAO_ENCERRADA
+      } = require_entregaComplementarMappers();
+      function formatCurrency(value) {
+        return Number(value || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+      }
+      var EntregaComplementarPage = class _EntregaComplementarPage {
+        constructor(consignacaoId, routeQuery = {}) {
+          this.consignacaoId = consignacaoId;
+          this.routeQuery = routeQuery;
+          this.navigationContext = parseNavigationContext(routeQuery);
+          this.api = new MotorComercialApi();
+          this.projectionApi = new ProjectionApi();
+          this.consignacao = null;
+          this.entregas = [];
+          this.itensNovos = [];
+          this.loading = true;
+          this.error = null;
+          this.confirmando = false;
+          this.lipInstance = null;
+          this.root = null;
+        }
+        static create(consignacaoId, query = {}) {
+          const page = new _EntregaComplementarPage(consignacaoId, query);
+          return page.render();
+        }
+        render() {
+          this.root = Workspace.create({
+            variant: "station",
+            className: "cds-entrega-complementar-workspace",
+            header: Workspace.Header.create({
+              title: "ENTREGA COMPLEMENTAR",
+              subtitle: "Adicionar produtos \xE0 consigna\xE7\xE3o entregue",
+              context: this._headerContext(),
+              onBack: () => this._voltar()
+            }),
+            body: Workspace.Body.create({
+              children: this._shell(),
+              scroll: true,
+              className: "cds-entrega-complementar__body"
+            }),
+            footer: Workspace.Footer.create({
+              left: [
+                Button.create({
+                  text: getBackButtonLabel(this.navigationContext, "Voltar"),
+                  variant: "ghost",
+                  onClick: () => this._voltar()
+                })
+              ],
+              right: [
+                Button.create({
+                  text: "Confirmar Entrega Complementar",
+                  variant: "primary",
+                  disabled: true,
+                  onClick: () => this._confirmar()
+                })
+              ]
+            })
+          });
+          this.root.id = "entrega-complementar-root";
+          this.root.dataset.rcm = "8.7";
+          setTimeout(() => this._load(), 0);
+          return this.root;
+        }
+        _headerContext() {
+          const wrap = document.createElement("div");
+          wrap.className = "cds-entrega-complementar__context";
+          wrap.innerHTML = `
+      <span>Consigna\xE7\xE3o: <strong id="ec-doc">\u2014</strong></span>
+      <span>Cliente: <strong id="ec-cliente">\u2014</strong></span>
+    `;
+          return wrap;
+        }
+        _shell() {
+          const shell = document.createElement("div");
+          shell.id = "entrega-complementar-content";
+          shell.className = "cds-entrega-complementar__conteudo";
+          shell.appendChild(Loading.create({ message: "Carregando consigna\xE7\xE3o..." }));
+          return shell;
+        }
+        async _load() {
+          this.loading = true;
+          this._patchContent(Loading.create({ message: "Carregando consigna\xE7\xE3o..." }));
+          try {
+            const [completa, entregasPayload] = await Promise.all([
+              carregarConsignacaoCompleta(this.api, this.projectionApi, this.consignacaoId),
+              this.api.consultarEntregasConsignacao(this.consignacaoId).catch(() => null)
+            ]);
+            this.consignacao = completa;
+            this.entregas = (entregasPayload == null ? void 0 : entregasPayload.entregas) || [];
+            this.error = null;
+            const check = podeAdicionarProdutoComplementar(completa);
+            if (!check.elegivel) {
+              this.error = new Error(check.mensagem || MENSAGEM_PRESTACAO_ENCERRADA);
+            }
+          } catch (error) {
+            this.error = error;
+          } finally {
+            this.loading = false;
+            this._renderContent();
+            this._updateHeader();
+            this._updateFooter();
+          }
+        }
+        _updateHeader() {
+          var _a2, _b2, _c;
+          const doc = (_a2 = this.root) == null ? void 0 : _a2.querySelector("#ec-doc");
+          const cliente = (_b2 = this.root) == null ? void 0 : _b2.querySelector("#ec-cliente");
+          const c4 = this.consignacao || {};
+          if (doc) {
+            doc.textContent = formatDocumento(c4.documento, c4.id || this.consignacaoId);
+          }
+          if (cliente) {
+            cliente.textContent = c4.clienteNome || c4.cliente || ((_c = c4.cliente) == null ? void 0 : _c.nome) || "\u2014";
+          }
+        }
+        _patchContent(node2) {
+          var _a2;
+          const host = (_a2 = this.root) == null ? void 0 : _a2.querySelector("#entrega-complementar-content");
+          if (!host) return;
+          host.innerHTML = "";
+          host.appendChild(node2);
+        }
+        _renderContent() {
+          var _a2;
+          const host = (_a2 = this.root) == null ? void 0 : _a2.querySelector("#entrega-complementar-content");
+          if (!host) return;
+          host.innerHTML = "";
+          if (this.loading) {
+            host.appendChild(Loading.create({ message: "Carregando consigna\xE7\xE3o..." }));
+            return;
+          }
+          if (this.error) {
+            host.appendChild(Alert.create({
+              message: this.error.message,
+              variant: "error",
+              dismissible: false
+            }));
+            host.appendChild(Button.create({
+              text: "Voltar \xE0 consigna\xE7\xE3o",
+              variant: "secondary",
+              onClick: () => this._voltar()
+            }));
+            return;
+          }
+          if (!this.consignacao) {
+            host.appendChild(EmptyState.create({
+              title: "Consigna\xE7\xE3o n\xE3o encontrada"
+            }));
+            return;
+          }
+          const intro = document.createElement("div");
+          intro.className = "cds-entrega-complementar__intro";
+          intro.innerHTML = `
+      <h2>ENTREGA COMPLEMENTAR</h2>
+      <p>Consigna\xE7\xE3o: <strong>${formatDocumento(this.consignacao.documento, this.consignacaoId)}</strong></p>
+      <p>Cliente: <strong>${this.consignacao.clienteNome || this.consignacao.cliente || "\u2014"}</strong></p>
+      <p class="cds-caption">A entrega original n\xE3o ser\xE1 reaberta nem reprocessada. Somente os novos itens ser\xE3o movimentados.</p>
+    `;
+          host.appendChild(intro);
+          host.appendChild(this._renderHistorico());
+          const addSection = document.createElement("section");
+          addSection.className = "cds-entrega-complementar__add";
+          addSection.innerHTML = '<h3>+ Adicionar produto</h3><div id="ec-lip-host"></div>';
+          host.appendChild(addSection);
+          host.appendChild(this._renderItensNovos());
+          requestAnimationFrame(() => this._mountLip());
+        }
+        _renderHistorico() {
+          const section = document.createElement("section");
+          section.className = "cds-entrega-complementar__historico";
+          section.innerHTML = "<h3>Entregas da consigna\xE7\xE3o</h3>";
+          if (!this.entregas.length) {
+            const itens = this.consignacao.itens || [];
+            section.appendChild(this._blocoEntrega({
+              label: "Entrega Original",
+              dataHora: this.consignacao.dataEntrega,
+              itens: itens.map((i3) => ({
+                produtoNome: i3.produtoNome || i3.produto || i3.produtoId,
+                quantidade: i3.quantidadeEntregue ?? i3.quantidade,
+                valor: Number(i3.quantidadeEntregue ?? i3.quantidade ?? 0) * Number(i3.precoUnitario || i3.preco || 0)
+              })),
+              valorTotal: itens.reduce((s3, i3) => s3 + Number(i3.quantidadeEntregue ?? i3.quantidade ?? 0) * Number(i3.precoUnitario || i3.preco || 0), 0)
+            }));
+            return section;
+          }
+          this.entregas.forEach((ev) => {
+            section.appendChild(this._blocoEntrega({
+              label: ev.label,
+              dataHora: ev.dataHora,
+              itens: ev.itens || [],
+              valorTotal: ev.valorTotal
+            }));
+          });
+          const total = this.entregas.reduce((s3, e2) => s3 + Number(e2.valorTotal || 0), 0);
+          const tot = document.createElement("p");
+          tot.className = "cds-entrega-complementar__total";
+          tot.innerHTML = `<strong>TOTAL CONSIGNA\xC7\xC3O</strong> ${formatCurrency(total)}`;
+          section.appendChild(tot);
+          return section;
+        }
+        _blocoEntrega({ label, dataHora, itens, valorTotal }) {
+          const box = document.createElement("div");
+          box.className = "cds-entrega-complementar__evento";
+          const when = dataHora ? new Date(dataHora).toLocaleString("pt-BR") : "\u2014";
+          box.innerHTML = `
+      <header>
+        <strong>${label}</strong>
+        <span>${when}</span>
+      </header>
+      <ul>
+        ${(itens || []).map((i3) => `
+          <li>
+            <span>${i3.produtoNome || i3.produtoId || "Produto"}</span>
+            <span>${i3.quantidade ?? 0}</span>
+            <span>${formatCurrency(i3.valor ?? (i3.quantidade || 0) * (i3.precoUnitario || 0))}</span>
+          </li>
+        `).join("") || '<li class="cds-caption">Sem itens</li>'}
+      </ul>
+      <footer>Subtotal: <strong>${formatCurrency(valorTotal)}</strong></footer>
+    `;
+          return box;
+        }
+        _renderItensNovos() {
+          const section = document.createElement("section");
+          section.className = "cds-entrega-complementar__novos";
+          section.id = "ec-itens-novos";
+          section.innerHTML = "<h3>Itens desta complementa\xE7\xE3o</h3>";
+          if (!this.itensNovos.length) {
+            section.appendChild(EmptyState.create({
+              title: "Nenhum produto adicionado",
+              description: "Use a busca acima para incluir produtos com canal CONSIGNADO."
+            }));
+            return section;
+          }
+          const list = document.createElement("div");
+          list.className = "cds-entrega-complementar__novos-lista";
+          this.itensNovos.forEach((item, index2) => {
+            const row = document.createElement("div");
+            row.className = "cds-entrega-complementar__novo-item";
+            row.innerHTML = `
+        <div>
+          <strong>${item.produtoNome || item.produtoId}</strong>
+          <span class="cds-caption">${item.unidadeComercial || "UN"} \xB7 ${item.precoOrigem || "Resolver"}</span>
+        </div>
+        <div>Qtd: ${item.quantidade}</div>
+        <div>${formatCurrency(item.precoUnitario)}</div>
+        <div>${formatCurrency(item.quantidade * item.precoUnitario)}</div>
+      `;
+            const rem = Button.create({
+              text: "Remover",
+              variant: "ghost",
+              onClick: () => {
+                this.itensNovos.splice(index2, 1);
+                this._renderContent();
+                this._updateFooter();
+              }
+            });
+            row.appendChild(rem);
+            list.appendChild(row);
+          });
+          section.appendChild(list);
+          const total = document.createElement("p");
+          total.innerHTML = `<strong>Valor incremental:</strong> ${formatCurrency(totalItensComplementares(this.itensNovos))}`;
+          section.appendChild(total);
+          return section;
+        }
+        _mountLip() {
+          var _a2, _b2;
+          const host = (_a2 = this.root) == null ? void 0 : _a2.querySelector("#ec-lip-host");
+          if (!host) return;
+          if ((_b2 = this.lipInstance) == null ? void 0 : _b2.destroy) this.lipInstance.destroy();
+          this.lipInstance = LIP.create({
+            onSelect: (produto, quantidade) => this._onProdutoSelecionado(produto, quantidade)
+          });
+          this.lipInstance.mount(host);
+          this.lipInstance.focus();
+        }
+        async _onProdutoSelecionado(produto, quantidade) {
+          if (!(produto == null ? void 0 : produto.id)) return;
+          const qtd = Number(quantidade) > 0 ? Number(quantidade) : 1;
+          try {
+            await withLoading("Resolvendo pre\xE7o (CONSIGNADO)\u2026", async () => {
+              var _a2, _b2;
+              const res = await this.api.resolverPrecosVenda(
+                [{ produtoId: produto.id, quantidade: qtd, linhaComercialId: produto.linhaComercialId }],
+                { canal: "CONSIGNADO", documento: "consignacao" }
+              );
+              const row = Array.isArray(res == null ? void 0 : res.itens) ? res.itens[0] : ((_b2 = (_a2 = res == null ? void 0 : res.data) == null ? void 0 : _a2.itens) == null ? void 0 : _b2[0]) || {};
+              const snap = snapshotDoResolver(row, produto);
+              this.itensNovos.push({
+                produtoId: produto.id,
+                produtoNome: produto.nome || produto.descricao || produto.codigo || String(produto.id),
+                quantidade: qtd,
+                ...snap
+              });
+            });
+            this._renderContent();
+            this._updateFooter();
+          } catch (error) {
+            notify(error.message || "Falha ao resolver pre\xE7o CONSIGNADO", "error");
+          }
+        }
+        _updateFooter() {
+          if (!this.root) return;
+          const pode = this.itensNovos.length > 0 && !this.confirmando && !this.error;
+          Workspace.compose(this.root, {
+            footer: Workspace.Footer.create({
+              left: [
+                Button.create({
+                  text: getBackButtonLabel(this.navigationContext, "Voltar"),
+                  variant: "ghost",
+                  onClick: () => this._voltar()
+                })
+              ],
+              right: [
+                Button.create({
+                  text: this.confirmando ? "Confirmando\u2026" : "Confirmar Entrega Complementar",
+                  variant: "primary",
+                  disabled: !pode,
+                  onClick: () => this._confirmar()
+                })
+              ]
+            })
+          });
+        }
+        async _confirmar() {
+          var _a2, _b2;
+          if (!this.itensNovos.length || this.confirmando) return;
+          const ok = await confirmDialog({
+            title: "Confirmar Entrega Complementar",
+            message: `Confirma a complementa\xE7\xE3o de ${this.itensNovos.length} produto(s) (${formatCurrency(totalItensComplementares(this.itensNovos))})?
+
+Somente os novos itens ser\xE3o movimentados no estoque e no Ledger.`
+          });
+          if (!ok) return;
+          this.confirmando = true;
+          this._updateFooter();
+          try {
+            const resultado = await withLoading(
+              "Registrando entrega complementar\u2026",
+              () => this.api.registrarEntregaComplementar(this.consignacaoId, {
+                itens: this.itensNovos.map((item) => ({
+                  produtoId: item.produtoId,
+                  quantidade: item.quantidade,
+                  precoUnitario: item.precoUnitario,
+                  unidadeComercial: item.unidadeComercial,
+                  linhaComercialId: item.linhaComercialId,
+                  tabelaPrecoId: item.tabelaPrecoId,
+                  canalVenda: "CONSIGNADO",
+                  precoOrigem: item.precoOrigem,
+                  precoFallback: item.precoFallback
+                })),
+                usuarioId: getUsuarioId()
+              })
+            );
+            notify(
+              (resultado == null ? void 0 : resultado.idempotente) ? "Entrega complementar j\xE1 registrada (idempotente)." : "Entrega complementar confirmada.",
+              "success"
+            );
+            this.itensNovos = [];
+            const retorno = String(
+              ((_a2 = this.routeQuery) == null ? void 0 : _a2.retorno) || ((_b2 = this.routeQuery) == null ? void 0 : _b2.voltarPara) || ""
+            ).toLowerCase();
+            const destino = retorno === "prestacao" ? `/consignacoes/${this.consignacaoId}/prestacao` : `/consignacoes/${this.consignacaoId}`;
+            await navigate(routeWithActiveContext(
+              destino,
+              this.navigationContext
+            ));
+          } catch (error) {
+            const msg = (error == null ? void 0 : error.message) || String(error);
+            notify(msg, "error");
+          } finally {
+            this.confirmando = false;
+            this._updateFooter();
+          }
+        }
+        _voltar() {
+          var _a2, _b2, _c;
+          if ((_a2 = this.lipInstance) == null ? void 0 : _a2.destroy) this.lipInstance.destroy();
+          const retorno = String(
+            ((_b2 = this.routeQuery) == null ? void 0 : _b2.retorno) || ((_c = this.routeQuery) == null ? void 0 : _c.voltarPara) || ""
+          ).toLowerCase();
+          if (retorno === "prestacao") {
+            navigate(routeWithActiveContext(
+              `/consignacoes/${this.consignacaoId}/prestacao`,
+              this.navigationContext
+            ));
+            return;
+          }
+          navigate(resolveBackPath(
+            this.navigationContext,
+            `/consignacoes/${this.consignacaoId}`
+          ));
+        }
+      };
+      module.exports = EntregaComplementarPage;
     }
   });
 
@@ -92361,7 +94340,7 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
           return host;
         }
         async _load() {
-          const host = document.getElementById("comprovante-entrega-root");
+          const host = this.root && this.root.querySelector ? this.root.querySelector("#comprovante-entrega-root") : document.getElementById("comprovante-entrega-root");
           if (!host) return;
           try {
             this.comprovante = await withLoading(
@@ -92469,12 +94448,21 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
           this._bindNavActions(host.querySelector("#comp-nav-actions"));
         }
         _bindShareActions(container) {
-          var _a2, _b2, _c;
+          var _a2, _b2, _c, _d;
           if (!container) return;
-          container.innerHTML = "<h3>Compartilhamento</h3>";
+          container.innerHTML = "<h3>Enviar ao consignat\xE1rio</h3>";
           const row = document.createElement("div");
           row.className = "cds-comp-actions";
-          const botoes = ((_c = (_b2 = (_a2 = this.comprovante) == null ? void 0 : _a2.cards) == null ? void 0 : _b2.compartilhamento) == null ? void 0 : _c.botoes) || [];
+          const cards = ((_a2 = this.comprovante) == null ? void 0 : _a2.cards) || ((_c = (_b2 = this.comprovante) == null ? void 0 : _b2.snapshot) == null ? void 0 : _c.cards) || {};
+          let botoes = ((_d = cards.compartilhamento) == null ? void 0 : _d.botoes) || [];
+          if (!botoes.length) {
+            botoes = [
+              { id: "whatsapp", label: "Enviar ao consignat\xE1rio (WhatsApp)", icone: "\u{1F4F1}", habilitado: true },
+              { id: "copiar", label: "Copiar Resumo", icone: "\u{1F4CB}", habilitado: true },
+              { id: "pdf", label: "Gerar PDF", icone: "\u{1F4C4}", habilitado: true },
+              { id: "imprimir", label: "Imprimir", icone: "\u{1F5A8}\uFE0F", habilitado: true }
+            ];
+          }
           botoes.forEach((btn) => {
             if (btn.estrutura && !btn.habilitado) {
               row.appendChild(Button.create({
@@ -92622,7 +94610,7 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
         // aliases internos → oficiais
         PARCIALMENTE_RECEBIDA: "Parcial",
         EM_ABERTO: "Em Aberto",
-        SEM_VENDA: "Quitada"
+        SEM_VENDA: "Sem Venda"
       });
       var SITUACAO_FISCAL = Object.freeze({
         NAO_APLICAVEL: "NAO_APLICAVEL",
@@ -93705,6 +95693,9 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
         var _a2, _b2;
         return ((_a2 = state == null ? void 0 : state.snapshot) == null ? void 0 : _a2.financeiro) || ((_b2 = state == null ? void 0 : state.painel) == null ? void 0 : _b2.financeiro) || null;
       }
+      function _isSemVenda(fin = {}) {
+        return String((fin == null ? void 0 : fin.situacaoFinanceira) || "").toUpperCase() === "SEM_VENDA" || Number((fin == null ? void 0 : fin.valorVenda) || 0) <= 0.01;
+      }
       var FecharConsignacaoView = class _FecharConsignacaoView {
         static renderMomento(momento, state, ctx) {
           switch (momento) {
@@ -93940,6 +95931,7 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
           tr.className = "cds-fechar-consignacao__grade-head cds-fechar-consignacao__grade-head--retornos";
           const cols = [
             { key: "check", label: "", always: true },
+            { key: "consignacao", label: "Consigna\xE7\xE3o", always: true },
             { key: "produto", label: "Produto", always: true },
             { key: "entregue", label: "Entregue" },
             { key: "devolvido", label: "Devolvido" },
@@ -94052,6 +96044,14 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
           tdCheck.dataset.col = "check";
           tdCheck.innerHTML = '<input type="checkbox" aria-label="Selecionar linha" disabled />';
           row.appendChild(tdCheck);
+          const tdConsig = document.createElement("td");
+          tdConsig.dataset.col = "consignacao";
+          tdConsig.className = "cds-retornos-table__consignacao";
+          const docLabel = item.documentoConsignacao || (item.consignacaoId != null ? `CONS-${item.consignacaoId}` : "\u2014");
+          const docText = typeof docLabel === "object" ? docLabel.numero || `CONS-${item.consignacaoId}` : String(docLabel);
+          tdConsig.textContent = docText.length > 18 ? `${docText.slice(0, 16)}\u2026` : docText;
+          tdConsig.title = docText;
+          row.appendChild(tdConsig);
           const tdProd = document.createElement("td");
           tdProd.dataset.col = "produto";
           tdProd.className = "cds-retornos-table__produto";
@@ -94207,12 +96207,14 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
           const fin = painel.preview && painel.financeiro ? painel.financeiro : ((_a2 = state.snapshot) == null ? void 0 : _a2.financeiro) || painel.financeiro || {};
           const situacaoLabel = labelSituacaoFinanceiraOficial(fin.situacaoFinanceira) || labelSituacaoFinanceira(fin.situacaoFinanceira) || "\u2014";
           const tone = _FecharConsignacaoView._situacaoSidebarTone(fin.situacaoFinanceira);
+          const semVenda = _isSemVenda(fin);
           const aside = document.createElement("aside");
           aside.className = "cds-op-card cds-retornos-sidebar cds-fechar-consignacao__painel";
           aside.id = "fechar-painel-lateral";
           aside.innerHTML = `
       <h3 class="cds-op-card__titulo">Resumo Financeiro</h3>
       <div class="cds-retornos-sidebar__fin">
+        ${semVenda ? "" : `
         <div class="cds-retornos-sidebar__metric cds-retornos-sidebar__metric--venda">
           <span>Valor da Venda</span>
           <strong data-painel="valorVenda">${formatCurrency(fin.valorVenda)}</strong>
@@ -94225,6 +96227,7 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
           <span>Saldo em Aberto</span>
           <strong data-painel="saldoEmAberto">${formatCurrency(fin.saldoEmAberto)}</strong>
         </div>
+        `}
         <div class="cds-retornos-sidebar__metric cds-retornos-sidebar__metric--sit cds-retornos-sidebar__metric--${tone}">
           <span>Situa\xE7\xE3o Financeira</span>
           <strong data-painel="situacaoFinanceira">${safeText(situacaoLabel)}</strong>
@@ -94291,20 +96294,30 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
           if (!asideEl || !painel) return;
           const fin = painel.preview && painel.financeiro ? painel.financeiro : ((_a2 = state.snapshot) == null ? void 0 : _a2.financeiro) || painel.financeiro || {};
           const situacaoLabel = labelSituacaoFinanceiraOficial(fin.situacaoFinanceira) || labelSituacaoFinanceira(fin.situacaoFinanceira) || "\u2014";
+          const semVenda = _isSemVenda(fin);
           const fields = {
             vendidos: String(painel.produtosVendidos ?? 0),
             devolvidos: String(painel.produtosDevolvidos ?? 0),
             perdas: String(painel.perdas ?? 0),
             cortesias: String(painel.cortesias ?? 0),
             pendentes: String(painel.pendentes ?? 0),
-            valorVenda: formatCurrency(fin.valorVenda),
-            valorRecebido: formatCurrency(fin.valorRecebido),
-            saldoEmAberto: formatCurrency(fin.saldoEmAberto),
             situacaoFinanceira: situacaoLabel
           };
+          if (!semVenda) {
+            fields.valorVenda = formatCurrency(fin.valorVenda);
+            fields.valorRecebido = formatCurrency(fin.valorRecebido);
+            fields.saldoEmAberto = formatCurrency(fin.saldoEmAberto);
+          }
           Object.entries(fields).forEach(([key, value]) => {
             const el = asideEl.querySelector(`[data-painel="${key}"]`);
             if (el) el.textContent = value;
+          });
+          ["valorVenda", "valorRecebido", "saldoEmAberto"].forEach((key) => {
+            var _a3, _b2;
+            const metric = (_a3 = asideEl.querySelector(`[data-painel="${key}"]`)) == null ? void 0 : _a3.closest(".cds-retornos-sidebar__metric");
+            if (metric) metric.hidden = semVenda;
+            const legacy = (_b2 = asideEl.querySelector(`[data-painel="${key}"]`)) == null ? void 0 : _b2.closest(".cds-fechar-consignacao__painel-campo");
+            if (legacy) legacy.hidden = semVenda;
           });
           const sitMetric = asideEl.querySelector(".cds-retornos-sidebar__metric--sit");
           if (sitMetric) {
@@ -94363,6 +96376,12 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
           return { marca: "\u25CB", texto: label || "Pendente", tom: "pendente" };
         }
         static _htmlCardFinanceiro(fin, situacaoLabel) {
+          if (_isSemVenda(fin)) {
+            return `
+      <h3 class="cds-op-card__titulo">Resumo Financeiro</h3>
+      <p class="cds-op-card__meta">Situa\xE7\xE3o Financeira<br><strong data-kpi="situacao">${safeText(situacaoLabel)}</strong></p>
+    `;
+          }
           return `
       <h3 class="cds-op-card__titulo">Resumo Financeiro</h3>
       <div class="cds-op-kpis">
@@ -94409,7 +96428,13 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
           section.className = "cds-op-card cds-op-card--pagamentos";
           section.dataset.card = "pagamentos";
           section.innerHTML = '<h3 class="cds-op-card__titulo">Pagamento</h3>';
-          if (Number(fin.saldoEmAberto) <= 0.01) {
+          if (_isSemVenda(fin)) {
+            section.appendChild(Alert.create({
+              message: "Situa\xE7\xE3o Financeira: Sem Venda \u2014 ainda n\xE3o h\xE1 venda registrada nesta presta\xE7\xE3o.",
+              variant: "info",
+              dismissible: false
+            }));
+          } else if (Number(fin.saldoEmAberto) <= 0.01) {
             section.appendChild(Alert.create({
               message: MENSAGENS.PRESTACAO_QUITADA,
               variant: "success",
@@ -94768,6 +96793,11 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
             });
           }
           botoes.push({
+            label: "Imprimir Comprovante",
+            acao: "imprimir-comprovante",
+            destaque: false
+          });
+          botoes.push({
             label: "Voltar para Central",
             acao: "voltar-central",
             destaque: acoes.primaria === "voltar-central" || !acoes.mostrarRecebimento
@@ -94810,9 +96840,11 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
             { label: "Devolvidos", key: "devolvidos", value: String(painel.produtosDevolvidos) },
             { label: "Perdas", key: "perdas", value: String(painel.perdas) },
             { label: "Cortesias", key: "cortesias", value: String(painel.cortesias) },
-            { label: "Valor da Venda", key: "valorVenda", value: formatCurrency(financeiro.valorVenda), destaque: true },
-            { label: "J\xE1 Recebido", key: "valorRecebido", value: formatCurrency(financeiro.valorRecebido), destaque: true },
-            { label: "Saldo em Aberto", key: "saldoEmAberto", value: formatCurrency(financeiro.saldoEmAberto), destaque: true },
+            ..._isSemVenda(financeiro) ? [] : [
+              { label: "Valor da Venda", key: "valorVenda", value: formatCurrency(financeiro.valorVenda), destaque: true },
+              { label: "J\xE1 Recebido", key: "valorRecebido", value: formatCurrency(financeiro.valorRecebido), destaque: true },
+              { label: "Saldo em Aberto", key: "saldoEmAberto", value: formatCurrency(financeiro.saldoEmAberto), destaque: true }
+            ],
             {
               label: "Situa\xE7\xE3o Financeira",
               key: "situacaoFinanceira",
@@ -95057,122 +97089,28 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
     "frontend/modules/motor-comercial/services/ComprovanteFechamentoService.js"(exports, module) {
       var Modal = require_Modal2();
       var Button = require_Button2();
-      var { PdfExportService } = require_exportacao();
-      var { notify, fetchErp } = require_operacional();
-      var { getUsuarioId } = require_helpers();
-      var { formatCurrency } = require_fecharConsignacaoMappers();
+      var MotorComercialApi = require_MotorComercialApi();
+      var { notify } = require_operacional();
       function escapeHtml(str) {
         return String(str ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
       }
-      function getUsuarioNome() {
-        try {
-          const user = JSON.parse(localStorage.getItem("user") || "null");
-          return (user == null ? void 0 : user.nome) || (user == null ? void 0 : user.username) || (getUsuarioId() ? `Operador #${getUsuarioId()}` : "\u2014");
-        } catch {
-          return "\u2014";
+      function getApi() {
+        return new MotorComercialApi();
+      }
+      async function carregarComprovantePrestacao(consignacaoId) {
+        const id = (consignacaoId == null ? void 0 : consignacaoId.id) ?? consignacaoId;
+        if (!id) {
+          throw new Error("Consigna\xE7\xE3o inv\xE1lida para gerar comprovante.");
         }
+        return getApi().obterComprovantePrestacao(id);
       }
-      async function carregarDadosEmpresa() {
-        try {
-          const rows = await fetchErp("/configuracoes");
-          const map = {};
-          (Array.isArray(rows) ? rows : []).forEach((row) => {
-            if (row == null ? void 0 : row.chave) map[row.chave] = row.valor;
-          });
-          return { nome: map.nome_empresa || "CDS / Cremolicia", cnpj: map.cnpj || "" };
-        } catch {
-          return { nome: "CDS / Cremolicia", cnpj: "" };
-        }
-      }
-      function montarDadosComprovante({ consignacao = {}, painel = {} } = {}) {
-        const agora = /* @__PURE__ */ new Date();
-        return {
-          titulo: "Comprovante de Fechamento",
-          numeroConsignacao: consignacao.documento || "\u2014",
-          cliente: consignacao.clienteNome || consignacao.cliente || "\u2014",
-          produtosVendidos: painel.produtosVendidos ?? 0,
-          produtosDevolvidos: painel.produtosDevolvidos ?? 0,
-          perdas: painel.perdas ?? 0,
-          cortesias: painel.cortesias ?? 0,
-          valorRecebido: painel.valorRecebido ?? 0,
-          saldo: painel.saldoFinal ?? 0,
-          data: agora.toLocaleDateString("pt-BR"),
-          hora: agora.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
-          operador: getUsuarioNome(),
-          empresa: "",
-          filename: `comprovante-fechamento-${consignacao.documento || consignacao.id || "doc"}.pdf`
-        };
-      }
-      async function montarDadosComprovanteCompleto(consignacao, resumo, painel) {
-        const empresa = await carregarDadosEmpresa();
-        const dados = montarDadosComprovante({ consignacao, painel });
-        dados.empresa = empresa.nome;
-        return dados;
-      }
-      function buildComprovanteHtml(dados) {
-        return `<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-  <meta charset="utf-8">
-  <title>${escapeHtml(dados.titulo)}</title>
-  <style>
-    body { font-family: Arial, sans-serif; font-size: 11pt; color: #111; margin: 0; padding: 18mm; line-height: 1.45; }
-    h1 { text-align: center; font-size: 16pt; margin: 0 0 20px; }
-    .section { margin-bottom: 16px; }
-    .section h2 { font-size: 11pt; margin: 0 0 8px; border-bottom: 1px solid #ccc; padding-bottom: 4px; text-transform: uppercase; }
-    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 24px; }
-    .totais { margin-top: 16px; padding: 12px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; }
-    .totais strong { display: block; margin-bottom: 4px; }
-    .assinaturas { display: flex; gap: 40px; margin-top: 48px; }
-    .assinatura { flex: 1; text-align: center; padding-top: 48px; border-top: 1px solid #111; }
-    .footer { margin-top: 28px; font-size: 9pt; color: #666; display: flex; justify-content: space-between; }
-    @media print { body { padding: 0; } }
-  </style>
-</head>
-<body>
-  <h1>${escapeHtml(dados.titulo)}</h1>
-  <div class="section">
-    <h2>Dados do Atendimento</h2>
-    <div class="grid">
-      <div><strong>Consigna\xE7\xE3o:</strong> ${escapeHtml(dados.numeroConsignacao)}</div>
-      <div><strong>Cliente:</strong> ${escapeHtml(dados.cliente)}</div>
-      <div><strong>Data:</strong> ${escapeHtml(dados.data)}</div>
-      <div><strong>Hora:</strong> ${escapeHtml(dados.hora)}</div>
-      <div><strong>Operador:</strong> ${escapeHtml(dados.operador)}</div>
-      <div><strong>Empresa:</strong> ${escapeHtml(dados.empresa)}</div>
-    </div>
-  </div>
-  <div class="section">
-    <h2>Resumo de Produtos</h2>
-    <div class="grid">
-      <div><strong>Vendidos:</strong> ${dados.produtosVendidos} un.</div>
-      <div><strong>Devolvidos:</strong> ${dados.produtosDevolvidos} un.</div>
-      <div><strong>Perdas:</strong> ${dados.perdas} un.</div>
-      <div><strong>Cortesias:</strong> ${dados.cortesias} un.</div>
-    </div>
-  </div>
-  <div class="totais">
-    <strong>Valor Recebido: ${formatCurrency(dados.valorRecebido)}</strong>
-    <strong>Saldo Final: ${formatCurrency(dados.saldo)}</strong>
-  </div>
-  <div class="assinaturas">
-    <div class="assinatura"><p><strong>Empresa</strong></p><p>Respons\xE1vel</p></div>
-    <div class="assinatura"><p><strong>Cliente</strong></p><p>Assinatura</p></div>
-  </div>
-  <div class="footer">
-    <span>Emiss\xE3o: ${escapeHtml(dados.data)} ${escapeHtml(dados.hora)}</span>
-    <span>CDS Sistemas</span>
-  </div>
-</body>
-</html>`;
-      }
-      function exibirComprovanteModal(html2, { imprimir = false } = {}) {
+      function exibirComprovanteModal(html2, { imprimir = false, titulo = "Comprovante de Presta\xE7\xE3o de Contas" } = {}) {
         if (typeof document === "undefined") {
           notify("Visualiza\xE7\xE3o indispon\xEDvel.", "warning");
           return false;
         }
         const iframe = document.createElement("iframe");
-        iframe.title = "Comprovante de Fechamento";
+        iframe.title = titulo;
         iframe.setAttribute("srcdoc", html2);
         iframe.style.cssText = "width:100%;height:75vh;border:0;";
         let backdrop;
@@ -95196,7 +97134,7 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
         footer.appendChild(Button.create({ text: "Imprimir", variant: "primary", onClick: imprimirIframe }));
         footer.appendChild(Button.create({ text: "Fechar", variant: "secondary", onClick: fechar }));
         backdrop = Modal.create({
-          title: "Comprovante de Fechamento",
+          title: titulo,
           content: iframe,
           footer,
           open: false,
@@ -95209,55 +97147,84 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
         }
         return true;
       }
-      function exportarPdfComprovante(dados) {
-        if (!PdfExportService.isAvailable()) {
-          return { ok: false, message: "Exporta\xE7\xE3o PDF indispon\xEDvel." };
+      function downloadPdfPayload(pdf) {
+        if (!(pdf == null ? void 0 : pdf.base64)) {
+          notify("PDF indispon\xEDvel no snapshot.", "warning");
+          return { ok: false };
         }
-        const created = PdfExportService.createDocument({ orientation: "portrait" });
-        if (!created.ok) return created;
-        const { doc } = created;
-        let y3 = 40;
-        const line = (text2, size = 10, bold = false) => {
-          doc.setFontSize(size);
-          doc.setFont(void 0, bold ? "bold" : "normal");
-          doc.text(String(text2), 40, y3);
-          y3 += size + 6;
-        };
-        line(dados.titulo, 14, true);
-        y3 += 8;
-        line(`Consigna\xE7\xE3o: ${dados.numeroConsignacao}`, 10);
-        line(`Cliente: ${dados.cliente}`, 10);
-        line(`Data: ${dados.data}  Hora: ${dados.hora}`, 9);
-        line(`Operador: ${dados.operador}  Empresa: ${dados.empresa}`, 9);
-        y3 += 6;
-        line("PRODUTOS", 10, true);
-        line(`Vendidos: ${dados.produtosVendidos}  Devolvidos: ${dados.produtosDevolvidos}`, 9);
-        line(`Perdas: ${dados.perdas}  Cortesias: ${dados.cortesias}`, 9);
-        y3 += 6;
-        line(`Valor Recebido: ${formatCurrency(dados.valorRecebido)}`, 10, true);
-        line(`Saldo Final: ${formatCurrency(dados.saldo)}`, 10, true);
-        doc.save(dados.filename.endsWith(".pdf") ? dados.filename : `${dados.filename}.pdf`);
+        const bin = atob(pdf.base64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i3 = 0; i3 < bin.length; i3 += 1) bytes[i3] = bin.charCodeAt(i3);
+        const blob = new Blob([bytes], { type: pdf.contentType || "application/pdf" });
+        const a3 = document.createElement("a");
+        a3.href = URL.createObjectURL(blob);
+        a3.download = pdf.fileName || "comprovante-prestacao.pdf";
+        a3.click();
+        URL.revokeObjectURL(a3.href);
         return { ok: true };
       }
-      async function imprimirComprovante(consignacao, resumo, painel) {
-        const dados = await montarDadosComprovanteCompleto(consignacao, resumo, painel);
-        exibirComprovanteModal(buildComprovanteHtml(dados), { imprimir: true });
-        return { ok: true, dados };
+      async function abrirComprovantePrestacao(consignacaoId, { imprimir = false } = {}) {
+        var _a2;
+        const comprovante = await carregarComprovantePrestacao(consignacaoId);
+        const html2 = ((_a2 = comprovante == null ? void 0 : comprovante.pdf) == null ? void 0 : _a2.html) || "";
+        if (!html2) {
+          notify("Comprovante gerado sem HTML de impress\xE3o.", "warning");
+          return { ok: false, comprovante };
+        }
+        exibirComprovanteModal(html2, {
+          imprimir,
+          titulo: `Comprovante ${comprovante.numeroComprovante || "Presta\xE7\xE3o"}`
+        });
+        try {
+          await getApi().registrarAcaoComprovante((consignacaoId == null ? void 0 : consignacaoId.id) ?? consignacaoId, {
+            acao: imprimir ? "impressao" : "visualizacao",
+            comprovanteId: comprovante.id,
+            numeroComprovante: comprovante.numeroComprovante
+          });
+        } catch (_e2) {
+        }
+        return { ok: true, comprovante };
       }
-      async function visualizarComprovante(consignacao, resumo, painel) {
-        const dados = await montarDadosComprovanteCompleto(consignacao, resumo, painel);
-        exibirComprovanteModal(buildComprovanteHtml(dados), { imprimir: false });
-        return { ok: true, dados };
+      async function imprimirComprovante(consignacao) {
+        return abrirComprovantePrestacao((consignacao == null ? void 0 : consignacao.id) ?? consignacao, { imprimir: true });
       }
-      async function exportarComprovantePdf(consignacao, resumo, painel) {
-        const dados = await montarDadosComprovanteCompleto(consignacao, resumo, painel);
-        const result = exportarPdfComprovante(dados);
-        if (!result.ok) notify(result.message || "Erro ao exportar PDF.", "error");
+      async function visualizarComprovante(consignacao) {
+        return abrirComprovantePrestacao((consignacao == null ? void 0 : consignacao.id) ?? consignacao, { imprimir: false });
+      }
+      async function exportarComprovantePdf(consignacao) {
+        const comprovante = await carregarComprovantePrestacao((consignacao == null ? void 0 : consignacao.id) ?? consignacao);
+        const result = downloadPdfPayload(comprovante == null ? void 0 : comprovante.pdf);
+        if (!result.ok) notify("Erro ao exportar PDF.", "error");
+        else {
+          try {
+            await getApi().registrarAcaoComprovante((consignacao == null ? void 0 : consignacao.id) ?? consignacao, {
+              acao: "pdf",
+              comprovanteId: comprovante.id,
+              numeroComprovante: comprovante.numeroComprovante
+            });
+          } catch (_e2) {
+          }
+        }
         return result;
+      }
+      function montarDadosComprovante({ consignacao = {} } = {}) {
+        return {
+          titulo: "Comprovante de Presta\xE7\xE3o de Contas",
+          numeroConsignacao: consignacao.documento || consignacao.id || "\u2014",
+          cliente: consignacao.clienteNome || consignacao.cliente || "\u2014"
+        };
+      }
+      function buildComprovanteHtml(dados) {
+        return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><title>${escapeHtml(dados.titulo || "")}</title></head>
+<body><h1>${escapeHtml(dados.titulo || "Comprovante de Presta\xE7\xE3o de Contas")}</h1>
+<p>Cliente: ${escapeHtml(dados.cliente || "\u2014")}</p>
+<p>Emitido pelo CDS Sistemas</p></body></html>`;
       }
       module.exports = {
         montarDadosComprovante,
         buildComprovanteHtml,
+        carregarComprovantePrestacao,
+        abrirComprovantePrestacao,
         imprimirComprovante,
         visualizarComprovante,
         exportarComprovantePdf
@@ -95312,6 +97279,71 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
         isEnabled,
         snapshotItem,
         log
+      };
+    }
+  });
+
+  // frontend/modules/motor-comercial/pages/PrestacaoContas/prestacaoOperacaoContext.js
+  var require_prestacaoOperacaoContext = __commonJS({
+    "frontend/modules/motor-comercial/pages/PrestacaoContas/prestacaoOperacaoContext.js"(exports, module) {
+      function _strOrNull(value) {
+        if (value == null || value === "") return null;
+        return String(value);
+      }
+      function createOperacaoContext(dados = {}) {
+        return Object.freeze({
+          clienteId: _strOrNull(dados.clienteId),
+          consignacaoId: _strOrNull(dados.consignacaoId),
+          prestacaoId: _strOrNull(dados.prestacaoId),
+          contextVersion: Number(dados.contextVersion) > 0 ? Number(dados.contextVersion) : 1
+        });
+      }
+      function captureContextToken(contexto) {
+        if (!contexto) return null;
+        return {
+          clienteId: contexto.clienteId,
+          consignacaoId: contexto.consignacaoId,
+          prestacaoId: contexto.prestacaoId,
+          contextVersion: contexto.contextVersion
+        };
+      }
+      function isContextCurrent(token, atual, opts = {}) {
+        if (opts.disposed) return false;
+        if (!token || !atual) return false;
+        if (Number(token.contextVersion) !== Number(atual.contextVersion)) return false;
+        if (String(token.consignacaoId || "") !== String(atual.consignacaoId || "")) return false;
+        if (token.clienteId != null && atual.clienteId != null) {
+          if (String(token.clienteId) !== String(atual.clienteId)) return false;
+        }
+        if (token.prestacaoId != null && atual.prestacaoId != null) {
+          if (String(token.prestacaoId) !== String(atual.prestacaoId)) return false;
+        }
+        return true;
+      }
+      function bumpOperacaoContext(contexto, patch = {}) {
+        const base = contexto || {};
+        return createOperacaoContext({
+          clienteId: patch.clienteId !== void 0 ? patch.clienteId : base.clienteId,
+          consignacaoId: patch.consignacaoId !== void 0 ? patch.consignacaoId : base.consignacaoId,
+          prestacaoId: patch.prestacaoId !== void 0 ? patch.prestacaoId : base.prestacaoId,
+          contextVersion: Number(base.contextVersion || 0) + 1
+        });
+      }
+      function patchOperacaoContext(contexto, patch = {}) {
+        const base = contexto || {};
+        return createOperacaoContext({
+          clienteId: patch.clienteId !== void 0 ? patch.clienteId : base.clienteId,
+          consignacaoId: patch.consignacaoId !== void 0 ? patch.consignacaoId : base.consignacaoId,
+          prestacaoId: patch.prestacaoId !== void 0 ? patch.prestacaoId : base.prestacaoId,
+          contextVersion: base.contextVersion || 1
+        });
+      }
+      module.exports = {
+        createOperacaoContext,
+        captureContextToken,
+        isContextCurrent,
+        bumpOperacaoContext,
+        patchOperacaoContext
       };
     }
   });
@@ -95394,7 +97426,8 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
       var {
         imprimirComprovante,
         visualizarComprovante,
-        exportarComprovantePdf
+        exportarComprovantePdf,
+        abrirComprovantePrestacao
       } = require_ComprovanteFechamentoService();
       var {
         notify,
@@ -95413,21 +97446,41 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
         buildRouteWithCentralTrabalhoContext,
         resolveBackPath,
         getBackButtonLabel,
+        routeWithActiveContext,
         ORIGEM_CENTRAL_TRABALHO,
         ORIGEM_CLIENTE_360
       } = require_cliente360Context();
+      var {
+        podeAdicionarProdutoComplementar
+      } = require_entregaComplementarMappers();
       var {
         markCentralArrivalGuard,
         logElectronFlow
       } = require_electronNavigationGuard();
       var gradeForense = require_gradeForenseAudit();
+      var {
+        createOperacaoContext,
+        captureContextToken,
+        isContextCurrent,
+        bumpOperacaoContext,
+        patchOperacaoContext
+      } = require_prestacaoOperacaoContext();
       var PrestacaoContasPage = class _PrestacaoContasPage {
         constructor(consignacaoId, routeQuery = {}) {
+          var _a2;
           this.routeQuery = routeQuery;
           this.navigationContext = parseNavigationContext(routeQuery);
           this.api = new MotorComercialApi();
           this.projectionApi = new ProjectionApi();
           this.consignacaoId = consignacaoId;
+          this._disposed = false;
+          this._loadTimeout = null;
+          this.operacaoContext = createOperacaoContext({
+            clienteId: ((_a2 = this.navigationContext) == null ? void 0 : _a2.clienteId) || null,
+            consignacaoId,
+            prestacaoId: (routeQuery == null ? void 0 : routeQuery.prestacaoId) || (routeQuery == null ? void 0 : routeQuery.grupoPrestacaoContasId) || null,
+            contextVersion: 1
+          });
           this.consignacao = null;
           this.resumoPrestacao = null;
           this.historico = null;
@@ -95506,6 +97559,7 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
           return page.render();
         }
         render() {
+          this._disposed = false;
           this.root = Workspace.create({
             variant: "station",
             className: "cds-prestacao-estacao-workspace",
@@ -95521,11 +97575,84 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
           this.root.dataset.uxSprint = "STAB-07.5";
           this.root.dataset.sharedUiReference = "prestacao-estacao";
           this.root.dataset.estacaoTrabalho = "prestacao";
-          setTimeout(() => {
+          this.root.dataset.pageDestroyable = "true";
+          this.root.dataset.consignacaoId = String(this.consignacaoId || "");
+          this.root.dataset.contextVersion = String(this.operacaoContext.contextVersion);
+          this.root.__cdsPageInstance = this;
+          this._loadTimeout = setTimeout(() => {
+            this._loadTimeout = null;
+            if (!this._isAlive()) return;
             this._loadData();
             this._startAutoRefresh();
           }, 0);
           return this.root;
+        }
+        /**
+         * RCM-8.6 — encerra timers/listeners e invalida o contexto da operação.
+         * Chamado pelo Router ao desmontar a página.
+         */
+        destroy() {
+          if (this._disposed) return;
+          this._disposed = true;
+          if (this._loadTimeout) {
+            clearTimeout(this._loadTimeout);
+            this._loadTimeout = null;
+          }
+          if (this.refreshTimer) {
+            clearInterval(this.refreshTimer);
+            this.refreshTimer = null;
+          }
+          this.operacaoContext = bumpOperacaoContext(this.operacaoContext);
+          if (this.root) {
+            try {
+              delete this.root.__cdsPageInstance;
+            } catch (_e2) {
+              this.root.__cdsPageInstance = null;
+            }
+          }
+        }
+        /** @private */
+        _isAlive() {
+          return !this._disposed && Boolean(this.root);
+        }
+        /** @private — token da requisição atual */
+        _captureContextToken() {
+          return captureContextToken(this.operacaoContext);
+        }
+        /**
+         * @private
+         * Aceita resposta somente se a tela ainda estiver montada e no mesmo contexto.
+         */
+        _acceptContextToken(token) {
+          if (!this._isAlive()) return false;
+          if (this.root && this.root.isConnected === false) {
+            this.destroy();
+            return false;
+          }
+          return isContextCurrent(token, this.operacaoContext, { disposed: this._disposed });
+        }
+        /** @private — sincroniza prestacaoId/clienteId sem invalidar a versão */
+        _syncOperacaoContextFromConsignacao(consignacao = {}) {
+          var _a2, _b2, _c, _d;
+          const prestacaoId = ((_a2 = consignacao == null ? void 0 : consignacao.prestacaoContasAtiva) == null ? void 0 : _a2.id) || (consignacao == null ? void 0 : consignacao.grupoPrestacaoContasId) || ((_b2 = this.operacaoContext) == null ? void 0 : _b2.prestacaoId) || null;
+          const clienteId = (consignacao == null ? void 0 : consignacao.clienteId) || ((_c = this.navigationContext) == null ? void 0 : _c.clienteId) || ((_d = this.operacaoContext) == null ? void 0 : _d.clienteId) || null;
+          this.operacaoContext = patchOperacaoContext(this.operacaoContext, {
+            consignacaoId: this.consignacaoId,
+            clienteId,
+            prestacaoId
+          });
+          if (this.root) {
+            this.root.dataset.contextVersion = String(this.operacaoContext.contextVersion);
+            if (clienteId != null) this.root.dataset.clienteId = String(clienteId);
+            if (prestacaoId != null) this.root.dataset.prestacaoId = String(prestacaoId);
+          }
+        }
+        /** @private — queries escopadas ao root da operação (evita IDs globais de outra tela) */
+        _qs(selector) {
+          var _a2, _b2;
+          if (!this.root) return null;
+          if ((_b2 = (_a2 = this.root).matches) == null ? void 0 : _b2.call(_a2, selector)) return this.root;
+          return this.root.querySelector(selector);
         }
         _buildWorkspaceHeader() {
           return Workspace.Header.create({
@@ -95542,7 +97669,9 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
           wrap.id = "prestacao-estacao-context";
           wrap.innerHTML = `
       <span>Cliente: <strong id="prestacao-cliente">\u2014</strong></span>
-      <span>Documento: <strong id="prestacao-documento">\u2014</strong></span>
+      <span>Presta\xE7\xE3o: <strong id="prestacao-grupo">\u2014</strong></span>
+      <span>Consigna\xE7\xF5es: <strong id="prestacao-qtd-consig">\u2014</strong></span>
+      <span>Origem: <strong id="prestacao-documento">\u2014</strong></span>
       <span>Estado: <strong id="prestacao-situacao">\u2014</strong></span>
       <span>Financeiro: <strong id="prestacao-financeiro">\u2014</strong></span>
       <span>Fiscal: <strong id="prestacao-fiscal">\u2014</strong></span>
@@ -95703,7 +97832,7 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
             loading: this.loading.operation,
             dirty: false
           });
-          return [
+          const nodes = [
             aplicarTooltipDesabilitado(Button.create({
               text: getBackButtonLabel(this.navigationContext, "Voltar"),
               variant: "ghost",
@@ -95712,6 +97841,42 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
               onClick: () => this._handleCancel()
             }), disabled ? title : "")
           ];
+          if (this.currentStep === STEP_RETORNOS) {
+            const check = podeAdicionarProdutoComplementar(this.consignacao);
+            if (check.elegivel) {
+              nodes.push(Button.create({
+                text: "+ Adicionar produto",
+                variant: "secondary",
+                disabled,
+                title: "Adiciona produtos nesta mesma consigna\xE7\xE3o (Entrega Complementar)",
+                onClick: () => this._abrirEntregaComplementar()
+              }));
+            }
+          }
+          return nodes;
+        }
+        async _abrirEntregaComplementar() {
+          var _a2;
+          const check = podeAdicionarProdutoComplementar(this.consignacao);
+          if (!check.elegivel) {
+            notify(check.mensagem || "Entrega complementar indispon\xEDvel.", "warning");
+            return;
+          }
+          const dirty = temAlteracoesPendentes(((_a2 = this.resumoPrestacao) == null ? void 0 : _a2.itens) || []);
+          if (dirty) {
+            const ok = await confirmDialog({
+              title: "Altera\xE7\xF5es n\xE3o salvas",
+              message: "H\xE1 altera\xE7\xF5es na grade ainda n\xE3o salvas. Deseja continuar para a Entrega Complementar?"
+            });
+            if (!ok) return;
+          }
+          const path = routeWithActiveContext(
+            `/consignacoes/${this.consignacaoId}/entrega-complementar`,
+            this.navigationContext,
+            { retorno: "prestacao" }
+          );
+          const url = path.includes("retorno=") ? path : `${path}${path.includes("?") ? "&" : "?"}retorno=prestacao`;
+          await navigate(url);
         }
         _footerRightNodes() {
           var _a2, _b2, _c;
@@ -95902,8 +98067,10 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
         }
         async _carregarFaturamentoResumo() {
           var _a2;
+          const token = this._captureContextToken();
           try {
             const data = await this.api.obterResumoFinalPrestacao(this.consignacaoId);
+            if (!this._acceptContextToken(token)) return;
             this.faturamento = (data == null ? void 0 : data.faturamento) || ((_a2 = data == null ? void 0 : data.data) == null ? void 0 : _a2.faturamento) || null;
           } catch (_e2) {
           }
@@ -96123,6 +98290,7 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
             this.steps = inicializarMomentos(true);
             await this._loadData(true, { skipUi: true });
             this._updateUI();
+            await this._gerarComprovantePrestacaoAposEncerrar({ autoPrint: false });
           } catch (error) {
             notify(
               humanizarErroOperacional(error).mensagem || "NFC-e emitida, mas n\xE3o foi poss\xEDvel encerrar automaticamente. Use Encerrar.",
@@ -96161,7 +98329,9 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
          * @param {{ skipUi?: boolean }} [options] STAB-07.3 — recarrega dados sem remontar a estação
          */
         async _loadData(silent = false, options = {}) {
-          var _a2, _b2;
+          var _a2, _b2, _c;
+          const token = this._captureContextToken();
+          if (!this._acceptContextToken(token)) return;
           const skipUi = Boolean(options.skipUi);
           if (!silent) {
             this.loading.consignacao = true;
@@ -96169,27 +98339,34 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
             this._updateUI();
           }
           try {
+            const consignacaoId = this.consignacaoId;
+            const clienteIdHint = ((_a2 = this.operacaoContext) == null ? void 0 : _a2.clienteId) || this.navigationContext.clienteId || void 0;
             const [consignacao, prestacao, historico, contaCorrente, rateioPerda] = await Promise.all([
-              carregarConsignacaoCompleta(this.api, this.projectionApi, this.consignacaoId),
-              this.projectionApi.obterResumoPrestacao({ consignacaoId: this.consignacaoId }).catch(() => null),
-              this.projectionApi.listarMovimentacoes({ consignacaoId: this.consignacaoId }).catch(() => []),
+              carregarConsignacaoCompleta(this.api, this.projectionApi, consignacaoId),
+              this.projectionApi.obterResumoPrestacao({ consignacaoId }).catch(() => null),
+              this.projectionApi.listarMovimentacoes({ consignacaoId }).catch(() => []),
               this.projectionApi.obterProjecaoContaCorrente({
-                consignacaoId: this.consignacaoId,
-                clienteId: this.navigationContext.clienteId || void 0
+                consignacaoId,
+                clienteId: clienteIdHint
               }).catch(() => null),
-              this.api.obterRateioPerda(this.consignacaoId).catch(() => null)
+              this.api.obterRateioPerda(consignacaoId).catch(() => null)
             ]);
+            if (!this._acceptContextToken(token)) return;
+            if ((consignacao == null ? void 0 : consignacao.id) != null && String(consignacao.id) !== String(consignacaoId)) {
+              return;
+            }
             this.consignacao = consignacao;
             this.historico = historico;
             this.contaCorrente = contaCorrente;
             this.rateioPerda = rateioPerda;
+            this._syncOperacaoContextFromConsignacao(consignacao);
             this.resumoPrestacao = this._buildResumoFromData(prestacao, historico, consignacao, contaCorrente);
-            limparDirtyTodos(((_a2 = this.resumoPrestacao) == null ? void 0 : _a2.itens) || []);
+            limparDirtyTodos(((_b2 = this.resumoPrestacao) == null ? void 0 : _b2.itens) || []);
             this._capturarBaseline();
             this.persistenciaStatus = "saved";
             this._recalcularPainel();
             const statusCons = String(consignacao.status || "").toUpperCase();
-            const prestStatus = String(((_b2 = consignacao.prestacaoContasAtiva) == null ? void 0 : _b2.status) || "").toUpperCase();
+            const prestStatus = String(((_c = consignacao.prestacaoContasAtiva) == null ? void 0 : _c.status) || "").toUpperCase();
             const jaFechada = ["ACERTADA", "ENCERRADA", "QUITADA"].includes(statusCons) && prestStatus !== "ABERTA";
             if (prestStatus === "ABERTA") {
               this.prestacaoPronta = true;
@@ -96208,12 +98385,24 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
                 } catch (_error) {
                   this.clienteDetalhe = null;
                 }
+                if (!this._acceptContextToken(token)) return;
               }
             }
             this.error = null;
           } catch (error) {
+            if (!this._acceptContextToken(token)) return;
             this.error = error;
           } finally {
+            const mesmaConsignacao = String((token == null ? void 0 : token.consignacaoId) || "") === String(this.consignacaoId || "");
+            if (this._disposed) return;
+            if (!this._acceptContextToken(token)) {
+              if (mesmaConsignacao) {
+                this.loading.consignacao = false;
+                this.loading.prestacao = false;
+                this._updateUI();
+              }
+              return;
+            }
             this.loading.consignacao = false;
             this.loading.prestacao = false;
             if (skipUi) {
@@ -96228,7 +98417,7 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
         }
         _devePreservarGradeRetornos() {
           var _a2, _b2;
-          return this.currentStep === STEP_RETORNOS && document.getElementById("fechar-retornos-grade") && (temAlteracoesPendentes(((_a2 = this.resumoPrestacao) == null ? void 0 : _a2.itens) || []) || this.editing.rowIndex >= 0 || ((_b2 = document.activeElement) == null ? void 0 : _b2.closest("#fechar-retornos-grade")));
+          return this.currentStep === STEP_RETORNOS && Boolean(this._qs("#fechar-retornos-grade")) && (temAlteracoesPendentes(((_a2 = this.resumoPrestacao) == null ? void 0 : _a2.itens) || []) || this.editing.rowIndex >= 0 || ((_b2 = document.activeElement) == null ? void 0 : _b2.closest("#fechar-retornos-grade")));
         }
         _capturarBaseline() {
           var _a2;
@@ -96236,19 +98425,20 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
         }
         _atualizarIndicadorPersistencia() {
           var _a2;
+          if (!this._isAlive()) return;
           const itens = ((_a2 = this.resumoPrestacao) == null ? void 0 : _a2.itens) || [];
           if (this.salvandoConferencia) {
             this.persistenciaStatus = "saving";
           } else {
             this.persistenciaStatus = statusPersistencia(itens);
           }
-          const host = document.getElementById("fechar-persistencia-status");
+          const host = this._qs("#fechar-persistencia-status");
           if (host) {
             host.dataset.status = this.persistenciaStatus;
             host.textContent = labelStatusPersistencia(this.persistenciaStatus);
             host.hidden = this.currentStep !== STEP_RETORNOS && this.persistenciaStatus === "saved";
           }
-          const headerStatus = document.getElementById("prestacao-persistencia");
+          const headerStatus = this._qs("#prestacao-persistencia");
           if (headerStatus) {
             headerStatus.textContent = labelStatusPersistencia(this.persistenciaStatus);
             headerStatus.dataset.status = this.persistenciaStatus;
@@ -96296,7 +98486,7 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
           row.classList.toggle("cds-fechar-consignacao__grade-row--dirty", Boolean(item.dirty));
         }
         _buildResumoFromData(prestacao, historico, consignacao = {}, contaCorrente = null) {
-          var _a2, _b2;
+          var _a2, _b2, _c, _d;
           const resumo = {
             ...prestacao || {},
             valorVendido: Number((prestacao == null ? void 0 : prestacao.valorVendido) ?? (prestacao == null ? void 0 : prestacao.totalVendido) ?? 0),
@@ -96307,10 +98497,14 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
             valorCortesia: Number((prestacao == null ? void 0 : prestacao.valorCortesia) ?? (prestacao == null ? void 0 : prestacao.totalCortesia) ?? 0)
           };
           let itens = null;
-          if (Array.isArray(consignacao.itens) && consignacao.itens.length) {
-            itens = consignacao.itens.map((item) => mapItemConsignacao(item));
-          } else if (Array.isArray(resumo.itens) && resumo.itens.length) {
+          if (Array.isArray(resumo.itens) && resumo.itens.length) {
             itens = resumo.itens.map((item) => mapItemConsignacao(item));
+          } else if (Array.isArray(consignacao.itens) && consignacao.itens.length) {
+            itens = consignacao.itens.map((item) => mapItemConsignacao({
+              ...item,
+              consignacaoId: item.consignacaoId ?? consignacao.id,
+              documentoConsignacao: consignacao.documento
+            }));
           }
           if (!(itens == null ? void 0 : itens.length)) {
             const cache = mapItensCacheParaPrestacao(obterItensCacheConsignacao(consignacao.id));
@@ -96327,7 +98521,7 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
             itens || [],
             consignacao.itens || []
           ).map((item, index2) => {
-            const prev = prevItens.find((p3) => p3.itemId && item.itemId && String(p3.itemId) === String(item.itemId) || p3.produtoId && item.produtoId && String(p3.produtoId) === String(item.produtoId)) || prevItens[index2];
+            const prev = prevItens.find((p3) => p3.itemId && item.itemId && String(p3.itemId) === String(item.itemId) || p3.produtoId && item.produtoId && String(p3.produtoId) === String(item.produtoId) && String(p3.consignacaoId || "") === String(item.consignacaoId || "")) || prevItens[index2];
             if ((prev == null ? void 0 : prev.observacao) && !item.observacao) {
               item.observacao = prev.observacao;
             }
@@ -96336,6 +98530,12 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
           if (!Number(resumo.valorConsignado ?? resumo.valorTotal ?? 0)) {
             resumo.valorConsignado = calcularValorEntregue(consignacao, resumo, resumo.itens);
           }
+          resumo.quantidadeConsignacoes = Number(
+            (prestacao == null ? void 0 : prestacao.quantidadeConsignacoes) || ((_c = prestacao == null ? void 0 : prestacao.consignacoes) == null ? void 0 : _c.length) || 1
+          );
+          resumo.consignacoesCiclo = (prestacao == null ? void 0 : prestacao.consignacoes) || [];
+          resumo.grupoPrestacaoContasId = (prestacao == null ? void 0 : prestacao.grupoPrestacaoContasId) || ((_d = consignacao.prestacaoContasAtiva) == null ? void 0 : _d.id) || null;
+          resumo.consolidado = Boolean(prestacao == null ? void 0 : prestacao.consolidado) || resumo.quantidadeConsignacoes > 1;
           const fin = buildResumoLegacy(resumo, contaCorrente);
           Object.assign(resumo, fin);
           return resumo;
@@ -96746,17 +98946,21 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
           }
         }
         async _reloadResumoSilencioso({ force = false } = {}) {
-          var _a2;
+          var _a2, _b2;
+          const token = this._captureContextToken();
+          if (!this._acceptContextToken(token)) return;
           const stateAntes = (((_a2 = this.resumoPrestacao) == null ? void 0 : _a2.itens) || []).map((item) => ({ ...item }));
           const tinhaDirty = temAlteracoesPendentes(stateAntes);
+          const consignacaoId = this.consignacaoId;
           const [prestacao, historico, contaCorrente] = await Promise.all([
-            this.projectionApi.obterResumoPrestacao({ consignacaoId: this.consignacaoId }).catch(() => null),
-            this.projectionApi.listarMovimentacoes({ consignacaoId: this.consignacaoId }).catch(() => []),
+            this.projectionApi.obterResumoPrestacao({ consignacaoId }).catch(() => null),
+            this.projectionApi.listarMovimentacoes({ consignacaoId }).catch(() => []),
             this.projectionApi.obterProjecaoContaCorrente({
-              consignacaoId: this.consignacaoId,
-              clienteId: this.navigationContext.clienteId || void 0
+              consignacaoId,
+              clienteId: ((_b2 = this.operacaoContext) == null ? void 0 : _b2.clienteId) || this.navigationContext.clienteId || void 0
             }).catch(() => null)
           ]);
+          if (!this._acceptContextToken(token)) return;
           this.historico = historico;
           this.contaCorrente = contaCorrente;
           const novo = this._buildResumoFromData(prestacao, historico, this.consignacao, contaCorrente);
@@ -96777,10 +98981,14 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
           FecharConsignacaoView.patchLinhaRetorno(row, item, index2, this._viewState());
         }
         _patchPainelLateral(painel = this.painel) {
-          const aside = document.getElementById("fechar-painel-lateral");
+          if (!this._isAlive()) return;
+          const aside = this._qs("#fechar-painel-lateral");
           if (!aside) {
             this._updateSidebar();
-            requestAnimationFrame(() => this._atualizarPainelPreview());
+            requestAnimationFrame(() => {
+              if (!this._isAlive()) return;
+              this._atualizarPainelPreview();
+            });
             return;
           }
           FecharConsignacaoView.patchPainelLateral(aside, painel, this._viewState());
@@ -96788,6 +98996,7 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
         }
         _atualizarPainelPreview() {
           var _a2, _b2, _c;
+          if (!this._isAlive()) return;
           if (this.currentStep !== STEP_RETORNOS || !((_b2 = (_a2 = this.resumoPrestacao) == null ? void 0 : _a2.itens) == null ? void 0 : _b2.length)) return;
           const itens = this.resumoPrestacao.itens;
           const financeiroSsot = ((_c = this.snapshot) == null ? void 0 : _c.financeiro) || this._syncSnapshotFinanceiro();
@@ -96795,7 +99004,7 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
           this.painel = painelPreview;
           this._patchPainelLateral(painelPreview);
           FecharConsignacaoView.patchResumoRapido(
-            document.getElementById("fechar-retornos-resumo-rapido"),
+            this._qs("#fechar-retornos-resumo-rapido"),
             painelPreview
           );
           this._atualizarIndicadorPersistencia();
@@ -96838,7 +99047,9 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
          */
         async _salvarRateioPerda(payload = {}) {
           var _a2, _b2, _c, _d;
+          const token = this._captureContextToken();
           if (!await this._garantirPrestacaoAberta()) return false;
+          if (!this._acceptContextToken(token)) return false;
           this.loading.operation = true;
           this._updateFooter();
           try {
@@ -96854,6 +99065,7 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
                 usuarioId: getUsuarioId()
               })
             );
+            if (!this._acceptContextToken(token)) return false;
             this.rateioPerda = {
               ...this.rateioPerda || {},
               rateio: (resultado == null ? void 0 : resultado.rateio) || ((_a2 = resultado == null ? void 0 : resultado.data) == null ? void 0 : _a2.rateio) || payload,
@@ -96878,12 +99090,15 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
               }
             });
             await this._loadData(true, { skipUi: true });
+            if (!this._acceptContextToken(token)) return false;
             this._updateContent();
             return true;
           } catch (error) {
+            if (!this._acceptContextToken(token)) return false;
             notify(humanizarErroOperacional(error).mensagem, "error");
             return false;
           } finally {
+            if (!this._acceptContextToken(token)) return false;
             this.loading.operation = false;
             this._updateFooter();
           }
@@ -96893,8 +99108,10 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
          * Navegação nunca chama este método.
          */
         async _registrarPagamento() {
+          const token = this._captureContextToken();
           this._sincronizarPagamentoDoDom();
           if (!await this._garantirPrestacaoAberta()) return false;
+          if (!this._acceptContextToken(token)) return false;
           let valor = Number(String(this.pagamentoDraft.valor).replace(",", "."));
           if (!valor || valor <= 0) {
             this.pagamentoErro = "Informe um valor v\xE1lido para o pagamento";
@@ -96917,6 +99134,7 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
               observacao: this.pagamentoDraft.observacoes || null,
               usuarioId: getUsuarioId()
             }));
+            if (!this._acceptContextToken(token)) return false;
             notify(MENSAGENS_HARDENING.PAGAMENTO_REGISTRADO, "success");
             this._pushLogOperacional("Pagamento registrado", {
               valor,
@@ -96930,6 +99148,7 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
             this.pagamentoDraft.valor = "";
             this.pagamentoDraft.observacoes = "";
             await this._loadData(true, { skipUi: true });
+            if (!this._acceptContextToken(token)) return false;
             this._recalcularPainel();
             if (this.currentStep === STEP_RESUMO) {
               const patched = this._patchCentralOperacional(["financeiro", "pagamentos"]);
@@ -96941,11 +99160,13 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
             }
             return true;
           } catch (error) {
+            if (!this._acceptContextToken(token)) return false;
             const humanizado = humanizarErroOperacional(error, "pagamento");
             this.pagamentoErro = humanizado.mensagem;
             this._updateContent();
             return false;
           } finally {
+            if (!this._acceptContextToken(token)) return false;
             this.loading.operation = false;
             this._updateFooter();
           }
@@ -97095,6 +99316,7 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
             this.steps = inicializarMomentos(true);
             await this._loadData(true, { skipUi: true });
             this._updateUI();
+            await this._gerarComprovantePrestacaoAposEncerrar({ autoPrint: false });
           } catch (error) {
             notify(humanizarErroOperacional(error).mensagem, "error");
             registrarLogOperacional("ENCERRAR_PRESTACAO", {
@@ -97107,17 +99329,39 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
             this._updateFooter();
           }
         }
-        async _loadProximoAtendimento() {
-          var _a2;
+        /**
+         * RC2.1 — Comprovante de Prestação (Motor de Comprovantes), independente de NFC-e.
+         */
+        async _gerarComprovantePrestacaoAposEncerrar({ autoPrint = false } = {}) {
           try {
-            const clienteId = ((_a2 = this.consignacao) == null ? void 0 : _a2.clienteId) || this.navigationContext.clienteId;
+            await withLoading(
+              "Gerando comprovante de presta\xE7\xE3o\u2026",
+              () => abrirComprovantePrestacao(this.consignacaoId, { imprimir: autoPrint })
+            );
+          } catch (error) {
+            notify(
+              humanizarErroOperacional(error).mensagem || "Presta\xE7\xE3o encerrada, mas n\xE3o foi poss\xEDvel gerar o comprovante.",
+              "warning"
+            );
+            this._pushLogOperacional("Falha ao gerar comprovante de presta\xE7\xE3o", {
+              erro: String((error == null ? void 0 : error.message) || error)
+            });
+          }
+        }
+        async _loadProximoAtendimento() {
+          var _a2, _b2;
+          const token = this._captureContextToken();
+          try {
+            const clienteId = ((_a2 = this.consignacao) == null ? void 0 : _a2.clienteId) || ((_b2 = this.operacaoContext) == null ? void 0 : _b2.clienteId) || this.navigationContext.clienteId;
             if (!clienteId) return;
             const { items } = await this.api.listarConsignacoes({ clienteId, pageSize: 20 });
+            if (!this._acceptContextToken(token)) return;
             this.proximoAtendimento = (items || []).find((c4) => {
               const status = String(c4.status || "").toUpperCase();
               return String(c4.id) !== String(this.consignacaoId) && (status === "EM_PRESTACAO" || status === "ENTREGUE");
             }) || null;
           } catch {
+            if (!this._acceptContextToken(token)) return;
             this.proximoAtendimento = null;
           }
         }
@@ -97131,10 +99375,15 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
           );
           switch (acao) {
             case "imprimir":
-              await imprimirComprovante(this.consignacao, this.resumoPrestacao, painel);
+            case "imprimir-comprovante":
+              await imprimirComprovante(this.consignacao || this.consignacaoId);
               break;
             case "pdf":
-              await visualizarComprovante(this.consignacao, this.resumoPrestacao, painel);
+            case "visualizar-comprovante":
+              await visualizarComprovante(this.consignacao || this.consignacaoId);
+              break;
+            case "pdf-download":
+              await exportarComprovantePdf(this.consignacao || this.consignacaoId);
               break;
             case "voltar-cliente":
               if (this.navigationContext.clienteId) {
@@ -97231,6 +99480,7 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
           await navigate(locator);
         }
         _updateUI() {
+          if (!this._isAlive()) return;
           this._ensureStartAtRetornos();
           this._updateContent();
           this._updateHeaderMeta();
@@ -97249,25 +99499,37 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
           }
         }
         _updateHeaderMeta() {
-          var _a2, _b2, _c, _d, _e2, _f, _g, _h, _i;
-          if (!this.root) return;
-          const cliente = document.getElementById("prestacao-cliente");
-          const documento = document.getElementById("prestacao-documento");
-          const situacao = document.getElementById("prestacao-situacao");
-          const financeiroEl = document.getElementById("prestacao-financeiro");
-          const fiscalEl = document.getElementById("prestacao-fiscal");
-          const synced = document.getElementById("prestacao-synced");
-          const persist = document.getElementById("prestacao-persistencia");
+          var _a2, _b2, _c, _d, _e2, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q;
+          if (!this._isAlive() || !this.root) return;
+          const cliente = this._qs("#prestacao-cliente");
+          const grupoEl = this._qs("#prestacao-grupo");
+          const qtdEl = this._qs("#prestacao-qtd-consig");
+          const documento = this._qs("#prestacao-documento");
+          const situacao = this._qs("#prestacao-situacao");
+          const financeiroEl = this._qs("#prestacao-financeiro");
+          const fiscalEl = this._qs("#prestacao-fiscal");
+          const synced = this._qs("#prestacao-synced");
+          const persist = this._qs("#prestacao-persistencia");
           const subtitle = this.root.querySelector(".cds-workspace__subtitle");
           const nome = ((_a2 = this.consignacao) == null ? void 0 : _a2.clienteNome) || ((_b2 = this.clienteDetalhe) == null ? void 0 : _b2.nome) || ((_d = (_c = this.consignacao) == null ? void 0 : _c.cliente) == null ? void 0 : _d.nome) || "\u2014";
           const doc = ((_f = (_e2 = this.consignacao) == null ? void 0 : _e2.documento) == null ? void 0 : _f.numero) || ((_g = this.consignacao) == null ? void 0 : _g.documento) || (((_h = this.consignacao) == null ? void 0 : _h.id) != null ? `C-${this.consignacao.id}` : "\u2014");
-          const financeiro = ((_i = this.snapshot) == null ? void 0 : _i.financeiro) || this._syncSnapshotFinanceiro();
+          const grupoId = ((_i = this.resumoPrestacao) == null ? void 0 : _i.grupoPrestacaoContasId) || ((_k = (_j = this.consignacao) == null ? void 0 : _j.prestacaoContasAtiva) == null ? void 0 : _k.id) || "\u2014";
+          const qtd = ((_l = this.resumoPrestacao) == null ? void 0 : _l.quantidadeConsignacoes) || ((_n = (_m = this.resumoPrestacao) == null ? void 0 : _m.consignacoesCiclo) == null ? void 0 : _n.length) || 1;
+          const financeiro = ((_o = this.snapshot) == null ? void 0 : _o.financeiro) || this._syncSnapshotFinanceiro();
           const estado = this._estadoOperacionalAtual();
           const fiscal = resolverSituacaoFiscal(this.faturamento || {}, {
             emitindo: Boolean(this._emitindoNfce),
             valorVenda: financeiro.valorVenda
           });
           if (cliente) cliente.textContent = safeText(typeof nome === "object" ? nome.nome || "\u2014" : nome);
+          if (grupoEl) {
+            const raw = String(grupoId);
+            const fromConsig = (_q = (_p = this.consignacao) == null ? void 0 : _p.prestacaoContasAtiva) == null ? void 0 : _q.id;
+            const display = raw && raw !== "\u2014" ? raw : fromConsig ? String(fromConsig) : "\u2014";
+            grupoEl.textContent = display.length > 28 ? `${display.slice(0, 24)}\u2026` : display;
+            grupoEl.title = display;
+          }
+          if (qtdEl) qtdEl.textContent = String(qtd);
           if (documento) documento.textContent = safeText(typeof doc === "object" ? doc.numero || "\u2014" : doc);
           if (situacao) situacao.textContent = safeText(labelEstadoPrestacao(estado));
           if (financeiroEl) {
@@ -97286,7 +99548,8 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
         }
         _updateContent() {
           var _a2, _b2, _c, _d, _e2;
-          const shell = document.getElementById("fechar-consignacao-content");
+          if (!this._isAlive()) return;
+          const shell = this._qs("#fechar-consignacao-content");
           if (!shell) return;
           const focusSnapshot = ((_a2 = this.focus) == null ? void 0 : _a2.campo) ? { ...this.focus } : null;
           shell.innerHTML = "";
@@ -97308,20 +99571,30 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
             shell.appendChild(this._renderMomentoAtual());
           }
           if (focusSnapshot && focusSnapshot.rowIndex >= 0) {
-            requestAnimationFrame(() => this._focusCampo(focusSnapshot.rowIndex, focusSnapshot.campo));
+            requestAnimationFrame(() => {
+              if (!this._isAlive()) return;
+              this._focusCampo(focusSnapshot.rowIndex, focusSnapshot.campo);
+            });
           } else {
             const auto = shell.querySelector('[data-autofocus="true"]');
             if (auto) {
               requestAnimationFrame(() => {
+                if (!this._isAlive()) return;
                 auto.focus();
                 if (typeof auto.select === "function") auto.select();
               });
             }
           }
           if (this.currentStep === STEP_RETORNOS && ((_c = (_b2 = this.resumoPrestacao) == null ? void 0 : _b2.itens) == null ? void 0 : _c.length)) {
-            requestAnimationFrame(() => this._atualizarPainelPreview());
+            requestAnimationFrame(() => {
+              if (!this._isAlive()) return;
+              this._atualizarPainelPreview();
+            });
           } else if (this.currentStep >= STEP_RESUMO && ((_e2 = (_d = this.resumoPrestacao) == null ? void 0 : _d.itens) == null ? void 0 : _e2.length)) {
-            requestAnimationFrame(() => this._recalcularPainel());
+            requestAnimationFrame(() => {
+              if (!this._isAlive()) return;
+              this._recalcularPainel();
+            });
           }
         }
         _updateStepper() {
@@ -97330,7 +99603,7 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
         _updateSidebar() {
         }
         _updateFooter() {
-          if (!this.root) return;
+          if (!this._isAlive() || !this.root) return;
           Workspace.compose(this.root, {
             footer: this._buildWorkspaceFooter()
           });
@@ -97338,13 +99611,22 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
         _startAutoRefresh() {
           if (this.refreshTimer) clearInterval(this.refreshTimer);
           this.refreshTimer = setInterval(() => {
-            var _a2;
-            if (!document.getElementById("fechar-consignacao-content") && !document.getElementById("prestacao-estacao-root")) {
-              clearInterval(this.refreshTimer);
+            var _a2, _b2, _c;
+            if (!this._isAlive()) {
+              if (this.refreshTimer) {
+                clearInterval(this.refreshTimer);
+                this.refreshTimer = null;
+              }
+              return;
+            }
+            if (!((_a2 = this.root) == null ? void 0 : _a2.isConnected)) {
+              this.destroy();
               return;
             }
             if (this.loading.operation || this.encerrado || this.editing.rowIndex >= 0) return;
-            if ((_a2 = document.activeElement) == null ? void 0 : _a2.closest("#fechar-retornos-grade")) return;
+            if (this.root.querySelector("#fechar-retornos-grade") && ((_c = (_b2 = document.activeElement) == null ? void 0 : _b2.closest) == null ? void 0 : _c.call(_b2, "#fechar-retornos-grade"))) {
+              return;
+            }
             this._loadData(true);
           }, 45e3);
         }
@@ -98360,7 +100642,11 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
           }
           root.appendChild(_CentralOperacoesView._renderAcoes(viewModel.acoesPrincipais, ctx));
           root.appendChild(_CentralOperacoesView._renderSituacao(viewModel.situacaoCliente, ctx));
-          root.appendChild(_CentralOperacoesView._renderTimeline(viewModel.historico));
+          root.appendChild(_CentralOperacoesView._renderTimeline(
+            viewModel.historico,
+            viewModel.consignacoesHistorico,
+            { ...ctx, historicoPaginacao: ctx.historicoPaginacao || viewModel.historicoPaginacao }
+          ));
           return root;
         }
         static renderLoading() {
@@ -98490,12 +100776,20 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
           section.appendChild(grid);
           return section;
         }
-        /** Linha do tempo simplificada */
-        static _renderTimeline(itens = []) {
+        /** Histórico: consignações + linha do tempo */
+        static _renderTimeline(itens = [], consignacoes = [], ctx = {}) {
           const section = document.createElement("section");
           section.className = "cds-ficha-cliente__timeline-wrap";
           section.id = "sec-historico";
-          section.innerHTML = `<h2 class="cds-ficha-cliente__secao-titulo">\xDAltimas movimenta\xE7\xF5es</h2>`;
+          section.appendChild(_CentralOperacoesView._renderConsignacoes(
+            consignacoes,
+            ctx,
+            ctx.historicoPaginacao || {}
+          ));
+          const movTitle = document.createElement("h2");
+          movTitle.className = "cds-ficha-cliente__secao-titulo";
+          movTitle.textContent = "\xDAltimas movimenta\xE7\xF5es";
+          section.appendChild(movTitle);
           if (!itens.length) {
             section.appendChild(EmptyState.create({
               title: "Sem movimenta\xE7\xF5es",
@@ -98517,8 +100811,237 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
           section.appendChild(list);
           return section;
         }
+        static _renderConsignacoes(consignacoes = [], ctx = {}, paginacao = {}) {
+          const wrap = document.createElement("div");
+          wrap.className = "cds-ficha-cliente__consignacoes";
+          wrap.id = "sec-historico-consignacoes";
+          const title = document.createElement("h2");
+          title.className = "cds-ficha-cliente__secao-titulo";
+          title.textContent = "CONSIGNA\xC7\xD5ES";
+          wrap.appendChild(title);
+          const total = Number(paginacao.total);
+          const carregadas = consignacoes.length;
+          if (Number.isFinite(total) && total > 0) {
+            const meta = document.createElement("p");
+            meta.className = "cds-ficha-cliente__consignacoes-pagina";
+            meta.textContent = `Mostrando ${carregadas} de ${total}`;
+            wrap.appendChild(meta);
+          }
+          if (!consignacoes.length) {
+            wrap.appendChild(EmptyState.create({
+              title: "Nenhuma consigna\xE7\xE3o",
+              description: "Quando houver opera\xE7\xF5es, elas aparecer\xE3o aqui em qualquer status"
+            }));
+            return wrap;
+          }
+          const fmt = (v3) => ctx.formatCurrency ? ctx.formatCurrency(v3) : String(v3 ?? "\u2014");
+          const fmtDate = (v3) => v3 && ctx.formatDate ? ctx.formatDate(v3) : "\u2014";
+          const list = document.createElement("div");
+          list.className = "cds-ficha-cliente__consignacoes-lista";
+          consignacoes.forEach((row) => {
+            const card = document.createElement("article");
+            card.className = "cds-ficha-cliente__consignacao-card";
+            card.dataset.consignacaoId = String(row.id);
+            card.innerHTML = `
+        <div class="cds-ficha-cliente__consignacao-numero">${row.numero}</div>
+        <div class="cds-ficha-cliente__consignacao-meta">${fmtDate(row.data)} \xB7 ${row.statusLabel}</div>
+        <div class="cds-ficha-cliente__consignacao-resumo">${row.quantidadeItens} itens \xB7 ${fmt(row.valorTotal)}</div>
+        <div class="cds-ficha-cliente__consignacao-atualizacao">\xDAltima atualiza\xE7\xE3o: ${fmtDate(row.atualizadoEm)}</div>
+        <div class="cds-ficha-cliente__consignacoes-acoes"></div>
+      `;
+            const acoes = card.querySelector(".cds-ficha-cliente__consignacoes-acoes");
+            const ver = document.createElement("button");
+            ver.type = "button";
+            ver.className = "cds-ficha-cliente__mini-btn";
+            ver.textContent = "Visualizar";
+            ver.addEventListener("click", () => ctx.onVisualizarConsignacao && ctx.onVisualizarConsignacao(row));
+            const reprint = document.createElement("button");
+            reprint.type = "button";
+            reprint.className = "cds-ficha-cliente__mini-btn cds-ficha-cliente__mini-btn--primary";
+            reprint.textContent = "Reimprimir";
+            reprint.addEventListener("click", () => ctx.onReimprimirConsignacao && ctx.onReimprimirConsignacao(row));
+            acoes.appendChild(ver);
+            acoes.appendChild(reprint);
+            list.appendChild(card);
+          });
+          wrap.appendChild(list);
+          if (paginacao.hasMore) {
+            const mais = document.createElement("button");
+            mais.type = "button";
+            mais.className = "cds-ficha-cliente__carregar-mais";
+            mais.disabled = !!paginacao.loading;
+            mais.textContent = paginacao.loading ? "Carregando..." : "Carregar mais";
+            mais.addEventListener("click", () => {
+              if (ctx.onCarregarMaisConsignacoes) ctx.onCarregarMaisConsignacoes();
+            });
+            wrap.appendChild(mais);
+          }
+          return wrap;
+        }
       };
       module.exports = CentralOperacoesView;
+    }
+  });
+
+  // frontend/modules/motor-comercial/pages/PerfilComercial/ConsultaConsignacaoModal.js
+  var require_ConsultaConsignacaoModal = __commonJS({
+    "frontend/modules/motor-comercial/pages/PerfilComercial/ConsultaConsignacaoModal.js"(exports, module) {
+      var {
+        formatMoneyBr,
+        formatDateTimeBr
+      } = require_historicoConsignacoesMappers();
+      function escapeHtml(valor) {
+        return String(valor ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+      }
+      var ConsultaConsignacaoModal = class {
+        static render(detalhe, ctx = {}) {
+          const overlay = document.createElement("div");
+          overlay.className = "cds-consulta-consignacao";
+          overlay.setAttribute("role", "dialog");
+          overlay.setAttribute("aria-modal", "true");
+          overlay.setAttribute("aria-labelledby", "consulta-consignacao-titulo");
+          const produtos = (detalhe.produtos || []).map((p3) => `
+      <tr>
+        <td>${escapeHtml(p3.produto)}</td>
+        <td>${escapeHtml(p3.quantidade)}</td>
+        <td>${escapeHtml(p3.unidade)}</td>
+        <td>${escapeHtml(p3.unidadeComercial || p3.unidade)}</td>
+        <td>${escapeHtml(formatMoneyBr(p3.precoUnitario))}</td>
+        <td>${escapeHtml(formatMoneyBr(p3.total))}</td>
+        <td>${escapeHtml(p3.statusLabel || p3.status || "\u2014")}</td>
+      </tr>`).join("");
+          const precificacao = (detalhe.produtos || []).map((p3) => {
+            const fallback = p3.precoFallback ? '<span class="cds-consulta-consignacao__fallback">Pre\xE7o de Seguran\xE7a</span>' : "";
+            return `
+        <li>
+          <strong>${escapeHtml(p3.produto)}</strong>
+          <span>Linha: ${escapeHtml(p3.linhaComercialId ?? "\u2014")}</span>
+          <span>Tabela: ${escapeHtml(p3.tabelaPrecoId ?? detalhe.tabelaPrecoId ?? "\u2014")}</span>
+          <span>Canal: ${escapeHtml(p3.canalVenda || detalhe.canalOperacao || "CONSIGNADO")}</span>
+          <span>Unidade Comercial: ${escapeHtml(p3.unidadeComercial || p3.unidade)}</span>
+          <span>Pre\xE7o: ${escapeHtml(formatMoneyBr(p3.precoUnitario))}</span>
+          <span>Origem: ${escapeHtml(p3.precoOrigem || "\u2014")}</span>
+          ${fallback}
+        </li>`;
+          }).join("");
+          overlay.innerHTML = `
+      <div class="cds-consulta-consignacao__painel">
+        <header class="cds-consulta-consignacao__cabecalho">
+          <h2 id="consulta-consignacao-titulo">CONSIGNA\xC7\xC3O N\xBA ${escapeHtml(detalhe.numero)}</h2>
+          <p>Cliente: ${escapeHtml(detalhe.clienteNome)}</p>
+          <p>Data: ${escapeHtml(formatDateTimeBr(detalhe.dataHora))}</p>
+          <p>Status: <strong>${escapeHtml(String(detalhe.statusLabel || "").toUpperCase())}</strong></p>
+          <button type="button" class="cds-consulta-consignacao__fechar" data-action="fechar" aria-label="Fechar">\xD7</button>
+        </header>
+
+        <section>
+          <h3>Identifica\xE7\xE3o</h3>
+          <dl class="cds-consulta-consignacao__resumo">
+            <div><dt>N\xBA da consigna\xE7\xE3o</dt><dd>${escapeHtml(detalhe.numero)}</dd></div>
+            <div><dt>Cliente</dt><dd>${escapeHtml(detalhe.clienteNome)}</dd></div>
+            <div><dt>Data</dt><dd>${escapeHtml(formatDateTimeBr(detalhe.dataHora))}</dd></div>
+            <div><dt>Status</dt><dd>${escapeHtml(detalhe.statusLabel)}</dd></div>
+            <div><dt>\xDAltima atualiza\xE7\xE3o</dt><dd>${escapeHtml(formatDateTimeBr(detalhe.atualizadoEm))}</dd></div>
+            <div><dt>Operador</dt><dd>${escapeHtml(detalhe.operador ?? "\u2014")}</dd></div>
+          </dl>
+        </section>
+
+        <section>
+          <h3>Opera\xE7\xE3o</h3>
+          <dl class="cds-consulta-consignacao__resumo">
+            <div><dt>Tipo Comercial</dt><dd>${escapeHtml(detalhe.tipoComercial || "\u2014")}</dd></div>
+            <div><dt>Canal da Opera\xE7\xE3o</dt><dd>${escapeHtml(detalhe.canalOperacao || "CONSIGNADO")}</dd></div>
+            <div><dt>Tabela de Pre\xE7os</dt><dd>${escapeHtml(detalhe.tabelaPrecoId ?? "\u2014")}</dd></div>
+            <div><dt>Situa\xE7\xE3o da consigna\xE7\xE3o</dt><dd>${escapeHtml(detalhe.situacao || detalhe.statusLabel)}</dd></div>
+          </dl>
+        </section>
+
+        <section>
+          <h3>Produtos</h3>
+          <div class="cds-consulta-consignacao__tabela-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Produto</th>
+                  <th>Quantidade</th>
+                  <th>Unidade</th>
+                  <th>Unidade Comercial</th>
+                  <th>Pre\xE7o Unit\xE1rio</th>
+                  <th>Valor</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>${produtos || '<tr><td colspan="7">Nenhum produto</td></tr>'}</tbody>
+            </table>
+          </div>
+        </section>
+
+        <section>
+          <h3>Dados da entrega</h3>
+          <p>Identifica\xE7\xE3o: ${escapeHtml(detalhe.numero)}</p>
+          <p>Entrega: ${escapeHtml(formatDateTimeBr(detalhe.dataEntrega))}</p>
+        </section>
+
+        <section class="cds-consulta-consignacao__snapshot">
+          <h3>Precifica\xE7\xE3o congelada</h3>
+          <ul>${precificacao || "<li>Sem snapshot de itens</li>"}</ul>
+        </section>
+
+        <footer class="cds-consulta-consignacao__acoes">
+          <button type="button" class="cds-consulta-consignacao__btn cds-consulta-consignacao__btn--primary" data-action="reimprimir">Reimprimir</button>
+          <button type="button" class="cds-consulta-consignacao__btn" data-action="fechar">Fechar</button>
+        </footer>
+      </div>
+    `;
+          overlay.addEventListener("click", (event) => {
+            if (event.target === overlay) {
+              if (ctx.onClose) ctx.onClose();
+            }
+          });
+          overlay.querySelectorAll('[data-action="fechar"]').forEach((btn) => {
+            btn.addEventListener("click", () => ctx.onClose && ctx.onClose());
+          });
+          overlay.querySelector('[data-action="reimprimir"]').addEventListener("click", () => {
+            if (ctx.onReimprimir) ctx.onReimprimir(detalhe);
+          });
+          return overlay;
+        }
+      };
+      module.exports = ConsultaConsignacaoModal;
+    }
+  });
+
+  // frontend/modules/motor-comercial/services/ComprovanteConsignacaoPrintService.js
+  var require_ComprovanteConsignacaoPrintService = __commonJS({
+    "frontend/modules/motor-comercial/services/ComprovanteConsignacaoPrintService.js"(exports, module) {
+      var {
+        buildComprovanteConsignacaoHtml,
+        reimpressaoSomenteLeitura
+      } = require_historicoConsignacoesMappers();
+      function imprimirComprovanteConsignacao(detalhe) {
+        const html2 = buildComprovanteConsignacaoHtml(detalhe);
+        if (typeof window === "undefined" || typeof window.open !== "function") {
+          return { html: html2, efeitos: reimpressaoSomenteLeitura() };
+        }
+        const win = window.open("", "_blank", "noopener,noreferrer,width=720,height=840");
+        if (!win) {
+          return { html: html2, efeitos: reimpressaoSomenteLeitura(), bloqueado: true };
+        }
+        win.document.open();
+        win.document.write(html2);
+        win.document.close();
+        win.focus();
+        try {
+          win.print();
+        } catch (_e2) {
+        }
+        return { html: html2, efeitos: reimpressaoSomenteLeitura() };
+      }
+      module.exports = {
+        imprimirComprovanteConsignacao,
+        buildComprovanteConsignacaoHtml,
+        reimpressaoSomenteLeitura
+      };
     }
   });
 
@@ -99255,6 +101778,14 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
       var { mapConsignacaoView } = require_helpers();
       var CentralOperacoesView = require_CentralOperacoesView();
       var { buildCentralOperacoesViewModel } = require_centralOperacoesMappers();
+      var {
+        buildDetalheConsulta,
+        buildHistoricoConsignacoes,
+        HISTORICO_PAGE_SIZE,
+        STATUS_CONSIGNACAO_OPERACIONAL
+      } = require_historicoConsignacoesMappers();
+      var ConsultaConsignacaoModal = require_ConsultaConsignacaoModal();
+      var { imprimirComprovanteConsignacao } = require_ComprovanteConsignacaoPrintService();
       var ClienteOperacionalCard = require_ClienteOperacionalCard();
       var ClienteCadastroView = require_ClienteCadastroView();
       var {
@@ -99606,7 +102137,11 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
               if (doc == null ? void 0 : doc.id) {
                 navigate(buildRouteWithCliente360Context(`/consignacoes/${doc.id}`, this.perfil.clienteId));
               }
-            }
+            },
+            onVisualizarConsignacao: (row) => this._visualizarConsignacao(row),
+            onReimprimirConsignacao: (row) => this._reimprimirConsignacao(row),
+            onCarregarMaisConsignacoes: () => this._carregarMaisHistoricoConsignacoes(),
+            historicoPaginacao: this._historicoPaginacaoView()
           };
         }
         _executarAcao(acao = {}) {
@@ -99726,6 +102261,7 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
               situacao,
               score,
               consignacoesResult,
+              historicoConsignacoesResult,
               pendenciasPayload,
               contaCorrente,
               saldos,
@@ -99735,7 +102271,15 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
               this.api.listarPerfis({ clienteId, pageSize: 50 }).catch(() => ({ items: [] })),
               this.projectionApi.obterSituacaoCliente({ clienteId }).catch(() => ({})),
               perfilId ? this.api.obterScorePerfil(perfilId).catch(() => ({})) : Promise.resolve({}),
-              this.api.listarConsignacoes({ clienteId }).catch(() => ({ items: [] })),
+              this.api.listarConsignacoes({
+                clienteId,
+                cliente_id: clienteId,
+                statusIn: STATUS_CONSIGNACAO_OPERACIONAL
+              }).catch(() => ({ items: [] })),
+              this.api.listarHistoricoConsignacoesCliente(clienteId, {
+                page: 1,
+                pageSize: HISTORICO_PAGE_SIZE
+              }).catch(() => ({ items: [], total: 0, page: 1, pageSize: HISTORICO_PAGE_SIZE, hasMore: false })),
               this.projectionApi.obterProjecaoPendencias({ clienteId }).catch(() => ({})),
               this.projectionApi.obterProjecaoContaCorrente({ clienteId }).catch(() => ({})),
               this.projectionApi.obterProjecaoSaldos({ clienteId }).catch(() => ({})),
@@ -99744,6 +102288,18 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
             ]);
             const perfis = (perfisResult.items || []).map(mapPerfilListItem);
             const consignacoes = (consignacoesResult.items || []).map((c4) => mapConsignacaoView(c4));
+            const historicoItems = historicoConsignacoesResult.items || [];
+            const historicoPage = historicoConsignacoesResult.page || 1;
+            const historicoPageSize = historicoConsignacoesResult.pageSize || HISTORICO_PAGE_SIZE;
+            const historicoTotal = historicoConsignacoesResult.total ?? historicoItems.length;
+            this._historicoConsignacoes = {
+              items: historicoItems,
+              page: historicoPage,
+              pageSize: historicoPageSize,
+              total: historicoTotal,
+              hasMore: historicoConsignacoesResult.hasMore === true || historicoPage * historicoPageSize < historicoTotal,
+              loading: false
+            };
             const pendenciasView = buildViewFromPayload(pendenciasPayload);
             const pendencias = buildPendenciasGrouped(pendenciasView);
             const resumo = buildResumoComercial(this.perfil, situacao, score, consignacoes, pendenciasView, timeline);
@@ -99768,7 +102324,13 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
               consignacoes,
               pendencias,
               historico,
-              timeline
+              timeline,
+              consignacoesHistorico: buildHistoricoConsignacoes(
+                historicoItems,
+                clienteId,
+                { manterOrdem: true }
+              ),
+              historicoPaginacao: this._historicoPaginacaoView()
             });
             this.lastUpdated = /* @__PURE__ */ new Date();
             this._renderCentralOperacoes(viewModel);
@@ -99812,6 +102374,57 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
           }
           navigate(buildRouteWithCliente360Context(`/consignacoes/${alvo.id}/prestacao`, this.perfil.clienteId));
         }
+        _historicoPaginacaoView() {
+          const estado = this._historicoConsignacoes || {};
+          return {
+            total: estado.total || 0,
+            page: estado.page || 1,
+            pageSize: estado.pageSize || HISTORICO_PAGE_SIZE,
+            hasMore: !!estado.hasMore,
+            loading: !!estado.loading
+          };
+        }
+        _atualizarSecaoHistoricoConsignacoes() {
+          var _a2, _b2;
+          const atual = document.getElementById("sec-historico-consignacoes");
+          if (!atual) return;
+          const rows = buildHistoricoConsignacoes(
+            ((_a2 = this._historicoConsignacoes) == null ? void 0 : _a2.items) || [],
+            (_b2 = this.perfil) == null ? void 0 : _b2.clienteId,
+            { manterOrdem: true }
+          );
+          const proxima = CentralOperacoesView._renderConsignacoes(
+            rows,
+            this._getCentralOperacoesContext(),
+            this._historicoPaginacaoView()
+          );
+          atual.replaceWith(proxima);
+        }
+        async _carregarMaisHistoricoConsignacoes() {
+          var _a2;
+          const estado = this._historicoConsignacoes;
+          if (!estado || estado.loading || !estado.hasMore || !((_a2 = this.perfil) == null ? void 0 : _a2.clienteId)) return;
+          estado.loading = true;
+          this._atualizarSecaoHistoricoConsignacoes();
+          try {
+            const nextPage = (estado.page || 1) + 1;
+            const result = await this.api.listarHistoricoConsignacoesCliente(this.perfil.clienteId, {
+              page: nextPage,
+              pageSize: estado.pageSize || HISTORICO_PAGE_SIZE
+            });
+            const novos = result.items || [];
+            const ids = new Set((estado.items || []).map((c4) => String(c4.id)));
+            estado.items = (estado.items || []).concat(novos.filter((c4) => !ids.has(String(c4.id))));
+            estado.page = result.page || nextPage;
+            estado.total = result.total ?? estado.total;
+            estado.hasMore = result.hasMore === true;
+          } catch (error) {
+            notify(error.message || "N\xE3o foi poss\xEDvel carregar mais consigna\xE7\xF5es.", "error");
+          } finally {
+            estado.loading = false;
+            this._atualizarSecaoHistoricoConsignacoes();
+          }
+        }
         _navigateExtrato() {
           var _a2;
           if (!((_a2 = this.perfil) == null ? void 0 : _a2.clienteId)) {
@@ -99824,6 +102437,65 @@ Esta a\xE7\xE3o n\xE3o pode ser desfeita.`,
         _scrollTo(id) {
           var _a2;
           (_a2 = document.getElementById(id)) == null ? void 0 : _a2.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+        async _carregarConsultaConsignacao(row) {
+          var _a2;
+          const clienteId = (_a2 = this.perfil) == null ? void 0 : _a2.clienteId;
+          if (!(row == null ? void 0 : row.id) || !clienteId) {
+            throw new Error("Consigna\xE7\xE3o ou cliente n\xE3o identificado.");
+          }
+          if (row.clienteId != null && Number(row.clienteId) !== Number(clienteId)) {
+            throw new Error("Consigna\xE7\xE3o n\xE3o encontrada para este cliente.");
+          }
+          const payload = await this.api.obterConsignacao(row.id, { clienteId, cliente_id: clienteId });
+          if (!payload || Number(payload.clienteId) !== Number(clienteId)) {
+            throw new Error("Consigna\xE7\xE3o n\xE3o encontrada para este cliente.");
+          }
+          return buildDetalheConsulta(payload, {
+            clienteNome: this.perfil.clienteNome || payload.clienteNome,
+            clienteDocumento: this.perfil.cpfCnpj || payload.clienteDocumento,
+            tipoComercial: this.perfil.perfilTipo || null
+          });
+        }
+        async _visualizarConsignacao(row) {
+          try {
+            const detalhe = await this._carregarConsultaConsignacao(row);
+            this._abrirModalConsulta(detalhe);
+          } catch (error) {
+            notify(error.message || "N\xE3o foi poss\xEDvel consultar a consigna\xE7\xE3o.", "error");
+          }
+        }
+        async _reimprimirConsignacao(row) {
+          try {
+            const detalhe = await this._carregarConsultaConsignacao(row);
+            const resultado = imprimirComprovanteConsignacao(detalhe);
+            if (resultado.bloqueado) {
+              notify("Permita pop-ups para reimprimir o comprovante.", "info");
+            }
+          } catch (error) {
+            notify(error.message || "N\xE3o foi poss\xEDvel reimprimir a consigna\xE7\xE3o.", "error");
+          }
+        }
+        _abrirModalConsulta(detalhe) {
+          this._fecharModalConsulta();
+          const host = document.getElementById("central-operacoes-host") || document.body;
+          this._consultaModal = ConsultaConsignacaoModal.render(detalhe, {
+            onClose: () => this._fecharModalConsulta(),
+            onReimprimir: (atual) => {
+              const resultado = imprimirComprovanteConsignacao(atual);
+              if (resultado.bloqueado) {
+                notify("Permita pop-ups para reimprimir o comprovante.", "info");
+              }
+            }
+          });
+          host.appendChild(this._consultaModal);
+        }
+        _fecharModalConsulta() {
+          var _a2;
+          if ((_a2 = this._consultaModal) == null ? void 0 : _a2.parentNode) {
+            this._consultaModal.parentNode.removeChild(this._consultaModal);
+          }
+          this._consultaModal = null;
         }
         _startAutoRefresh() {
           if (this.refreshTimer) clearInterval(this.refreshTimer);
@@ -106094,13 +108766,26 @@ ${rows.join("\n")}`;
         notify,
         navigate,
         withLoading,
-        choiceDialog
+        choiceDialog,
+        confirmDialog,
+        promptDialog
       } = require_operacional();
       var {
         parseCliente360Context,
         resolveBackPath,
         routeWithActiveContext
       } = require_cliente360Context();
+      var {
+        podeAdicionarProdutoComplementar,
+        MENSAGEM_PRESTACAO_ENCERRADA
+      } = require_entregaComplementarMappers();
+      var {
+        MOTIVOS_CANCELAMENTO,
+        podeCancelarPreparacao,
+        lerCancelamento,
+        MENSAGEM_CANCELADA_NOVA
+      } = require_cancelamentoPreparacao();
+      var { ConfirmMessages, notifySuccess, notifyError, loadingText } = require_messages();
       var DetalhesConsignacaoPage = class _DetalhesConsignacaoPage {
         constructor(params = {}, routeQuery = {}) {
           this.consignacaoId = params.id;
@@ -106139,31 +108824,130 @@ ${rows.join("\n")}`;
         _createToolbar() {
           const bar = document.createElement("div");
           bar.className = "cds-detalhes-consignacao__toolbar";
+          bar.id = "detalhes-consignacao-toolbar";
           bar.appendChild(Button.create({
             text: "Voltar",
             variant: "secondary",
             onClick: () => navigate(resolveBackPath(this.navigationContext, "/consignacoes"))
           }));
+          bar.appendChild(Button.create({ text: "Atualizar", variant: "primary", onClick: () => this._load() }));
+          return bar;
+        }
+        _atualizarToolbar() {
+          var _a2;
+          const bar = document.getElementById("detalhes-consignacao-toolbar");
+          if (!bar) return;
+          bar.innerHTML = "";
           bar.appendChild(Button.create({
-            text: "Entrega",
-            variant: "ghost",
-            onClick: () => navigate(routeWithActiveContext(
-              `/consignacoes/${this.consignacaoId}/entrega`,
-              this.navigationContext
-            ))
+            text: "Voltar",
+            variant: "secondary",
+            onClick: () => navigate(resolveBackPath(this.navigationContext, "/consignacoes"))
           }));
+          const status = String(((_a2 = this.consignacao) == null ? void 0 : _a2.status) || "").toUpperCase();
+          if (status === "CANCELADA") {
+            const cancel = lerCancelamento(this.consignacao);
+            bar.appendChild(Button.create({
+              text: "Imprimir Termo de Entrega",
+              variant: "ghost",
+              onClick: () => this._imprimirTermoEntrega()
+            }));
+            bar.appendChild(Button.create({ text: "Atualizar", variant: "primary", onClick: () => this._load() }));
+            if (cancel == null ? void 0 : cancel.mensagem) {
+              const hint = document.createElement("span");
+              hint.className = "cds-detalhes-consignacao__hint";
+              hint.textContent = cancel.mensagem;
+              bar.appendChild(hint);
+            }
+            return;
+          }
+          if (status === "RASCUNHO") {
+            bar.appendChild(Button.create({
+              text: "Entrega",
+              variant: "ghost",
+              onClick: () => navigate(routeWithActiveContext(
+                `/consignacoes/${this.consignacaoId}/entrega`,
+                this.navigationContext
+              ))
+            }));
+            bar.appendChild(Button.create({
+              text: "Cancelar prepara\xE7\xE3o",
+              variant: "danger",
+              onClick: () => this._cancelarPreparacao()
+            }));
+          }
+          const check = podeAdicionarProdutoComplementar(this.consignacao);
+          if (check.elegivel) {
+            bar.appendChild(Button.create({
+              text: "+ Adicionar produto",
+              variant: "primary",
+              onClick: () => this._abrirEntregaComplementar()
+            }));
+          }
+          if (status === "ENTREGUE") {
+            bar.appendChild(Button.create({
+              text: "Fechar Atendimento",
+              variant: "ghost",
+              onClick: () => this._openPrestacao(this.consignacao || { id: this.consignacaoId })
+            }));
+          }
           bar.appendChild(Button.create({
             text: "Imprimir Termo de Entrega",
             variant: "ghost",
             onClick: () => this._imprimirTermoEntrega()
           }));
-          bar.appendChild(Button.create({
-            text: "Fechar Atendimento",
-            variant: "ghost",
-            onClick: () => this._openPrestacao(this.consignacao || { id: this.consignacaoId })
-          }));
           bar.appendChild(Button.create({ text: "Atualizar", variant: "primary", onClick: () => this._load() }));
-          return bar;
+        }
+        async _cancelarPreparacao() {
+          if (!podeCancelarPreparacao(this.consignacao)) {
+            notify(MENSAGEM_CANCELADA_NOVA, "warning");
+            return;
+          }
+          const confirmed = await confirmDialog({ ...ConfirmMessages.CANCELAR_CONSIGNACAO });
+          if (!confirmed) return;
+          const motivo = await choiceDialog({
+            title: "Motivo do cancelamento",
+            message: "Selecione o motivo:",
+            choices: MOTIVOS_CANCELAMENTO.map((m4) => ({
+              label: m4.label,
+              value: m4.value,
+              variant: m4.value === "OUTRO" ? "secondary" : "primary"
+            }))
+          });
+          if (!motivo) return;
+          let observacao = null;
+          if (motivo === "OUTRO") {
+            observacao = await promptDialog({
+              title: "Descreva o motivo",
+              label: "Observa\xE7\xE3o",
+              placeholder: "Informe o motivo do cancelamento"
+            });
+            if (observacao == null) return;
+            observacao = String(observacao).trim() || null;
+          }
+          try {
+            const atualizada = await withLoading(
+              loadingText("CANCELANDO_CONSIGNACAO"),
+              () => this.api.cancelarConsignacao(this.consignacaoId, { motivo, observacao })
+            );
+            notifySuccess("CONSIGNACAO_CANCELADA");
+            if (atualizada) {
+              this.consignacao = mapConsignacaoView(atualizada.consignacao || atualizada);
+            }
+            await this._load();
+          } catch (error) {
+            notifyError("CONSIGNACAO_CANCELAR", error);
+          }
+        }
+        async _abrirEntregaComplementar() {
+          const check = podeAdicionarProdutoComplementar(this.consignacao);
+          if (!check.elegivel) {
+            notify(check.mensagem || MENSAGEM_PRESTACAO_ENCERRADA, "warning");
+            return;
+          }
+          await navigate(routeWithActiveContext(
+            `/consignacoes/${this.consignacaoId}/entrega-complementar`,
+            this.navigationContext
+          ));
         }
         async _imprimirTermoEntrega() {
           const escolha = await choiceDialog({
@@ -106211,12 +108995,19 @@ ${rows.join("\n")}`;
           try {
             const raw = await withLoading("Carregando...", () => this.api.obterConsignacao(this.consignacaoId));
             this.consignacao = mapConsignacaoView(raw);
+            this._atualizarToolbar();
             host.innerHTML = "";
             const header = document.createElement("div");
             header.className = "cds-detalhes-consignacao__header";
+            const cancel = lerCancelamento(this.consignacao);
+            const cancelHtml = cancel ? `<p><strong>Status:</strong> CANCELADA</p>
+           <p><strong>Motivo:</strong> ${cancel.motivoLabel || cancel.motivo || "\u2014"}</p>
+           <p><strong>Cancelada em:</strong> ${this._formatDate(cancel.canceladoEm)}</p>
+           <p><strong>Cancelada por:</strong> ${cancel.canceladoPorUsuarioId || "\u2014"}</p>
+           <p>${MENSAGEM_CANCELADA_NOVA}</p>` : `<p>${this.consignacao.clienteNome || ""} \xB7 ${this.consignacao.status || ""}</p>`;
             header.innerHTML = `
         <h2>${this.consignacao.documento || `Consigna\xE7\xE3o #${this.consignacaoId}`}</h2>
-        <p>${this.consignacao.clienteNome || ""} \xB7 ${this.consignacao.status || ""}</p>
+        ${cancelHtml}
       `;
             host.appendChild(header);
             const drawerHost = document.createElement("div");
@@ -106983,6 +109774,7 @@ ${rows.join("\n")}`;
       var ConsignacoesPage = require_Consignacoes();
       var NovaConsignacaoPage = require_NovaConsignacao();
       var EntregaConsignacaoPage = require_EntregaConsignacao();
+      var EntregaComplementarPage = require_EntregaComplementar();
       var ComprovanteEntregaPage = require_ComprovanteEntrega();
       var PrestacaoContasPage = require_PrestacaoContas();
       var PrestacaoLocatorPage = require_PrestacaoLocator();
@@ -107034,6 +109826,12 @@ ${rows.join("\n")}`;
             throw new Error("Informe o ID da consigna\xE7\xE3o para acessar a entrega.");
           }
           return EntregaConsignacaoPage.create(params.id, query);
+        },
+        EntregaComplementar: (params, query) => {
+          if (!params || !params.id) {
+            throw new Error("Informe o ID da consigna\xE7\xE3o para a entrega complementar.");
+          }
+          return EntregaComplementarPage.create(params.id, query);
         },
         ComprovanteEntrega: (params, query) => {
           if (!params || !params.id) {
@@ -107484,10 +110282,10 @@ if (typeof MotorComercialBundle !== "undefined") { window.MotorComercial = Motor
 /*__CDS_BUILD_INFO_START__*/
 
 (function (global) {
-  var info = {"module":"motor-comercial","version":"1.0.3","sprint":"UX-10","buildTime":"2026-08-06 12:14:41","hash":"3A1FDD8D2C98CAA694E49B5694E86B6844870EA181156E00473976E21EC25B38","ambiente":"development"};
+  var info = {"module":"motor-comercial","version":"1.0.3","sprint":"UX-10","buildTime":"2026-09-20 08:32:50","hash":"0B61B67C31D28C15F856E82016D059D24A2BDFE7E40BFC4CB55568D1414CD3B3","ambiente":"development"};
   global.CDS_BUILD = info;
   if (typeof console !== "undefined" && console.info) {
-    console.info("\n================================================\nCDS Sistemas\nMotor Comercial\nSprint\nUX-10\nBuild\n2026-08-06 12:14:41\nHash\n3A1FDD8D2C98CAA694E49B5694E86B6844870EA181156E00473976E21EC25B38\n================================================\n");
+    console.info("\n================================================\nCDS Sistemas\nMotor Comercial\nSprint\nUX-10\nBuild\n2026-09-20 08:32:50\nHash\n0B61B67C31D28C15F856E82016D059D24A2BDFE7E40BFC4CB55568D1414CD3B3\n================================================\n");
   }
 })(typeof window !== "undefined" ? window : globalThis);
 

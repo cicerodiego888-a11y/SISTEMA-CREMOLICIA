@@ -19,6 +19,7 @@ const {
   enfileirarEvento,
   obterConsignacaoEmRascunho
 } = require('./consignacaoUseCaseHelpers');
+const { validarQuantidadePorUnidade } = require('../../services/quantidadeUnidadeComercial');
 
 const CANAL_CONSIGNACAO = 'CONSIGNADO';
 
@@ -57,7 +58,18 @@ class AdicionarItemConsignacaoUseCase extends ConsignacaoWriteUseCase {
       throw new ProdutoInvalidoError(entrada.produtoId, 'Produto inativo');
     }
 
-    const quantidade = Number(entrada.quantidade);
+    const unidadePrevista = String(
+      entrada.unidadeComercial
+      || entrada.unidade_comercial
+      || produto.unidadeComercial
+      || produto.unidade
+      || 'UN'
+    ).trim().toUpperCase() || 'UN';
+    const qtdCheck = validarQuantidadePorUnidade(entrada.quantidade, unidadePrevista);
+    if (!qtdCheck.ok) {
+      throw new QuantidadeInvalidaError(entrada.quantidade);
+    }
+    const quantidade = qtdCheck.quantidade;
 
     // RCM-8.5 — SSOT: preço e snapshot vêm do Motor Oficial (bridge CONSIGNADO).
     // Cliente só prevalece quando envia snapshot completo (desktop pós-Resolver).

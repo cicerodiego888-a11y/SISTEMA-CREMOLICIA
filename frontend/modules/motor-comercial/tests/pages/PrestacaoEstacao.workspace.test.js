@@ -31,7 +31,7 @@ describe('PrestacaoContas — Estação Workspace UX-12', () => {
     expect(el.className).not.toMatch(/wizard-layout/i);
     expect(el.dataset.sharedUiReference).toBe('prestacao-estacao');
     expect(el.dataset.estacaoTrabalho).toBe('prestacao');
-    expect(el.dataset.uxSprint).toBe('UX-20');
+    expect(el.dataset.uxSprint).toBe('STAB-07.5');
     expect(el.querySelector('.cds-workspace__header')).toBeTruthy();
     expect(el.querySelector('.cds-workspace__footer')).toBeTruthy();
     expect(el.querySelector('#fechar-consignacao-content')).toBeTruthy();

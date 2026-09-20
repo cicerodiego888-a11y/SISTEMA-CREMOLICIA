@@ -97,6 +97,7 @@ function renderVendas(vendas) {
                                 <th>Cliente</th>
                                 <th>${modoFiscal ? 'Total fiscal' : 'Total'}</th>
                                 <th>Forma</th>
+                                <th>Origem</th>
                                 <th>Status</th>
                                 <th class="historico-venda-acoes-col">Ações</th>
                             </tr>
@@ -110,10 +111,11 @@ function renderVendas(vendas) {
                                     <td>${escapeHtml(v.cliente_nome || 'Não informado')}</td>
                                     <td>${formatCurrency(modoFiscal ? (v.valor_fiscal ?? v.total) : v.total)}</td>
                                     <td>${rotuloFormaPagamento(v.forma_pagamento)}</td>
+                                    <td>${rotuloOrigemPdv(v.origem_pdv)}</td>
                                     <td>${rotuloStatusVenda(v.status)}</td>
                                     <td class="historico-venda-acoes-col">${montarHtmlAcoesHistoricoVenda(v, { incluirDevolucao: false })}</td>
                                 </tr>
-                            `).join('') || '<tr><td colspan="8" class="text-center">Nenhuma venda encontrada.</td></tr>'}
+                            `).join('') || '<tr><td colspan="9" class="text-center">Nenhuma venda encontrada.</td></tr>'}
                         </tbody>
                     </table>
                 </div>
@@ -223,6 +225,14 @@ function showVendaModal(venda) {
     $('#modal-container').html(modalHtml);
     const vendaModal = new bootstrap.Modal(document.getElementById('vendaModal'));
     vendaModal.show();
+}
+
+function rotuloOrigemPdv(value) {
+    const v = String(value || '').toUpperCase();
+    if (v === 'PDV_MOBILE' || v === 'MOBILE') return 'PDV Mobile';
+    if (v === 'CONSIGNACAO' || v === 'CONSIGNACAO_PRESTACAO') return 'Consignação';
+    if (v === 'PDV_DESKTOP' || v === 'DESKTOP' || v === 'PDV') return 'PDV Desktop';
+    return v || '—';
 }
 
 function rotuloFormaPagamento(value) {

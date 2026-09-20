@@ -78,6 +78,18 @@ async function run() {
     assert.strictEqual(r.descontoFiscal, 10);
   });
 
+  await test('unidade — inferirDescontoGlobal pelo total líquido', () => {
+    const { inferirDescontoGlobal } = require('../TotalFiscalFinal');
+    assert.strictEqual(
+      inferirDescontoGlobal({ bruto: 100, desconto: 0, totalInformado: 90 }),
+      10
+    );
+    assert.strictEqual(
+      inferirDescontoGlobal({ bruto: 100, desconto: 10, totalInformado: 90 }),
+      10
+    );
+  });
+
   await test('unidade — montarFiscalOperacionalPagamento usa líquido', () => {
     const snap = montarFiscalOperacionalPagamento(
       { totalFiscal: 100, valorFiscalEfetivo: 100, valorFiscalMaximo: 100 },

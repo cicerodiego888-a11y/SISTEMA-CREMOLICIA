@@ -15,7 +15,7 @@ class ConsultarConsignacaoUseCase extends ConsignacaoReadUseCase {
   }
 
   async processar(entrada) {
-    return this._obterConsignacaoOuFalhar(entrada.consignacaoId);
+    return this._obterConsignacaoOuFalhar(entrada.consignacaoId, entrada.clienteId);
   }
 }
 

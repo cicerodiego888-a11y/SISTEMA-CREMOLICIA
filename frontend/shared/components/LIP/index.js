@@ -12,7 +12,8 @@ const {
   highlightTerm,
   groupLipProducts,
   formatCurrency,
-  normalizeLipProduct
+  normalizeLipProduct,
+  filterActiveLipProducts
 } = require('./lipMappers');
 
 const STYLE_ID = 'cds-lip-styles';
@@ -266,7 +267,9 @@ class LIP {
     this.panel.innerHTML = '';
 
     if (this.options.showHistory) {
-      const recent = readRecent(this.options.historyKey).map(normalizeLipProduct);
+      const recent = filterActiveLipProducts(
+        readRecent(this.options.historyKey).map(normalizeLipProduct)
+      );
       if (recent.length) {
         this.panel.appendChild(this._sectionTitle('Últimos produtos utilizados'));
         const chips = document.createElement('div');
@@ -386,7 +389,7 @@ class LIP {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'cds-lip__btn-add';
-    btn.textContent = 'Adicionar';
+    btn.textContent = this.options.addButtonLabel || 'Adicionar';
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       this._selectProduct(product);
