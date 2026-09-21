@@ -12,6 +12,7 @@ const MENSAGENS_HARDENING = Object.freeze({
   ...MENSAGENS,
   PRESTACAO_SALVA: '✓ Prestação salva.',
   PAGAMENTO_REGISTRADO: '✓ Pagamento registrado.',
+  PAGAMENTO_JA_REGISTRADO: 'Pagamento já registrado.',
   EMITINDO_NFCE: 'Emitindo NFC-e...',
   CRIANDO_VENDA: 'Criando Venda Oficial...',
   ENCERRANDO: 'Encerrando Prestação...',
@@ -29,7 +30,13 @@ const MENSAGENS_HARDENING = Object.freeze({
     '⚠ Não foi possível concluir a operação.\nTente novamente ou contate o suporte.',
   STATUS_VAZIO: '—',
   CAMPO_AUSENTE: '—',
-  OPERACAO_EM_ANDAMENTO: 'Operação em andamento...'
+  OPERACAO_EM_ANDAMENTO: 'Operação em andamento...',
+  PRESTACAO_AGUARDE_HIDRATACAO:
+    'Carregando os dados da prestação. Aguarde um momento para continuar.',
+  PRESTACAO_CONSIGNACAO_OFICIAL_AUSENTE:
+    'Não foi possível carregar os dados oficiais da consignação para continuar o fechamento.',
+  PRESTACAO_CONSIGNACAO_NAO_LOCALIZADA:
+    'Não foi possível localizar os dados oficiais desta consignação.'
 });
 
 const PLACEHOLDER_RE = /^(Produto|Cliente|Item)\s*#/i;
@@ -56,6 +63,19 @@ function safeMoney(value) {
 function humanizarErroOperacional(error, contexto = '') {
   const raw = String(error?.message || error || '');
   const upper = raw.toUpperCase();
+
+  if (
+    raw === MENSAGENS_HARDENING.PRESTACAO_AGUARDE_HIDRATACAO
+    || raw === MENSAGENS_HARDENING.PRESTACAO_CONSIGNACAO_OFICIAL_AUSENTE
+    || raw === MENSAGENS_HARDENING.PRESTACAO_CONSIGNACAO_NAO_LOCALIZADA
+  ) {
+    return {
+      mensagem: raw,
+      retryable: true,
+      tipo: 'HIDRATACAO',
+      acaoSugerida: 'Aguardar o carregamento'
+    };
+  }
 
   if (/NCM|CFOP|CST|GTIN|CEST|CADASTRO FISCAL|PRODUTO.*FISCAL/i.test(raw)) {
     return {
@@ -105,6 +125,15 @@ function humanizarErroOperacional(error, contexto = '') {
   }
 
   // Evita vazar stack/códigos brutos
+  if (/Cannot read propert(y|ies) of (null|undefined).*itens/i.test(raw)) {
+    return {
+      mensagem: MENSAGENS_HARDENING.PRESTACAO_AGUARDE_HIDRATACAO,
+      retryable: true,
+      tipo: 'HIDRATACAO',
+      acaoSugerida: 'Aguardar o carregamento'
+    };
+  }
+
   if (/Error:|TypeError|at\s+\w+|SQLITE|SQL\s|HTTP\s*\d{3}/i.test(raw) || raw.length > 180) {
     return {
       mensagem: MENSAGENS_HARDENING.ERRO_GENERICO,
@@ -141,9 +170,13 @@ function motivoBotaoDesabilitado(acao, ctx = {}) {
     podeEncerrarPermissao = true,
     dirty = false,
     situacaoFiscal = '',
-    salvando = false
+    salvando = false,
+    hidratando = false
   } = ctx;
 
+  if (hidratando && acao === 'continuar') {
+    return MENSAGENS_HARDENING.PRESTACAO_AGUARDE_HIDRATACAO;
+  }
   if (loading || emitindo) {
     if (acao === 'emitir') return MENSAGENS_HARDENING.EMITINDO_NFCE;
     if (acao === 'encerrar') return MENSAGENS_HARDENING.ENCERRANDO;

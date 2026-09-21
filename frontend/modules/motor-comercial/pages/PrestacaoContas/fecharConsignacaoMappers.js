@@ -7,7 +7,8 @@
 const { formatDocumento } = require('../../api/helpers');
 const {
   buildFinanceiroFromResumo,
-  labelSituacaoFinanceira
+  labelSituacaoFinanceira,
+  round2
 } = require('./prestacaoFinanceiroSnapshot');
 
 /** STAB-07.1 — fluxo operacional: Retornos → Resumo Final (+ Encerramento pós-sucesso). */
@@ -145,18 +146,51 @@ function calcularTotaisItens(itens = []) {
   }, { vendidos: 0, devolvidos: 0, perdas: 0, cortesias: 0, pendentes: 0 });
 }
 
+/**
+ * Preço congelado do item (RCM-6.1). Nunca chama o Resolver.
+ * Mesma base do backend: item.precoUnitario.
+ */
+function precoSnapshotItem(item = {}) {
+  return Number(
+    item.precoUnitario
+    ?? item.valorUnitario
+    ?? item.preco
+    ?? item.precoVenda
+    ?? 0
+  );
+}
+
+function quantidadeNaturezaItem(item = {}, campo = 'vendido') {
+  if (campo === 'vendido') return Number(item.vendido ?? item.quantidadeVendida ?? 0);
+  if (campo === 'devolvido') return Number(item.devolvido ?? item.quantidadeDevolvida ?? 0);
+  if (campo === 'perdido') {
+    return Number(item.perdido ?? item.quantidadePerdida ?? item.quantidadePerda ?? 0);
+  }
+  if (campo === 'cortesia') return Number(item.cortesia ?? item.quantidadeCortesia ?? 0);
+  return 0;
+}
+
+/**
+ * Regra financeira oficial da Prestação: quantidade × precoUnitario (snapshot).
+ * Igual a RegistrarVenda/Devolucao/Perda/Cortesia no motor comercial.
+ */
+function calcularValorNaturezaItens(itens = [], campo = 'vendido') {
+  return round2((itens || []).reduce((sum, item) => (
+    sum + quantidadeNaturezaItem(item, campo) * precoSnapshotItem(item)
+  ), 0));
+}
+
 function calcularValorVendidoItens(itens = []) {
-  return itens.reduce((sum, item) => {
-    const qtd = Number(item.vendido || item.quantidadeVendida || 0);
-    const preco = Number(
-      item.preco
-      ?? item.precoUnitario
-      ?? item.valorUnitario
-      ?? item.precoVenda
-      ?? 0
-    );
-    return sum + qtd * preco;
-  }, 0);
+  return calcularValorNaturezaItens(itens, 'vendido');
+}
+
+function calcularValoresNaturezaItens(itens = []) {
+  return {
+    valorVendidos: calcularValorNaturezaItens(itens, 'vendido'),
+    valorDevolvidos: calcularValorNaturezaItens(itens, 'devolvido'),
+    valorPerdas: calcularValorNaturezaItens(itens, 'perdido'),
+    valorCortesias: calcularValorNaturezaItens(itens, 'cortesia')
+  };
 }
 
 const LINHA_RETORNO_SELECTOR = '.cds-fechar-consignacao__grade-row--retornos';
@@ -202,9 +236,11 @@ function buildPainelOperacional(itens = []) {
  */
 function buildPainelLateral(resumo = {}, itens = [], financeiro = null) {
   const operacional = buildPainelOperacional(itens);
+  const valores = calcularValoresNaturezaItens(itens);
   const fin = financeiro || buildFinanceiroFromResumo(resumo);
   return {
     ...operacional,
+    ...valores,
     financeiro: fin,
     // chaves oficiais espelhadas para o painel (sem aliases legados)
     valorVenda: fin.valorVenda,
@@ -216,15 +252,15 @@ function buildPainelLateral(resumo = {}, itens = [], financeiro = null) {
 }
 
 /**
- * Preview da grade: quantidades + estimativa de R$ (vendido × preço).
- * SSOT oficial permanece no snapshot; após flush/reload o painel oficial substitui.
- * valorRecebido continua o do servidor (só muda com pagamento registrado).
+ * Preview da grade: quantidades + R$ projetados (qtd local × precoUnitario congelado).
+ * valorRecebido permanece o persistido (só muda com pagamento registrado).
+ * A RECEBER = max(0, total vendido projetado − recebido).
  */
 function buildPainelLateralPreview(resumo = {}, itens = [], financeiro = null) {
   const operacional = buildPainelOperacional(itens);
   const finSsot = financeiro || buildFinanceiroFromResumo(resumo);
-  const estimadoVenda = calcularValorVendidoItens(itens);
-  const valorVenda = Math.max(Number(finSsot.valorVenda || 0), estimadoVenda);
+  const valores = calcularValoresNaturezaItens(itens);
+  const valorVenda = valores.valorVendidos;
   const valorRecebido = Number(finSsot.valorRecebido || 0);
   const fin = buildFinanceiroFromResumo({
     valorVenda,
@@ -232,13 +268,14 @@ function buildPainelLateralPreview(resumo = {}, itens = [], financeiro = null) {
   });
   return {
     ...operacional,
+    ...valores,
     financeiro: fin,
     valorVenda: fin.valorVenda,
     valorRecebido: fin.valorRecebido,
     saldoEmAberto: fin.saldoEmAberto,
     situacaoFinanceira: fin.situacaoFinanceira,
     preview: true,
-    financeiroEstimado: estimadoVenda > Number(finSsot.valorVenda || 0) + 0.01
+    financeiroEstimado: Math.abs(valorVenda - Number(finSsot.valorVenda || 0)) > 0.01
   };
 }
 
@@ -752,7 +789,10 @@ function enriquecerItensPrestacao(itens = [], consignacaoItens = []) {
     if (Number.isFinite(itemId) && itemId > 0) porItemId.set(itemId, ci);
   });
 
-  return itens.map((item, index) => {
+  const presentesItemIds = new Set();
+  const presentesProdutoKeys = new Set();
+
+  const enriquecidos = (itens || []).map((item, index) => {
     const itemId = Number(item.itemId ?? item.id);
     const produtoId = Number(item.produtoId);
     let ref = (Number.isFinite(itemId) && porItemId.get(itemId))
@@ -766,18 +806,28 @@ function enriquecerItensPrestacao(itens = [], consignacaoItens = []) {
       ref = consignacaoItens[0];
     }
 
+    if (Number.isFinite(itemId) && itemId > 0) presentesItemIds.add(itemId);
+    if (Number.isFinite(produtoId) && produtoId > 0) {
+      presentesProdutoKeys.add(`${item.consignacaoId || ref?.consignacaoId || ''}::${produtoId}`);
+    }
+
+    // Entregue físico: consignação (pós-complementação) é a fonte oficial.
+    // Vendido/devolvido/perda/cortesia: grade/projeção prevalecem (digitação do operador).
+    const entregueOficial = ref?.quantidadeEntregue ?? ref?.quantidade
+      ?? item.quantidadeEntregue ?? item.enviado ?? item.quantidade
+      ?? 0;
+
     const merged = mapItemConsignacao({
       ...item,
       ...(ref || {}),
-      // qtds da grade prevalecem sobre o snapshot da consignação
       quantidadeVendida: item.quantidadeVendida ?? item.vendido ?? ref?.quantidadeVendida,
       quantidadeDevolvida: item.quantidadeDevolvida ?? item.devolvido ?? ref?.quantidadeDevolvida,
       quantidadePerdida: item.quantidadePerdida ?? item.quantidadePerda ?? item.perdido
         ?? ref?.quantidadePerdida,
       quantidadeCortesia: item.quantidadeCortesia ?? item.cortesia ?? ref?.quantidadeCortesia,
-      quantidadeEntregue: item.quantidadeEntregue ?? item.enviado ?? item.quantidade
-        ?? ref?.quantidadeEntregue ?? ref?.quantidade,
-      produtoNome: resolverProdutoNome(item) || resolverProdutoNome(ref || {}),
+      quantidadeEntregue: entregueOficial,
+      enviado: entregueOficial,
+      produtoNome: resolverProdutoNome(ref || {}) || resolverProdutoNome(item),
       observacao: item.observacao != null && item.observacao !== ''
         ? item.observacao
         : (ref?.observacao ?? ''),
@@ -786,6 +836,27 @@ function enriquecerItensPrestacao(itens = [], consignacaoItens = []) {
     });
     return syncStatusOperacional(merged);
   });
+
+  // RCM-8.13.4 / complementação: incluir produtos novos ausentes na grade/projeção
+  for (const ci of consignacaoItens || []) {
+    const itemId = Number(ci.id ?? ci.itemId);
+    const produtoId = Number(ci.produtoId);
+    const jaTemItem = Number.isFinite(itemId) && itemId > 0 && presentesItemIds.has(itemId);
+    const chaveProd = `${ci.consignacaoId || ''}::${produtoId}`;
+    const jaTemProduto = Number.isFinite(produtoId) && produtoId > 0
+      && presentesProdutoKeys.has(chaveProd);
+    if (jaTemItem || jaTemProduto) continue;
+
+    enriquecidos.push(syncStatusOperacional(mapItemConsignacao({
+      ...ci,
+      itemId: ci.id ?? ci.itemId,
+      consignacaoId: ci.consignacaoId,
+      quantidadeEntregue: ci.quantidadeEntregue ?? ci.quantidade ?? 0,
+      enviado: ci.quantidadeEntregue ?? ci.quantidade ?? 0
+    })));
+  }
+
+  return enriquecidos;
 }
 
 function buildPayloadOperacao(item = {}, delta = 0, tipo = '') {
@@ -859,7 +930,10 @@ module.exports = {
   formatDate,
   formatDateTime,
   calcularTotaisItens,
+  precoSnapshotItem,
+  calcularValorNaturezaItens,
   calcularValorVendidoItens,
+  calcularValoresNaturezaItens,
   coletarItensComRascunho,
   seletorLinhaRetorno,
   LINHA_RETORNO_SELECTOR,

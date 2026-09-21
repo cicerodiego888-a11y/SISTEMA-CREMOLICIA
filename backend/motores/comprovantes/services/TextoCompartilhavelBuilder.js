@@ -50,8 +50,6 @@ function buildTextoCompartilhavel(snapshot) {
   linhas.push(`Saldo anterior: ${formatMoney(sit.saldoAnterior)}`);
   linhas.push(`Nova remessa: ${formatMoney(sit.novaRemessa)}`);
   linhas.push(`Saldo atual: ${formatMoney(sit.saldoAtual)}`);
-  linhas.push(`Limite: ${formatMoney(sit.limite)}`);
-  linhas.push(`Crédito disponível: ${formatMoney(sit.creditoDisponivel)}`);
   linhas.push(`Consignações abertas: ${sit.consignacoesAbertas ?? 0}`);
   linhas.push(`Valor em aberto: ${formatMoney(sit.valorEmAberto)}`);
   linhas.push(`Status: ${sit.statusComercial || ind.statusCredito || '—'}`);

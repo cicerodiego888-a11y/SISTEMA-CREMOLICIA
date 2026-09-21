@@ -57,7 +57,9 @@ class ProjectionApi {
   }
 
   async obterProjecaoResumoPrestacao(params = {}) {
-    const response = await this.client.get('/projections/resumo-prestacao', { params });
+    const response = await this.client.get('/projections/resumo-prestacao', {
+      params: { ...params, _t: Date.now() }
+    });
     return normalizeResumoPrestacao(unwrapData(response));
   }
 

@@ -45,12 +45,24 @@ function unwrapData(response) {
 
 /**
  * Extrai entidade principal de respostas de Use Case (perfil, consignação).
+ * Preserva payloads compostos RCM-8.7/8.13 (comprovante, entregas, etc.).
  * @param {Object} response
  * @returns {*}
  */
 function unwrapUseCaseData(response) {
   const data = unwrapData(response);
   if (!data || typeof data !== 'object') return data;
+
+  // Complementação / alteração pós-entrega: UI precisa de comprovante + correlationId
+  if (
+    data.comprovante != null
+    || Array.isArray(data.entregas)
+    || Array.isArray(data.itensNovos)
+    || Array.isArray(data.movimentacoes)
+  ) {
+    return data;
+  }
+
   if (data.perfil) return data.perfil;
   if (data.consignacao) return data.consignacao;
   if (data.dados?.perfil) return data.dados.perfil;

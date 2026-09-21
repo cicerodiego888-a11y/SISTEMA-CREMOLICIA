@@ -1730,6 +1730,17 @@ tr.cds-fechar-consignacao__grade-row--retornos > td,
 .cds-retornos-sidebar__metric--venda strong { color: #1d4ed8; }
 .cds-retornos-sidebar__metric--recebido strong { color: #15803d; }
 .cds-retornos-sidebar__metric--saldo strong { color: #c2410c; }
+.cds-retornos-sidebar__metric--receber {
+  border-color: #fdba74;
+  background: #fff7ed;
+}
+.cds-retornos-sidebar__metric--receber span {
+  font-size: 0.78rem;
+  color: #9a3412;
+}
+.cds-retornos-sidebar__metric--receber strong {
+  font-size: 1.35rem;
+}
 .cds-retornos-sidebar__metric--ok strong { color: #15803d; }
 .cds-retornos-sidebar__metric--warn strong { color: #c2410c; }
 .cds-retornos-sidebar__metric--open strong { color: #b45309; }
@@ -1766,6 +1777,17 @@ tr.cds-fechar-consignacao__grade-row--retornos > td,
   margin: 0;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.05rem;
+  text-align: right;
+}
+
+.cds-retornos-sidebar__natureza-valor {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--color-neutral-600, #475569);
 }
 
 .cds-retornos-sidebar__natureza .is-vendidos { color: #1d4ed8; }

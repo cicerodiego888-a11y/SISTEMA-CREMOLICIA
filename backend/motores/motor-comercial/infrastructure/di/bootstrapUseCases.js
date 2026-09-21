@@ -94,6 +94,7 @@ function bootstrapUseCases(container, deps = {}) {
     validarEntregaConsignacaoUseCase: new consignacaoUseCases.ValidarEntregaConsignacaoUseCase(baseDeps),
     registrarEntregaConsignacaoUseCase: new consignacaoUseCases.RegistrarEntregaConsignacaoUseCase(baseDeps),
     registrarEntregaComplementarUseCase: new consignacaoUseCases.RegistrarEntregaComplementarUseCase(baseDeps),
+    registrarAlteracaoPosEntregaUseCase: new consignacaoUseCases.RegistrarAlteracaoPosEntregaUseCase(baseDeps),
     registrarDevolucaoAntesPrestacaoUseCase: new consignacaoUseCases.RegistrarDevolucaoAntesPrestacaoUseCase(baseDeps),
     transferirItensEntreConsignacoesUseCase: new consignacaoUseCases.TransferirItensEntreConsignacoesUseCase(baseDeps),
     abrirPrestacaoUseCase: new consignacaoUseCases.AbrirPrestacaoUseCase(baseDeps),

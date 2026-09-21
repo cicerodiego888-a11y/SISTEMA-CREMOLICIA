@@ -216,12 +216,35 @@ class MotorComercialApi {
   }
 
   /**
-   * RCM-8.7 — Histórico Entrega Original + Complementares (somente leitura).
+   * RCM-8.13 — Alteração Pós-Entrega (delta; novo comprovante completo).
+   */
+  async registrarAlteracaoPosEntrega(id, data = {}) {
+    const response = await this.client.post(
+      `/consignacoes/${id}/alteracao-pos-entrega`,
+      this._withUsuario(data),
+      { timeout: 120000 }
+    );
+    return unwrapUseCaseData(response);
+  }
+
+  /**
+   * RCM-8.7/8.13 — Histórico de entregas / atualizações (somente leitura).
    */
   async consultarEntregasConsignacao(id, params = {}) {
     const response = await this.client.get(`/consignacoes/${id}/entregas`, {
       params: { ...params, _t: Date.now() }
     });
+    return unwrapData(response);
+  }
+
+  /**
+   * RCM-8.13 — Reimpressão de comprovante histórico (sem efeitos).
+   */
+  async obterComprovanteEntregaHistorico(id, correlationId) {
+    const response = await this.client.get(
+      `/consignacoes/${id}/entregas/${encodeURIComponent(correlationId)}/comprovante`,
+      { params: { _t: Date.now() } }
+    );
     return unwrapData(response);
   }
 
@@ -360,14 +383,20 @@ class MotorComercialApi {
     return unwrapData(response);
   }
 
-  async registrarPagamento(id, data = {}) {
+  async registrarPagamento(id, data = {}, options = {}) {
     const payload = {
       ...data,
       valor: Number(String(data.valor ?? '').replace(',', '.')),
       formaPagamento: data.formaPagamento || 'DINHEIRO',
       observacao: data.observacao || null
     };
-    const response = await this.client.post(`/consignacoes/${id}/prestacao/pagamento`, this._withUsuario(payload));
+    const headers = options.headers || data.headers || {};
+    delete payload.headers;
+    const response = await this.client.post(
+      `/consignacoes/${id}/prestacao/pagamento`,
+      this._withUsuario(payload),
+      { headers }
+    );
     return unwrapData(response);
   }
 

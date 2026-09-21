@@ -606,6 +606,11 @@ class FecharConsignacaoView {
     });
   }
 
+  static _htmlNaturezaDd(qtyKey, qty, valor) {
+    return `<strong data-painel="${qtyKey}">${qty ?? 0}</strong>`
+      + `<span data-painel="valor${qtyKey.charAt(0).toUpperCase()}${qtyKey.slice(1)}" class="cds-retornos-sidebar__natureza-valor">${formatCurrency(valor || 0)}</span>`;
+  }
+
   static _situacaoSidebarTone(codigo = '') {
     const key = String(codigo || '').toUpperCase();
     if (key === 'QUITADA' || key === 'SEM_VENDA') return 'ok';
@@ -621,7 +626,6 @@ class FecharConsignacaoView {
       || labelSituacaoFinanceira(fin.situacaoFinanceira)
       || '—';
     const tone = FecharConsignacaoView._situacaoSidebarTone(fin.situacaoFinanceira);
-    const semVenda = _isSemVenda(fin);
 
     const aside = document.createElement('aside');
     aside.className = 'cds-op-card cds-retornos-sidebar cds-fechar-consignacao__painel';
@@ -629,20 +633,18 @@ class FecharConsignacaoView {
     aside.innerHTML = `
       <h3 class="cds-op-card__titulo">Resumo Financeiro</h3>
       <div class="cds-retornos-sidebar__fin">
-        ${semVenda ? '' : `
         <div class="cds-retornos-sidebar__metric cds-retornos-sidebar__metric--venda">
-          <span>Valor da Venda</span>
+          <span>Total vendido</span>
           <strong data-painel="valorVenda">${formatCurrency(fin.valorVenda)}</strong>
         </div>
         <div class="cds-retornos-sidebar__metric cds-retornos-sidebar__metric--recebido">
           <span>Recebido</span>
           <strong data-painel="valorRecebido">${formatCurrency(fin.valorRecebido)}</strong>
         </div>
-        <div class="cds-retornos-sidebar__metric cds-retornos-sidebar__metric--saldo">
-          <span>Saldo em Aberto</span>
+        <div class="cds-retornos-sidebar__metric cds-retornos-sidebar__metric--saldo cds-retornos-sidebar__metric--receber">
+          <span>A receber</span>
           <strong data-painel="saldoEmAberto">${formatCurrency(fin.saldoEmAberto)}</strong>
         </div>
-        `}
         <div class="cds-retornos-sidebar__metric cds-retornos-sidebar__metric--sit cds-retornos-sidebar__metric--${tone}">
           <span>Situação Financeira</span>
           <strong data-painel="situacaoFinanceira">${safeText(situacaoLabel)}</strong>
@@ -650,11 +652,26 @@ class FecharConsignacaoView {
       </div>
       <h4 class="cds-retornos-sidebar__natureza-title">Resumo por natureza</h4>
       <dl class="cds-retornos-sidebar__natureza">
-        <div><dt>Vendidos</dt><dd data-painel="vendidos" class="is-vendidos">${painel.produtosVendidos ?? 0}</dd></div>
-        <div><dt>Devolvidos</dt><dd data-painel="devolvidos" class="is-devolvidos">${painel.produtosDevolvidos ?? 0}</dd></div>
-        <div><dt>Perdas</dt><dd data-painel="perdas" class="is-perdas">${painel.perdas ?? 0}</dd></div>
-        <div><dt>Cortesias</dt><dd data-painel="cortesias" class="is-cortesias">${painel.cortesias ?? 0}</dd></div>
-        <div><dt>Saldo</dt><dd data-painel="pendentes" class="is-saldo">${painel.pendentes ?? 0}</dd></div>
+        <div>
+          <dt>Vendidos</dt>
+          <dd class="is-vendidos">${FecharConsignacaoView._htmlNaturezaDd('vendidos', painel.produtosVendidos, painel.valorVendidos)}</dd>
+        </div>
+        <div>
+          <dt>Devolvidos</dt>
+          <dd class="is-devolvidos">${FecharConsignacaoView._htmlNaturezaDd('devolvidos', painel.produtosDevolvidos, painel.valorDevolvidos)}</dd>
+        </div>
+        <div>
+          <dt>Perdas</dt>
+          <dd class="is-perdas">${FecharConsignacaoView._htmlNaturezaDd('perdas', painel.perdas, painel.valorPerdas)}</dd>
+        </div>
+        <div>
+          <dt>Cortesias</dt>
+          <dd class="is-cortesias">${FecharConsignacaoView._htmlNaturezaDd('cortesias', painel.cortesias, painel.valorCortesias)}</dd>
+        </div>
+        <div>
+          <dt>Saldo</dt>
+          <dd class="is-saldo"><strong data-painel="pendentes">${painel.pendentes ?? 0}</strong></dd>
+        </div>
       </dl>
     `;
 
@@ -717,33 +734,34 @@ class FecharConsignacaoView {
     if (!asideEl || !painel) return;
     const fin = (painel.preview && painel.financeiro)
       ? painel.financeiro
-      : (state.snapshot?.financeiro || painel.financeiro || {});
+      : (painel.financeiro || state.snapshot?.financeiro || {});
     const situacaoLabel = labelSituacaoFinanceiraOficial(fin.situacaoFinanceira)
       || labelSituacaoFinanceira(fin.situacaoFinanceira)
       || '—';
-    const semVenda = _isSemVenda(fin);
     const fields = {
       vendidos: String(painel.produtosVendidos ?? 0),
       devolvidos: String(painel.produtosDevolvidos ?? 0),
       perdas: String(painel.perdas ?? 0),
       cortesias: String(painel.cortesias ?? 0),
       pendentes: String(painel.pendentes ?? 0),
+      valorVendidos: formatCurrency(painel.valorVendidos ?? 0),
+      valorDevolvidos: formatCurrency(painel.valorDevolvidos ?? 0),
+      valorPerdas: formatCurrency(painel.valorPerdas ?? 0),
+      valorCortesias: formatCurrency(painel.valorCortesias ?? 0),
+      valorVenda: formatCurrency(fin.valorVenda),
+      valorRecebido: formatCurrency(fin.valorRecebido),
+      saldoEmAberto: formatCurrency(fin.saldoEmAberto),
       situacaoFinanceira: situacaoLabel
     };
-    if (!semVenda) {
-      fields.valorVenda = formatCurrency(fin.valorVenda);
-      fields.valorRecebido = formatCurrency(fin.valorRecebido);
-      fields.saldoEmAberto = formatCurrency(fin.saldoEmAberto);
-    }
     Object.entries(fields).forEach(([key, value]) => {
       const el = asideEl.querySelector(`[data-painel="${key}"]`);
       if (el) el.textContent = value;
     });
     ['valorVenda', 'valorRecebido', 'saldoEmAberto'].forEach((key) => {
       const metric = asideEl.querySelector(`[data-painel="${key}"]`)?.closest('.cds-retornos-sidebar__metric');
-      if (metric) metric.hidden = semVenda;
+      if (metric) metric.hidden = false;
       const legacy = asideEl.querySelector(`[data-painel="${key}"]`)?.closest('.cds-fechar-consignacao__painel-campo');
-      if (legacy) legacy.hidden = semVenda;
+      if (legacy) legacy.hidden = false;
     });
 
     const sitMetric = asideEl.querySelector('.cds-retornos-sidebar__metric--sit');

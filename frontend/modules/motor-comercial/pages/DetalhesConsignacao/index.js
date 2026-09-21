@@ -146,9 +146,14 @@ class DetalhesConsignacaoPage {
     const check = podeAdicionarProdutoComplementar(this.consignacao);
     if (check.elegivel) {
       bar.appendChild(Button.create({
-        text: '+ Adicionar produto',
+        text: 'Ent. Complementar',
         variant: 'primary',
         onClick: () => this._abrirEntregaComplementar()
+      }));
+      bar.appendChild(Button.create({
+        text: 'Alterar Entrega',
+        variant: 'ghost',
+        onClick: () => this._abrirAlterarEntrega()
       }));
     }
 
@@ -222,6 +227,18 @@ class DetalhesConsignacaoPage {
     }
     await navigate(routeWithActiveContext(
       `/consignacoes/${this.consignacaoId}/entrega-complementar`,
+      this.navigationContext
+    ));
+  }
+
+  async _abrirAlterarEntrega() {
+    const check = podeAdicionarProdutoComplementar(this.consignacao);
+    if (!check.elegivel) {
+      notify(check.mensagem || MENSAGEM_PRESTACAO_ENCERRADA, 'warning');
+      return;
+    }
+    await navigate(routeWithActiveContext(
+      `/consignacoes/${this.consignacaoId}/alterar-entrega`,
       this.navigationContext
     ));
   }

@@ -505,7 +505,9 @@ async function main() {
     assert.strictEqual(historico.length, 2);
     assert.strictEqual(historico[0].tipo, 'ORIGINAL');
     assert.strictEqual(historico[1].tipo, 'COMPLEMENTAR');
-    assert.match(historico[1].label, /Complementar 01/);
+    assert.strictEqual(historico[0].numeroComprovante, '001');
+    assert.strictEqual(historico[1].numeroComprovante, '002');
+    assert.match(historico[1].label, /Complementar 002/);
   });
 
   await test('17-18. visualização/reimpressão não geram efeitos (somente leitura)', async () => {

@@ -7,6 +7,8 @@
  * @module frontend/modules/motor-comercial/pages/PrestacaoContas/prestacaoFinanceiroSnapshot
  */
 
+const { resolverTimestampOperacional } = require('../../utils/timestampOperacional');
+
 const SITUACAO = Object.freeze({
   SEM_VENDA: 'SEM_VENDA',
   QUITADA: 'QUITADA',
@@ -80,7 +82,9 @@ function buildPagamentosHistorico(historico = []) {
       const snap = mov.snapshot || {};
       return {
         id: mov.id || null,
-        data: mov.createdAt || mov.dataHora || mov.data || snap.dataHora || null,
+        data: resolverTimestampOperacional(mov)
+          || resolverTimestampOperacional({ dataMovimentacao: snap.dataHora, createdAt: mov.createdAt })
+          || null,
         forma: mov.formaPagamento
           || snap.formaPagamento
           || snap.operacaoMeta?.formaPagamento

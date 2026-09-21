@@ -80,9 +80,6 @@ function buildLinhasLayoutImpressao(snapshot) {
   linhas.push(padDots('Saldo Anterior', `R$ ${formatMoney(sit.saldoAnterior)}`));
   linhas.push(padDots('Saldo Atual', `R$ ${formatMoney(sit.saldoAtual)}`));
   linhas.push('');
-  linhas.push(padDots('Limite', `R$ ${formatMoney(sit.limite)}`));
-  linhas.push(padDots('Crédito Disponível', `R$ ${formatMoney(sit.creditoDisponivel)}`));
-  linhas.push('');
   linhas.push('════════════════════════════════════════');
   linhas.push('OBSERVAÇÕES');
   linhas.push('');
@@ -500,10 +497,6 @@ function buildHtmlComprovante(snapshot) {
   <div class="fin-block">
     <div class="fin-line"><span class="lbl">Saldo Anterior</span><span class="val">R$ ${esc(formatMoney(sit.saldoAnterior))}</span></div>
     <div class="fin-line"><span class="lbl">Saldo Atual</span><span class="val">R$ ${esc(formatMoney(sit.saldoAtual))}</span></div>
-  </div>
-  <div class="fin-block">
-    <div class="fin-line"><span class="lbl">Limite</span><span class="val">R$ ${esc(formatMoney(sit.limite))}</span></div>
-    <div class="fin-line"><span class="lbl">Crédito Disponível</span><span class="val">R$ ${esc(formatMoney(sit.creditoDisponivel))}</span></div>
   </div>
 
   <hr class="rule"/>

@@ -374,8 +374,21 @@ function obterItensRecoveryConsignacao(consignacaoId) {
   }
 }
 
+const ERRO_CONSIGNACAO_OFICIAL_NAO_LOCALIZADA =
+  'Não foi possível localizar os dados oficiais desta consignação.';
+
+function consignacaoOficialValida(consignacao) {
+  return consignacao != null
+    && consignacao.id != null
+    && consignacao.id !== '';
+}
+
 async function carregarConsignacaoCompleta(api, projectionApi, consignacaoId) {
-  const consignacao = await api.obterConsignacao(consignacaoId);
+  const cabecalho = await api.obterConsignacao(consignacaoId);
+  if (!consignacaoOficialValida(cabecalho)) {
+    throw new Error(ERRO_CONSIGNACAO_OFICIAL_NAO_LOCALIZADA);
+  }
+  const consignacao = cabecalho;
   let perfil = null;
   let situacao = null;
   let resumo = null;
@@ -463,6 +476,8 @@ module.exports = {
   cacheItensConsignacao,
   obterItensCacheConsignacao,
   carregarConsignacaoCompleta,
+  consignacaoOficialValida,
+  ERRO_CONSIGNACAO_OFICIAL_NAO_LOCALIZADA,
   withLoading,
   isOperadorAutorizado,
   possuiPermissao,

@@ -108,7 +108,9 @@ router.delete('/consignacoes/:id/itens/:item', rota('consignacao', 'removerItem'
 
 router.post('/consignacoes/:id/entrega', rota('consignacao', 'registrarEntrega'));
 router.post('/consignacoes/:id/entrega-complementar', rota('consignacao', 'registrarEntregaComplementar'));
+router.post('/consignacoes/:id/alteracao-pos-entrega', rota('consignacao', 'registrarAlteracaoPosEntrega'));
 router.get('/consignacoes/:id/entregas', rota('consignacao', 'consultarEntregas'));
+router.get('/consignacoes/:id/entregas/:correlationId/comprovante', rota('consignacao', 'obterComprovanteEntrega'));
 router.get('/consignacoes/:id/comprovante', rota('consignacao', 'obterComprovante'));
 router.post('/consignacoes/:id/comprovante/acoes', rota('consignacao', 'registrarAcaoComprovante'));
 router.post('/consignacoes/:id/termo-entrega', rota('consignacao', 'registrarEmissaoTermoEntrega'));

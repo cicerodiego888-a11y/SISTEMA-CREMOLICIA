@@ -394,10 +394,12 @@ class EntregaComplementarPage {
   async _confirmar() {
     if (!this.itensNovos.length || this.confirmando) return;
     const ok = await confirmDialog({
-      title: 'Confirmar Entrega Complementar',
-      message: `Confirma a complementação de ${this.itensNovos.length} produto(s) `
-        + `(${formatCurrency(totalItensComplementares(this.itensNovos))})?\n\n`
-        + 'Somente os novos itens serão movimentados no estoque e no Ledger.'
+      title: 'Confirmar complementação',
+      message: 'Esta complementação será adicionada à consignação.\n'
+        + 'A entrega anterior será preservada e um novo comprovante atualizado será emitido.\n\n'
+        + `${this.itensNovos.length} produto(s) · ${formatCurrency(totalItensComplementares(this.itensNovos))}`,
+      confirmLabel: 'Confirmar complementação',
+      cancelLabel: 'Voltar'
     });
     if (!ok) return;
 
@@ -426,15 +428,40 @@ class EntregaComplementarPage {
           : 'Entrega complementar confirmada.',
         'success'
       );
+
+      // RCM-8.13.4 — mesmo mecanismo oficial (Prestação / Detalhes / Central)
+      try {
+        const {
+          emitirComprovanteAposOperacaoEntrega
+        } = require('../../services/comprovanteAtualizadoEntrega');
+        await emitirComprovanteAposOperacaoEntrega({
+          api: this.api,
+          consignacaoId: this.consignacaoId,
+          consignacao: this.consignacao,
+          resultado
+        });
+      } catch (_e) {
+        /* não bloqueia o fluxo operacional */
+      }
+
       this.itensNovos = [];
       const retorno = String(
         this.routeQuery?.retorno || this.routeQuery?.voltarPara || ''
       ).toLowerCase();
-      const destino = retorno === 'prestacao'
-        ? `/consignacoes/${this.consignacaoId}/prestacao`
-        : `/consignacoes/${this.consignacaoId}`;
+      if (retorno === 'prestacao') {
+        const path = routeWithActiveContext(
+          `/consignacoes/${this.consignacaoId}/prestacao`,
+          this.navigationContext,
+          { aposComplementar: '1', _t: String(Date.now()) }
+        );
+        const url = path.includes('aposComplementar=')
+          ? path
+          : `${path}${path.includes('?') ? '&' : '?'}aposComplementar=1&_t=${Date.now()}`;
+        await navigate(url);
+        return;
+      }
       await navigate(routeWithActiveContext(
-        destino,
+        `/consignacoes/${this.consignacaoId}`,
         this.navigationContext
       ));
     } catch (error) {

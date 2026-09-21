@@ -125,9 +125,31 @@ function listarPendenciasFromBaseline(baseline = [], stateItens = [], { indices 
 /**
  * Preserva campos dirty do state ao mesclar resposta do servidor.
  */
+function _espelharQtyOficial(item, campo, value) {
+  const n = Number(value || 0);
+  item[campo] = n;
+  if (campo === 'vendido') item.quantidadeVendida = n;
+  if (campo === 'devolvido') item.quantidadeDevolvida = n;
+  if (campo === 'perdido') {
+    item.quantidadePerdida = n;
+    item.quantidadePerda = n;
+  }
+  if (campo === 'cortesia') item.quantidadeCortesia = n;
+  return item;
+}
+
+function _acharItemEstado(serverItem, index, stateItens = []) {
+  const key = itemKey(serverItem);
+  if (key) {
+    const byKey = (stateItens || []).find((p) => itemKey(p) === key);
+    if (byKey) return byKey;
+  }
+  return stateItens[index];
+}
+
 function mesclarServidorPreservandoDirty(servidorItens = [], stateItens = []) {
   return (servidorItens || []).map((serverItem, index) => {
-    const prev = stateItens[index];
+    const prev = _acharItemEstado(serverItem, index, stateItens);
     if (!prev || !itemEstaDirty(prev)) {
       const clean = {
         ...serverItem,
@@ -142,10 +164,12 @@ function mesclarServidorPreservandoDirty(servidorItens = [], stateItens = []) {
     const merged = { ...serverItem };
     CAMPOS_QTY.forEach((campo) => {
       if (prev.dirtyCampos?.[campo]) {
-        merged[campo] = Number(prev[campo] || 0);
+        _espelharQtyOficial(merged, campo, prev[campo]);
       }
     });
-    if (prev.observacao != null) merged.observacao = prev.observacao;
+    if (prev.dirtyCampos?.observacao || prev.observacao != null) {
+      merged.observacao = prev.observacao;
+    }
     merged.dirty = true;
     merged.dirtyCampos = { ...(prev.dirtyCampos || {}) };
     return syncStatusOperacional(merged);

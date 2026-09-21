@@ -114,7 +114,16 @@ class RegistrarEntregaConsignacaoUseCase extends ConsignacaoWriteUseCase {
           snapshot: {
             ...criarSnapshotConsignacao(consignacaoCiclo, { operacao: 'ENTREGA' }),
             documento: consignacaoCiclo.documento,
-            item: { id: item.id, produtoId: item.produtoId, quantidade: item.quantidadeEntregue },
+            item: {
+              id: item.id,
+              produtoId: item.produtoId,
+              produtoNome: item.produtoNome || item.produto || null,
+              quantidade: item.quantidadeEntregue,
+              quantidadeAnterior: 0,
+              delta: Number(item.quantidadeEntregue) || 0,
+              quantidadeAtual: Number(item.quantidadeEntregue) || 0,
+              precoUnitario: Number(item.precoUnitario) || 0
+            },
             liberacaoGerencial: liberacaoOk ? {
               autorizado: true,
               autorizadoPor: liberacaoGerencial.autorizadoPor || null,

@@ -8,6 +8,7 @@ const EVENTOS_DOMINIO = Object.freeze({
   CONSIGNACAO_CRIADA: 'ConsignacaoCriada',
   CONSIGNACAO_ENTREGUE: 'ConsignacaoEntregue',
   CONSIGNACAO_ENTREGA_COMPLEMENTAR: 'ConsignacaoEntregaComplementar',
+  CONSIGNACAO_ALTERACAO_POS_ENTREGA: 'ConsignacaoAlteracaoPosEntrega',
   CONSIGNACAO_DEVOLVIDA: 'ConsignacaoDevolvida',
   ITENS_TRANSFERIDOS_ENTRE_CONSIGNACOES: 'ItensTransferidosEntreConsignacoes',
   RECEBIMENTO_CONSIGNACAO_CONFIRMADO: 'RecebimentoConsignacaoConfirmado',

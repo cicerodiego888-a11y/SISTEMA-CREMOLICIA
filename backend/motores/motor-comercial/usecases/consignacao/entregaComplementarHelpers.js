@@ -59,105 +59,17 @@ function avaliarElegibilidadeEntregaComplementar(consignacao) {
 }
 
 /**
- * Agrupa movimentações ENTREGA por correlationId (evento de entrega).
+ * Agrupa movimentações ENTREGA / ALTERAÇÃO por correlationId (evento de entrega).
+ * RCM-8.13 — numeração 001/002/003 + comprovante completo por evento.
  * @param {Object[]} movimentacoes
  * @param {Object[]} [itens]
- * @returns {Array<{
- *   tipo: 'ORIGINAL'|'COMPLEMENTAR',
- *   sequencia: number,
- *   label: string,
- *   correlationId: string|null,
- *   dataHora: string|null,
- *   valorTotal: number,
- *   itens: Object[],
- *   usuarioId: string|null
- * }>}
+ * @returns {Array<Object>}
  */
 function montarHistoricoEntregas(movimentacoes = [], itens = []) {
-  const itensById = new Map(
-    (itens || []).map((item) => [String(item.id), item])
-  );
-
-  const entregas = (movimentacoes || []).filter((mov) => {
-    const tipo = String(mov.tipoMovimentacao || mov.tipo || '').toUpperCase();
-    return tipo === 'ENTREGA';
-  });
-
-  const grupos = new Map();
-  for (const mov of entregas) {
-    const key = String(mov.correlationId || mov.id || `mov-${grupos.size}`);
-    if (!grupos.has(key)) grupos.set(key, []);
-    grupos.get(key).push(mov);
-  }
-
-  const ordenados = [...grupos.entries()].sort((a, b) => {
-    const ta = _ts(a[1][0]);
-    const tb = _ts(b[1][0]);
-    return ta - tb;
-  });
-
-  let seqComplementar = 0;
-  return ordenados.map((entry, index) => {
-    const [correlationId, movs] = entry;
-    const snapOp = String(
-      movs[0]?.snapshot?.contexto?.operacao
-      || movs[0]?.snapshot?.operacao
-      || ''
-    ).toUpperCase();
-    const isComplementar = snapOp === OPERACAO_ENTREGA_COMPLEMENTAR
-      || (index > 0 && snapOp !== OPERACAO_ENTREGA_ORIGINAL);
-
-    if (isComplementar) seqComplementar += 1;
-    const sequencia = isComplementar ? seqComplementar : 0;
-    const label = isComplementar
-      ? `Entrega Complementar ${String(sequencia).padStart(2, '0')}`
-      : 'Entrega Original';
-
-    const itensEvento = movs.map((mov) => {
-      const itemId = mov.consignacaoItemId || mov.snapshot?.item?.id;
-      const item = itemId != null ? itensById.get(String(itemId)) : null;
-      return {
-        itemId: itemId ?? null,
-        produtoId: item?.produtoId
-          ?? mov.snapshot?.item?.produtoId
-          ?? mov.produtoId
-          ?? null,
-        produtoNome: item?.produtoNome || item?.produto || null,
-        quantidade: Number(mov.quantidade ?? item?.quantidadeEntregue ?? 0),
-        precoUnitario: Number(item?.precoUnitario ?? mov.snapshot?.item?.precoUnitario ?? 0),
-        valor: Number(mov.valor ?? 0),
-        unidadeComercial: item?.unidadeComercial || null,
-        linhaComercialId: item?.linhaComercialId ?? null,
-        tabelaPrecoId: item?.tabelaPrecoId ?? null,
-        canalVenda: item?.canalVenda || null,
-        precoOrigem: item?.precoOrigem || null,
-        precoFallback: item?.precoFallback ?? null
-      };
-    });
-
-    const valorTotal = itensEvento.reduce((s, i) => s + Number(i.valor || 0), 0);
-    const dataHora = movs[0]?.createdAt
-      || movs[0]?.dataHora
-      || movs[0]?.snapshot?.capturadoEm
-      || null;
-
-    return {
-      tipo: isComplementar ? 'COMPLEMENTAR' : 'ORIGINAL',
-      sequencia,
-      label,
-      correlationId: correlationId === 'sem-correlation' ? null : correlationId,
-      dataHora,
-      valorTotal,
-      itens: itensEvento,
-      usuarioId: movs[0]?.usuarioId || null
-    };
-  });
-}
-
-function _ts(mov) {
-  const raw = mov?.createdAt || mov?.dataHora || mov?.snapshot?.capturadoEm;
-  const t = raw ? new Date(raw).getTime() : 0;
-  return Number.isFinite(t) ? t : 0;
+  const {
+    montarHistoricoEntregasAtualizado
+  } = require('./atualizacaoEntregaHelpers');
+  return montarHistoricoEntregasAtualizado(movimentacoes, itens);
 }
 
 /**

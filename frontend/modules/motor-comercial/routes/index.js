@@ -69,6 +69,15 @@ const routes = [
     }
   },
   {
+    path: '/consignacoes/:id/alterar-entrega',
+    name: 'alterar-entrega',
+    component: 'AlterarEntrega',
+    meta: {
+      title: 'Alterar Entrega',
+      requiresAuth: true
+    }
+  },
+  {
     path: '/consignacoes/:id/comprovante',
     name: 'comprovante-entrega',
     component: 'ComprovanteEntrega',

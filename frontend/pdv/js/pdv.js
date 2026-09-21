@@ -28,6 +28,232 @@ let _recalcCanalBusy = false;
 let _recalcCanalPending = false;
 let _recalcCanalSkip = false;
 let comercialStatusCardPdv = null;
+/** RCM-8.14 — evita loop salvar↔restaurar durante restauração do rascunho */
+let _pdvRascunhoRestaurando = false;
+let _pdvRascunhoJaOferecido = false;
+/** RCM-8.14.2 — enquanto true, bootstrap NÃO pode apagar rascunho persistido */
+let _pdvRascunhoBootstrapPendente = true;
+
+function obterApiRascunhoVendaPdv() {
+    return (typeof window !== 'undefined' && window.PdvRascunhoVenda)
+        ? window.PdvRascunhoVenda
+        : null;
+}
+
+function obterContextoRascunhoVendaPdv() {
+    let terminal = '';
+    try {
+        terminal = String(
+            (typeof terminalHostname === 'string' && terminalHostname)
+            || (typeof sessionStorage !== 'undefined' && sessionStorage.getItem('cds_estacao_hostname'))
+            || ''
+        ).trim();
+    } catch (_e) {
+        terminal = '';
+    }
+    let usuarioId = null;
+    try {
+        const user = JSON.parse(localStorage.getItem('user') || localStorage.getItem('usuario') || '{}');
+        usuarioId = user.id != null ? user.id : null;
+    } catch (_e) {
+        usuarioId = null;
+    }
+    return { terminal: terminal || 'sem-terminal', usuarioId };
+}
+
+function capturarEstadoRascunhoVendaPdv() {
+    return {
+        carrinho: Array.isArray(carrinho) ? carrinho : [],
+        clienteSelecionado,
+        formaPagamentoSelecionada: formaPagamentoSelecionadaPDV
+            || formaPagamentoSelecionada
+            || ($('#formaPagamentoPdv').val() || null),
+        vendaPrazoInfo,
+        canalVendaPdv,
+        canalManualForcadoPdv,
+        pdvEmitirFiscalNaVenda,
+        desconto: typeof parseDecimalPdv === 'function'
+            ? parseDecimalPdv($('#descontoPdv').val())
+            : (parseFloat($('#descontoPdv').val()) || 0),
+        acrescimo: typeof parseDecimalPdv === 'function'
+            ? parseDecimalPdv($('#acrescimoPdv').val())
+            : (parseFloat($('#acrescimoPdv').val()) || 0)
+    };
+}
+
+function persistirRascunhoVendaPdv() {
+    if (_pdvRascunhoRestaurando) return false;
+    const api = obterApiRascunhoVendaPdv();
+    if (!api || typeof api.salvarRascunhoVendaPdv !== 'function') return false;
+    try {
+        // RCM-8.14.2 — durante bootstrap NÃO apagar rascunho existente
+        const opts = _pdvRascunhoBootstrapPendente
+            ? { permitirRemoverSeVazio: false }
+            : undefined;
+        // Durante bootstrap, também evita gravar estado vazio por engano
+        if (_pdvRascunhoBootstrapPendente) {
+            const estado = capturarEstadoRascunhoVendaPdv();
+            const temItens = Array.isArray(estado.carrinho) && estado.carrinho.length > 0;
+            const temCliente = !!(estado.clienteSelecionado && estado.clienteSelecionado.id != null);
+            const temAjuste = Number(estado.desconto) > 0 || Number(estado.acrescimo) > 0;
+            if (!temItens && !temCliente && !temAjuste) {
+                return false;
+            }
+        }
+        return api.salvarRascunhoVendaPdv(
+            capturarEstadoRascunhoVendaPdv(),
+            obterContextoRascunhoVendaPdv(),
+            opts
+        );
+    } catch (_e) {
+        return false;
+    }
+}
+
+function finalizarBootstrapRascunhoVendaPdv() {
+    _pdvRascunhoBootstrapPendente = false;
+}
+
+function limparRascunhoVendaPdvPersistido() {
+    const api = obterApiRascunhoVendaPdv();
+    if (!api || typeof api.limparRascunhoVendaPdv !== 'function') return false;
+    try {
+        return api.limparRascunhoVendaPdv(obterContextoRascunhoVendaPdv());
+    } catch (_e) {
+        return false;
+    }
+}
+
+function aplicarRascunhoVendaPdvNoEstado(rascunho) {
+    if (!rascunho || typeof rascunho !== 'object') return false;
+    carrinho = Array.isArray(rascunho.carrinho)
+        ? rascunho.carrinho.map((item) => ({ ...item }))
+        : [];
+    clienteSelecionado = rascunho.clienteSelecionado
+        ? { ...rascunho.clienteSelecionado }
+        : null;
+    formaPagamentoSelecionada = rascunho.formaPagamentoSelecionada || null;
+    formaPagamentoSelecionadaPDV = rascunho.formaPagamentoSelecionada || null;
+    vendaPrazoInfo = rascunho.vendaPrazoInfo ? { ...rascunho.vendaPrazoInfo } : null;
+    canalVendaPdv = rascunho.canalVendaPdv || 'VAREJO';
+    canalManualForcadoPdv = rascunho.canalManualForcadoPdv || null;
+    pdvEmitirFiscalNaVenda = rascunho.pdvEmitirFiscalNaVenda === true
+        ? true
+        : (rascunho.pdvEmitirFiscalNaVenda === false ? false : null);
+
+    $('#descontoPdv').val(Number(rascunho.desconto) || 0);
+    $('#acrescimoPdv').val(Number(rascunho.acrescimo) || 0);
+    if (rascunho.formaPagamentoSelecionada) {
+        $('#formaPagamentoPdv').val(rascunho.formaPagamentoSelecionada);
+    }
+
+    if (clienteSelecionado && clienteSelecionado.nome) {
+        $('#clienteSelecionado').show();
+        $('#clienteSelecionadoNome').text(
+            `${clienteSelecionado.nome}${clienteSelecionado.cpf_cnpj ? ' - ' + formatarCpfCnpj(clienteSelecionado.cpf_cnpj) : ''}`
+        );
+        $('#clienteBusca').val(clienteSelecionado.nome);
+    } else {
+        $('#clienteSelecionado').hide();
+        $('#clienteSelecionadoNome').text('');
+        $('#clienteBusca').val('');
+    }
+
+    if (typeof atualizarBadgeCanalVendaPdv === 'function') {
+        atualizarBadgeCanalVendaPdv(canalVendaPdv);
+    }
+    if (typeof aoAlterarFormaPagamento === 'function') {
+        aoAlterarFormaPagamento();
+    }
+
+    // aoAlterarFormaPagamento/limparCamposPrazo podem limpar cliente — reaplicar
+    if (rascunho.clienteSelecionado) {
+        clienteSelecionado = { ...rascunho.clienteSelecionado };
+        $('#clienteSelecionado').show();
+        $('#clienteSelecionadoNome').text(
+            `${clienteSelecionado.nome || ''}${clienteSelecionado.cpf_cnpj ? ' - ' + formatarCpfCnpj(clienteSelecionado.cpf_cnpj) : ''}`
+        );
+        $('#clienteBusca').val(clienteSelecionado.nome || '');
+    }
+
+    return true;
+}
+
+function perguntarRestaurarRascunhoVendaPdv(rascunho) {
+    const api = obterApiRascunhoVendaPdv();
+    const resumo = api && typeof api.resumoRascunho === 'function'
+        ? api.resumoRascunho(rascunho)
+        : {
+            quantidadeItens: Array.isArray(rascunho?.carrinho) ? rascunho.carrinho.length : 0,
+            total: 0,
+            clienteNome: rascunho?.clienteSelecionado?.nome || null
+        };
+
+    const totalFmt = (typeof formatCurrency === 'function')
+        ? formatCurrency(resumo.total)
+        : `R$ ${Number(resumo.total || 0).toFixed(2)}`;
+
+    const linhas = [
+        'Venda em andamento encontrada.',
+        '',
+        `${resumo.quantidadeItens} produto(s)`,
+        `Total: ${totalFmt}`
+    ];
+    if (resumo.clienteNome) {
+        linhas.push(`Cliente: ${resumo.clienteNome}`);
+    }
+    linhas.push('');
+    linhas.push('OK = CONTINUAR VENDA');
+    linhas.push('Cancelar = DESCARTAR VENDA');
+
+    try {
+        return Promise.resolve(window.confirm(linhas.join('\n')));
+    } catch (_e) {
+        return Promise.resolve(true);
+    }
+}
+
+async function tentarRestaurarRascunhoVendaPdv() {
+    if (_pdvRascunhoJaOferecido) return false;
+    const api = obterApiRascunhoVendaPdv();
+    if (!api || typeof api.restaurarRascunhoVendaPdv !== 'function') return false;
+
+    let rascunho = null;
+    try {
+        rascunho = api.restaurarRascunhoVendaPdv(obterContextoRascunhoVendaPdv());
+    } catch (_e) {
+        return false;
+    }
+    if (!rascunho || !Array.isArray(rascunho.carrinho) || rascunho.carrinho.length === 0) {
+        return false;
+    }
+
+    _pdvRascunhoJaOferecido = true;
+    const continuar = await perguntarRestaurarRascunhoVendaPdv(rascunho);
+    if (!continuar) {
+        limparRascunhoVendaPdvPersistido();
+        showNotification('Venda em andamento descartada.', 'info');
+        return false;
+    }
+
+    _pdvRascunhoRestaurando = true;
+    _recalcCanalSkip = true;
+    try {
+        aplicarRascunhoVendaPdvNoEstado(rascunho);
+        atualizarCarrinho();
+        showNotification(
+            `Venda em andamento restaurada (${rascunho.carrinho.length} produto(s)).`,
+            'info'
+        );
+        return true;
+    } catch (_e) {
+        console.warn('Falha ao restaurar rascunho PDV:', _e);
+        return false;
+    } finally {
+        _pdvRascunhoRestaurando = false;
+        _recalcCanalSkip = false;
+    }
+}
 
 function obterApiComercialStatusCard() {
     return (typeof window !== 'undefined' && window.ComercialStatusCard)
@@ -2004,6 +2230,9 @@ async function processarPagamentosMistosTEF(pagamentos) {
 }
 
 function inicializarPDV() {
+    // RCM-8.14.2 — bloqueia persistência destrutiva até após tentar restaurar
+    _pdvRascunhoBootstrapPendente = true;
+
     const usuarioLogado = JSON.parse(localStorage.getItem('user') || '{}');
     const nomeOperador = usuarioLogado.nome || usuarioLogado.username || 'Usuário';
     const perfilOperador = nomePerfilUsuario(usuarioLogado);
@@ -2015,12 +2244,19 @@ function inicializarPDV() {
     }
 
     verificarStatusCaixa();
-    atualizarCarrinho();
     iniciarRelogioPDV();
     bindEventosPDV();
     focarCampoCodigo();
     carregarConfigComercialPdv().always(function () {
-        agendarRecalculoCanalComercialPdv();
+        Promise.resolve(tentarRestaurarRascunhoVendaPdv()).finally(function () {
+            finalizarBootstrapRascunhoVendaPdv();
+            if (!_pdvRascunhoJaOferecido || carrinho.length === 0) {
+                atualizarCarrinho();
+            }
+            if (!_pdvRascunhoRestaurando) {
+                agendarRecalculoCanalComercialPdv();
+            }
+        });
     });
 
     // Verificar status do caixa a cada 30 segundos
@@ -2518,6 +2754,7 @@ function bindEventosPDV() {
     $('#descontoPdv, #acrescimoPdv').off('input').on('input', function() {
         calcularTotal();
         calcularTrocoPDV();
+        persistirRascunhoVendaPdv();
     });
 
     $('#valorRecebidoPDV').off('input').on('input', calcularTrocoPDV);
@@ -2564,6 +2801,12 @@ function aoAlterarFormaPagamento() {
         }, 100);
     } else {
         limparCamposPrazo();
+    }
+
+    formaPagamentoSelecionadaPDV = formaPagamento || null;
+    formaPagamentoSelecionada = formaPagamento || null;
+    if (!_pdvRascunhoRestaurando) {
+        persistirRascunhoVendaPdv();
     }
 }
 
@@ -2614,6 +2857,7 @@ function selecionarCliente(cliente) {
     if (typeof agendarRecalculoCanalComercialPdv === 'function') {
         agendarRecalculoCanalComercialPdv();
     }
+    persistirRascunhoVendaPdv();
 }
 
 function removerClienteSelecionado() {
@@ -2626,6 +2870,7 @@ function removerClienteSelecionado() {
     if (typeof agendarRecalculoCanalComercialPdv === 'function') {
         agendarRecalculoCanalComercialPdv();
     }
+    persistirRascunhoVendaPdv();
 }
 
 function abrirCadastroCliente() {
@@ -4055,6 +4300,7 @@ function limparCarrinho() {
     $('#pdvDinheiroBox').hide();
     limparCamposPrazo();
     atualizarBadgeCanalVendaPdv('VAREJO');
+    limparRascunhoVendaPdvPersistido();
     atualizarCarrinho();
     focarCampoCodigo();
     showNotification('Carrinho limpo com sucesso.', 'info');
@@ -4110,6 +4356,9 @@ function atualizarCarrinho() {
     if (!_recalcCanalSkip) {
         agendarRecalculoCanalComercialPdv();
     }
+
+    // RCM-8.14 — persistir após estado consistente
+    persistirRascunhoVendaPdv();
 }
 
 function parseDecimalPdv(valor) {
@@ -5385,6 +5634,7 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
 }
 
 function finalizarPosVenda() {
+    limparRascunhoVendaPdvPersistido();
     carrinho = [];
     formaPagamentoSelecionada = null;
     clienteSelecionado = null;
@@ -5444,6 +5694,7 @@ async function cancelarVendaAtual() {
         pagamentoFiscalAtual = null;
     }
 
+    limparRascunhoVendaPdvPersistido();
     carrinho = [];
     formaPagamentoSelecionada = null;
     clienteSelecionado = null;

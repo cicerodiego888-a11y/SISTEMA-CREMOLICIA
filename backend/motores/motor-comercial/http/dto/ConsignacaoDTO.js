@@ -283,6 +283,50 @@ class RegistrarEntregaComplementarRequest {
   }
 }
 
+/**
+ * RCM-8.13 — Alteração Pós-Entrega
+ */
+class RegistrarAlteracaoPosEntregaRequest {
+  static fromJSON(data = {}) {
+    const itens = Array.isArray(data.itens) ? data.itens : [];
+    return {
+      motivo: data.motivo || null,
+      observacao: data.observacao || null,
+      usuarioId: data.usuarioId || null,
+      correlationId: data.correlationId || null,
+      itens: itens.map((item) => ({
+        itemId: item.itemId != null ? Number(item.itemId) : null,
+        produtoId: item.produtoId != null ? Number(item.produtoId) : null,
+        quantidadeNova: item.quantidadeNova != null
+          ? Number(item.quantidadeNova)
+          : (item.novaQuantidade != null
+            ? Number(item.novaQuantidade)
+            : (item.quantidade != null ? Number(item.quantidade) : null))
+      }))
+    };
+  }
+
+  static validate(data = {}) {
+    const errors = [];
+    if (!data.motivo || !String(data.motivo).trim()) {
+      errors.push('motivo é obrigatório');
+    }
+    if (!Array.isArray(data.itens) || !data.itens.length) {
+      errors.push('itens é obrigatório');
+    } else {
+      data.itens.forEach((item, idx) => {
+        if (!item.itemId && !item.produtoId) {
+          errors.push(`itens[${idx}].itemId ou produtoId é obrigatório`);
+        }
+        if (item.quantidadeNova == null || !Number.isFinite(Number(item.quantidadeNova)) || Number(item.quantidadeNova) < 0) {
+          errors.push(`itens[${idx}].quantidadeNova deve ser >= 0`);
+        }
+      });
+    }
+    return errors.length ? { errors } : null;
+  }
+}
+
 class RegistrarEmissaoTermoEntregaRequest {
   /**
    * @param {Object} data
@@ -720,6 +764,7 @@ module.exports = {
   AlterarQuantidadeItemRequest,
   RegistrarEntregaRequest,
   RegistrarEntregaComplementarRequest,
+  RegistrarAlteracaoPosEntregaRequest,
   RegistrarEmissaoTermoEntregaRequest,
   AbrirPrestacaoRequest,
   RegistrarDevolucaoRequest,

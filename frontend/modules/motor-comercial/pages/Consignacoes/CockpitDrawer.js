@@ -15,6 +15,7 @@ const Timeline = require('../../components/special/Timeline');
 const StatCard = require('../../components/data/StatCard');
 const { createOperationalBadge } = require('./badges');
 const { carregarConsignacaoCompleta, navigate } = require('../../utils/operacional');
+const { mapFinanceiroConsignacao } = require('./cockpitFinanceiroMappers');
 
 const DRAWER_TABS = [
   { key: 'resumo', label: 'Resumo' },
@@ -297,7 +298,7 @@ class CockpitDrawer {
     [
       StatCard.create({ title: 'Vendido', value: this.page._formatCurrency(prestacao.valorVendido || 0), icon: '💰' }),
       StatCard.create({ title: 'Recebido', value: this.page._formatCurrency(prestacao.valorRecebido || 0), icon: '💵' }),
-      StatCard.create({ title: 'Saldo', value: this.page._formatCurrency(prestacao.saldoAtual || 0), icon: '⚖️', color: 'warning' })
+      StatCard.create({ title: 'Saldo a receber', value: this.page._formatCurrency(prestacao.saldoAtual || 0), icon: '⚖️', color: 'warning' })
     ].forEach((c) => cards.appendChild(c));
     wrap.appendChild(cards);
 
@@ -313,22 +314,45 @@ class CockpitDrawer {
   }
 
   async _tabFinanceiro() {
-    const { contaCorrente, situacao } = await this._getBundle();
+    const { contaCorrente, situacao, perfil } = await this._getBundle();
     const wrap = document.createElement('div');
     wrap.className = 'cds-cockpit-drawer__grid';
 
-    wrap.appendChild(this._field('Saldo', this.page._formatCurrency(contaCorrente?.saldo ?? situacao?.saldoEmAberto ?? 0)));
-    wrap.appendChild(this._field('Saldo em Aberto', this.page._formatCurrency(contaCorrente?.saldoEmAberto ?? 0)));
-    wrap.appendChild(this._field('Limite Disponível', this.page._formatCurrency(situacao?.limiteDisponivel ?? 0)));
+    const fin = mapFinanceiroConsignacao({ contaCorrente, perfil, situacao });
 
-    const movs = contaCorrente?.movimentacoes || [];
+    const titulo = document.createElement('h4');
+    titulo.className = 'cds-cockpit-drawer__section-title';
+    titulo.textContent = 'Financeiro da consignação';
+    wrap.appendChild(titulo);
+
+    wrap.appendChild(this._field(
+      'A receber desta operação',
+      this.page._formatCurrency(fin.aReceberDestaOperacao)
+    ));
+    wrap.appendChild(this._field(
+      'Estoque consignado desta operação',
+      this.page._formatCurrency(fin.estoqueConsignadoDestaOperacao)
+    ));
+    wrap.appendChild(this._field(
+      'Saldo devedor global do cliente',
+      this.page._formatCurrency(fin.saldoDevedorGlobalCliente)
+    ));
+    wrap.appendChild(this._field(
+      'Limite disponível',
+      this.page._formatCurrency(situacao?.limiteDisponivel ?? 0)
+    ));
+
+    const movs = contaCorrente?.lancamentos || contaCorrente?.movimentacoes || [];
     if (!movs.length) {
       wrap.appendChild(EmptyState.create({ title: 'Sem movimentações financeiras' }));
       return wrap;
     }
 
     movs.slice(0, 8).forEach((mov) => {
-      wrap.appendChild(this._field(mov.tipo || 'Movimento', `${this.page._formatCurrency(mov.valor || 0)} — ${this.page._formatDate(mov.data)}`));
+      wrap.appendChild(this._field(
+        mov.tipo || mov.tipoMovimentacao || 'Movimento',
+        `${this.page._formatCurrency(mov.valor || 0)} — ${this.page._formatDate(mov.data || mov.dataMovimentacao)}`
+      ));
     });
     return wrap;
   }
@@ -345,7 +369,15 @@ class CockpitDrawer {
 
     wrap.appendChild(this._field('Tipo', perfil.perfilTipo));
     wrap.appendChild(this._field('Limite', this.page._formatCurrency(perfil.limiteComercial || 0)));
-    wrap.appendChild(this._field('Saldo Aberto', this.page._formatCurrency(perfil.saldoAberto || 0)));
+    wrap.appendChild(this._field(
+      'Saldo devedor global',
+      this.page._formatCurrency(perfil.saldoAberto || 0)
+    ));
+    const hint = document.createElement('p');
+    hint.className = 'cds-cockpit-drawer__hint';
+    hint.style.cssText = 'margin:0 0 12px;font-size:12px;color:#64748b;';
+    hint.textContent = 'Estoque consignado + valores a receber de todas as operações do cliente.';
+    wrap.appendChild(hint);
     wrap.appendChild(this._field('Score', situacao?.score ?? '-'));
     wrap.appendChild(this._field('Nível de Risco', situacao?.nivelRisco ?? '-'));
 

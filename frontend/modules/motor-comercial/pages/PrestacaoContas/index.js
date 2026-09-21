@@ -43,7 +43,8 @@ const {
 const {
   buildPrestacaoSnapshot,
   buildPagamentosHistorico,
-  buildFinanceiroFromResumo
+  buildFinanceiroFromResumo,
+  round2
 } = require('./prestacaoFinanceiroSnapshot');
 const {
   buildTimelineOficial,
@@ -77,6 +78,14 @@ const {
   labelStatusPersistencia,
   CAMPOS_QTY
 } = require('./gradeConsistencia');
+const { lerRateioDoDom } = require('./rateioPerdaUi');
+
+const LOAD_MODO = Object.freeze({
+  INICIAL: 'inicial',
+  MANUAL: 'manual',
+  POS_PERSISTENCIA: 'posPersistencia',
+  AUTO_REFRESH: 'autoRefresh'
+});
 const { buildResumoFinanceiroCentral: buildResumoLegacy } = require('./prestacaoCentralMappers');
 const {
   imprimirComprovante,
@@ -216,6 +225,9 @@ class PrestacaoContasPage {
     this.root = null;
     this.lastSyncedAt = null;
     this._startedAtRetornos = false;
+    this._ultimoModoLoad = LOAD_MODO.INICIAL;
+    this._pagamentoAttempt = null;
+    this._ultimoPagamentoLocal = null;
   }
 
   static create(consignacaoId, query = {}) {
@@ -248,7 +260,7 @@ class PrestacaoContasPage {
     this._loadTimeout = setTimeout(() => {
       this._loadTimeout = null;
       if (!this._isAlive()) return;
-      this._loadData();
+      this._loadData(false, { modo: LOAD_MODO.INICIAL });
       this._startAutoRefresh();
     }, 0);
 
@@ -301,6 +313,43 @@ class PrestacaoContasPage {
       return false;
     }
     return isContextCurrent(token, this.operacaoContext, { disposed: this._disposed });
+  }
+
+  /**
+   * RCM-8.16.1 — fechamento só avança com consignação/resumo oficiais hidratados.
+   * Não mascara null com array vazio.
+   */
+  _hidratacaoOficialPendente() {
+    if (!this._isAlive()) return true;
+    if (this.loading.consignacao || this.loading.prestacao) return true;
+    if (this.consignacao == null || this.consignacao.id == null || this.consignacao.id === '') {
+      return true;
+    }
+    if (this.resumoPrestacao == null || typeof this.resumoPrestacao !== 'object') {
+      return true;
+    }
+    if (!Array.isArray(this.resumoPrestacao.itens)) return true;
+    return false;
+  }
+
+  _podeAvancarParaFechamento() {
+    if (this._hidratacaoOficialPendente()) return false;
+    if (this.loading.operation || this.salvandoConferencia) return false;
+    if (!this._acceptContextToken(this._captureContextToken())) return false;
+    return true;
+  }
+
+  _mensagemErroCarregamento() {
+    return humanizarErroOperacional(
+      this.error,
+      'carregamento'
+    ).mensagem || MENSAGENS_HARDENING.PRESTACAO_CONSIGNACAO_NAO_LOCALIZADA;
+  }
+
+  _assertConsignacaoOficial(consignacao) {
+    if (consignacao == null || consignacao.id == null || consignacao.id === '') {
+      throw new Error(MENSAGENS_HARDENING.PRESTACAO_CONSIGNACAO_OFICIAL_AUSENTE);
+    }
   }
 
   /** @private — sincroniza prestacaoId/clienteId sem invalidar a versão */
@@ -381,7 +430,7 @@ class PrestacaoContasPage {
       shell.appendChild(Loading.create({ message: 'Carregando atendimento...' }));
     } else if (this.error) {
       shell.appendChild(Alert.create({
-        message: 'Erro ao carregar: ' + this.error.message,
+        message: this._mensagemErroCarregamento(),
         variant: 'error',
         dismissible: true
       }));
@@ -587,10 +636,12 @@ class PrestacaoContasPage {
 
     // Retornos → Resumo
     if (this.currentStep === STEP_RETORNOS) {
-      const dis = this.loading.operation || this.salvandoConferencia;
+      const hidratando = this._hidratacaoOficialPendente();
+      const dis = this.loading.operation || this.salvandoConferencia || hidratando;
       const motivo = motivoBotaoDesabilitado('continuar', {
         loading: this.loading.operation,
         salvando: this.salvandoConferencia,
+        hidratando,
         dirty: false
       });
       const continuarBtn = aplicarTooltipDesabilitado(Button.create({
@@ -1085,14 +1136,24 @@ class PrestacaoContasPage {
 
   /**
    * @param {boolean} silent
-   * @param {{ skipUi?: boolean }} [options] STAB-07.3 — recarrega dados sem remontar a estação
+   * @param {{ skipUi?: boolean, modo?: string }} [options]
    */
   async _loadData(silent = false, options = {}) {
     const token = this._captureContextToken();
     if (!this._acceptContextToken(token)) return;
 
     const skipUi = Boolean(options.skipUi);
-    if (!silent) {
+    const modo = this._resolverModoLoad(silent, options);
+    this._ultimoModoLoad = modo;
+    const autoRefresh = modo === LOAD_MODO.AUTO_REFRESH;
+
+    const itensLocais = this._clonarItensEstado();
+    const dirtyItens = temAlteracoesPendentes(itensLocais) || this.editing.rowIndex >= 0;
+    const rateioLocal = this._rateioTemAlteracaoLocal();
+    const pagamentoLocal = this._pagamentoTemRascunho();
+    if (pagamentoLocal) this._sincronizarPagamentoDoDom();
+
+    if (!silent && !autoRefresh) {
       this.loading.consignacao = true;
       this.loading.prestacao = true;
       this._updateUI();
@@ -1117,21 +1178,61 @@ class PrestacaoContasPage {
 
       if (!this._acceptContextToken(token)) return;
 
-      // Resposta de outra consignação nunca aplica (defesa extra além da versão).
-      if (consignacao?.id != null && String(consignacao.id) !== String(consignacaoId)) {
+      if (consignacao == null || consignacao.id == null || consignacao.id === '') {
+        throw new Error(MENSAGENS_HARDENING.PRESTACAO_CONSIGNACAO_NAO_LOCALIZADA);
+      }
+
+      if (String(consignacao.id) !== String(consignacaoId)) {
         return;
+      }
+
+      const aposComplementar = String(
+        this.routeQuery?.aposComplementar || this.routeQuery?.atualizado || ''
+      ) === '1';
+      if (aposComplementar && typeof this.api.listarItensConsignacao === 'function') {
+        try {
+          const itensFrescos = await this.api.listarItensConsignacao(consignacaoId);
+          if (Array.isArray(itensFrescos) && itensFrescos.length) {
+            consignacao.itens = itensFrescos;
+            try {
+              const { cacheItensConsignacao } = require('../../utils/operacional');
+              cacheItensConsignacao(consignacaoId, itensFrescos);
+            } catch (_e) { /* ignore */ }
+          }
+        } catch (_e) { /* mantém itens já carregados */ }
       }
 
       this.consignacao = consignacao;
       this.historico = historico;
       this.contaCorrente = contaCorrente;
-      this.rateioPerda = rateioPerda;
+      if (!rateioLocal) this.rateioPerda = rateioPerda;
       this._syncOperacaoContextFromConsignacao(consignacao);
-      this.resumoPrestacao = this._buildResumoFromData(prestacao, historico, consignacao, contaCorrente);
-      limparDirtyTodos(this.resumoPrestacao?.itens || []);
-      this._capturarBaseline();
-      this.persistenciaStatus = 'saved';
+      const novo = this._buildResumoFromData(prestacao, historico, consignacao, contaCorrente);
+
+      if (autoRefresh && dirtyItens) {
+        novo.itens = mesclarServidorPreservandoDirty(novo.itens || [], itensLocais);
+        this.resumoPrestacao = novo;
+        this.persistenciaStatus = statusPersistencia(novo.itens);
+      } else if (autoRefresh) {
+        this.resumoPrestacao = novo;
+        limparDirtyTodos(this.resumoPrestacao?.itens || []);
+        this._capturarBaseline();
+        this.persistenciaStatus = 'saved';
+      } else {
+        this.resumoPrestacao = novo;
+        limparDirtyTodos(this.resumoPrestacao?.itens || []);
+        this._capturarBaseline();
+        this.persistenciaStatus = 'saved';
+      }
       this._recalcularPainel();
+
+      this._forceRemountAposComplementar = aposComplementar;
+      if (aposComplementar) {
+        try {
+          delete this.routeQuery.aposComplementar;
+          delete this.routeQuery.atualizado;
+        } catch (_e) { /* ignore */ }
+      }
 
       const statusCons = String(consignacao.status || '').toUpperCase();
       const prestStatus = String(consignacao.prestacaoContasAtiva?.status || '').toUpperCase();
@@ -1163,13 +1264,13 @@ class PrestacaoContasPage {
       this.error = null;
     } catch (error) {
       if (!this._acceptContextToken(token)) return;
+      if (autoRefresh) return;
       this.error = error;
     } finally {
-      // Sempre libera loading se a página ainda é desta consignação (evita "Carregando..." eterno)
       const mesmaConsignacao = String(token?.consignacaoId || '') === String(this.consignacaoId || '');
       if (this._disposed) return;
       if (!this._acceptContextToken(token)) {
-        if (mesmaConsignacao) {
+        if (mesmaConsignacao && !autoRefresh) {
           this.loading.consignacao = false;
           this.loading.prestacao = false;
           this._updateUI();
@@ -1180,16 +1281,97 @@ class PrestacaoContasPage {
       this.loading.prestacao = false;
       if (skipUi) {
         this._updateFooter();
+      } else if (autoRefresh) {
+        this._aplicarAutoRefreshNaUi();
       } else if (this._devePreservarGradeRetornos()) {
         this._atualizarPainelPreview();
         this._updateFooter();
       } else {
         this._updateUI();
       }
+      this._forceRemountAposComplementar = false;
+    }
+  }
+
+  _resolverModoLoad(silent, options = {}) {
+    if (options.modo) return options.modo;
+    if (options.skipUi) return LOAD_MODO.POS_PERSISTENCIA;
+    if (silent) return LOAD_MODO.AUTO_REFRESH;
+    return LOAD_MODO.INICIAL;
+  }
+
+  _clonarItensEstado() {
+    return (this.resumoPrestacao?.itens || []).map((item) => ({
+      ...item,
+      dirtyCampos: { ...(item.dirtyCampos || {}) }
+    }));
+  }
+
+  _pagamentoTemRascunho() {
+    const d = this.pagamentoDraft || {};
+    return String(d.valor || '').trim() !== ''
+      || String(d.observacoes || '').trim() !== '';
+  }
+
+  _rateioTemAlteracaoLocal() {
+    const host = this._qs('#fechar-rateio-perda');
+    if (!host) return false;
+    if (typeof document !== 'undefined' && host.contains(document.activeElement)) return true;
+    const draft = lerRateioDoDom(host);
+    if (!draft) return false;
+    const salvo = this.rateioPerda?.rateio || {};
+    if (draft.motivoPerda && String(draft.motivoPerda) !== String(salvo.motivoPerda || '')) return true;
+    if (draft.observacaoPerda && String(draft.observacaoPerda) !== String(salvo.observacaoPerda || '')) {
+      return true;
+    }
+    if (draft.valorCliente != null
+      && Number(draft.valorCliente) !== Number(salvo.valorCliente ?? Number(draft.valorCliente))) {
+      return Number(draft.valorCliente) !== Number(salvo.valorCliente || 0);
+    }
+    if (draft.valorEmpresa != null
+      && Number(draft.valorEmpresa) !== Number(salvo.valorEmpresa || 0)) {
+      return true;
+    }
+    if (salvo.tipoRateio
+      && String(draft.tipoRateio || '') !== String(salvo.tipoRateio || '')) {
+      return true;
+    }
+    return false;
+  }
+
+  _inputOperacionalComFoco() {
+    if (typeof document === 'undefined') return false;
+    const el = document.activeElement;
+    if (!el || !this.root?.contains(el)) return false;
+    const tag = String(el.tagName || '').toUpperCase();
+    return tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA';
+  }
+
+  _aplicarAutoRefreshNaUi() {
+    if (!this._isAlive()) return;
+    this._ensureStartAtRetornos();
+    this._updateHeaderMeta();
+    this._atualizarIndicadorPersistencia();
+    const itens = this.resumoPrestacao?.itens || [];
+    itens.forEach((item, index) => {
+      if (item.dirty) return;
+      this._patchLinhaRetorno(index);
+    });
+    if (this.currentStep === STEP_RETORNOS) {
+      this._atualizarPainelPreview();
+    } else if (this.currentStep >= STEP_RESUMO) {
+      this._recalcularPainel();
+      if (!this._pagamentoTemRascunho() && !this._rateioTemAlteracaoLocal()) {
+        this._patchCentralOperacional(['financeiro']);
+      }
     }
   }
 
   _devePreservarGradeRetornos() {
+    // Após complementação, sempre remonta a grade com itens/quantidades atuais
+    if (this._forceRemountAposComplementar) return false;
+    if (String(this.routeQuery?.aposComplementar || '') === '1') return false;
+
     return this.currentStep === STEP_RETORNOS
       && Boolean(this._qs('#fechar-retornos-grade'))
       && (
@@ -1266,10 +1448,16 @@ class PrestacaoContasPage {
     });
     const saldoEl = row.querySelector('[data-saldo-index]');
     if (saldoEl) saldoEl.textContent = String(item.saldo ?? 0);
+    const obs = row.querySelector('input[data-campo="observacao"]');
+    if (obs && document.activeElement !== obs) {
+      const nextObs = item.observacao != null ? String(item.observacao) : '';
+      if (obs.value !== nextObs) obs.value = nextObs;
+    }
     row.classList.toggle('cds-fechar-consignacao__grade-row--dirty', Boolean(item.dirty));
   }
 
-  _buildResumoFromData(prestacao, historico, consignacao = {}, contaCorrente = null) {
+  _buildResumoFromData(prestacao, historico, consignacao, contaCorrente = null) {
+    this._assertConsignacaoOficial(consignacao);
     const resumo = {
       ...(prestacao || {}),
       valorVendido: Number(prestacao?.valorVendido ?? prestacao?.totalVendido ?? 0),
@@ -1304,10 +1492,17 @@ class PrestacaoContasPage {
       );
     }
 
+    // Se a projeção/ciclo veio incompleta, basear também nos itens oficiais da consignação
+    const itensConsignacao = Array.isArray(consignacao.itens) ? consignacao.itens.map((item) => ({
+      ...item,
+      consignacaoId: item.consignacaoId ?? consignacao.id,
+      documentoConsignacao: consignacao.documento
+    })) : [];
+
     const prevItens = this.resumoPrestacao?.itens || [];
     resumo.itens = enriquecerItensPrestacao(
       itens || [],
-      consignacao.itens || []
+      itensConsignacao
     ).map((item, index) => {
       const prev = prevItens.find((p) => (
         (p.itemId && item.itemId && String(p.itemId) === String(item.itemId))
@@ -1316,6 +1511,19 @@ class PrestacaoContasPage {
       )) || prevItens[index];
       if (prev?.observacao && !item.observacao) {
         item.observacao = prev.observacao;
+      }
+      // Preserva digitação do operador (vendido/devolvido/…) se ainda dirty
+      if (prev && prev.dirty) {
+        item.quantidadeVendida = prev.quantidadeVendida ?? prev.vendido ?? item.quantidadeVendida;
+        item.quantidadeDevolvida = prev.quantidadeDevolvida ?? prev.devolvido ?? item.quantidadeDevolvida;
+        item.quantidadePerdida = prev.quantidadePerdida ?? prev.perdido ?? item.quantidadePerdida;
+        item.quantidadeCortesia = prev.quantidadeCortesia ?? prev.cortesia ?? item.quantidadeCortesia;
+        item.vendido = item.quantidadeVendida;
+        item.devolvido = item.quantidadeDevolvida;
+        item.perdido = item.quantidadePerdida;
+        item.cortesia = item.quantidadeCortesia;
+        item.dirty = prev.dirty;
+        item.dirtyCampos = prev.dirtyCampos;
       }
       return syncStatusOperacional(item);
     });
@@ -1817,6 +2025,8 @@ class PrestacaoContasPage {
 
     if (!this._acceptContextToken(token)) return;
 
+    this._assertConsignacaoOficial(this.consignacao);
+
     this.historico = historico;
     this.contaCorrente = contaCorrente;
     const novo = this._buildResumoFromData(prestacao, historico, this.consignacao, contaCorrente);
@@ -1969,82 +2179,183 @@ class PrestacaoContasPage {
 
   /**
    * ÚNICA porta FE que cria movimento financeiro na Prestação (STAB-07.1).
-   * Navegação nunca chama este método.
+   * Card e footer compartilham this.loading.operation (RCM-8.17.2).
    */
   async _registrarPagamento() {
-    const token = this._captureContextToken();
-    this._sincronizarPagamentoDoDom();
-    if (!(await this._garantirPrestacaoAberta())) return false;
-    if (!this._acceptContextToken(token)) return false;
-
-    let valor = Number(String(this.pagamentoDraft.valor).replace(',', '.'));
-    if (!valor || valor <= 0) {
-      this.pagamentoErro = 'Informe um valor válido para o pagamento';
-      this._updateContent();
-      return false;
-    }
-
-    const saldoAberto = this._saldoDevedorServidor();
-    if (saldoAberto <= 0) {
-      this.pagamentoErro = 'Não há saldo a pagar neste atendimento.';
-      this._updateContent();
-      return false;
-    }
+    if (this.loading.operation) return false;
 
     this.loading.operation = true;
     this.pagamentoErro = null;
-    this._updateFooter();
+    this._atualizarControlesPagamento();
+
+    const token = this._captureContextToken();
+    this._sincronizarPagamentoDoDom();
 
     try {
-      await withLoading(MENSAGENS_HARDENING.REGISTRANDO_PAGAMENTO, () => this.api.registrarPagamento(this.consignacaoId, {
-        valor,
-        formaPagamento: this.pagamentoDraft.formaPagamento || 'DINHEIRO',
-        observacao: this.pagamentoDraft.observacoes || null,
-        usuarioId: getUsuarioId()
-      }));
+      if (!(await this._garantirPrestacaoAberta())) return false;
       if (!this._acceptContextToken(token)) return false;
-      notify(MENSAGENS_HARDENING.PAGAMENTO_REGISTRADO, 'success');
-      this._pushLogOperacional('Pagamento registrado', {
-        valor,
-        forma: this.pagamentoDraft.formaPagamento || 'DINHEIRO'
-      });
-      registrarLogOperacional('REGISTRAR_PAGAMENTO', {
-        consignacaoId: this.consignacaoId,
-        resultado: 'OK',
-        detalhes: { valor }
-      });
+
+      const valor = Number(String(this.pagamentoDraft.valor).replace(',', '.'));
+      if (!valor || valor <= 0) {
+        this.pagamentoErro = 'Informe um valor válido para o pagamento';
+        return false;
+      }
+
+      const saldoAberto = this._saldoDevedorServidor();
+      if (saldoAberto <= 0) {
+        this.pagamentoErro = 'Não há saldo a pagar neste atendimento.';
+        return false;
+      }
+
+      const formaPagamento = this.pagamentoDraft.formaPagamento || 'DINHEIRO';
+      if (this._pagamentoLocalJaConfirmado(valor, formaPagamento)) {
+        notify(MENSAGENS_HARDENING.PAGAMENTO_JA_REGISTRADO, 'info');
+        this.pagamentoDraft.valor = '';
+        this.pagamentoDraft.observacoes = '';
+        await this._sincronizarResumoAposPagamento(token);
+        return true;
+      }
+
+      const assinaturaAntes = this._assinaturaPagamentosOficiais();
+      const chave = this._obterChaveIdempotenciaPagamento(valor, formaPagamento);
+      let jaRegistrado = false;
+
+      try {
+        await withLoading(MENSAGENS_HARDENING.REGISTRANDO_PAGAMENTO, () =>
+          this.api.registrarPagamento(this.consignacaoId, {
+            valor,
+            formaPagamento,
+            observacao: this.pagamentoDraft.observacoes || null,
+            usuarioId: getUsuarioId()
+          }, {
+            headers: { 'Idempotency-Key': chave }
+          })
+        );
+      } catch (error) {
+        if (!this._erroPagamentoIncerto(error)) throw error;
+        await this._loadData(true, { skipUi: true });
+        if (!this._pagamentoOficialEncontrado(assinaturaAntes, valor, formaPagamento)) {
+          throw error;
+        }
+        jaRegistrado = true;
+      }
+
+      if (!this._acceptContextToken(token)) return true;
+
+      this._ultimoPagamentoLocal = { valor: round2(valor), forma: String(formaPagamento).toUpperCase() };
+      this._pagamentoAttempt = null;
       this.pagamentoDraft.valor = '';
       this.pagamentoDraft.observacoes = '';
-      // STAB-07.3 — soft refresh + patch só dos cards financeiros
-      await this._loadData(true, { skipUi: true });
-      if (!this._acceptContextToken(token)) return false;
-      this._recalcularPainel();
-      if (this.currentStep === STEP_RESUMO) {
-        const patched = this._patchCentralOperacional(['financeiro', 'pagamentos']);
-        if (!patched) this._updateContent();
-        this._updateFooter();
-        this._updateHeaderMeta();
-      } else {
-        this._updateUI();
-      }
+
+      await this._sincronizarResumoAposPagamento(token);
+      if (!this._acceptContextToken(token)) return true;
+
+      notify(
+        jaRegistrado
+          ? MENSAGENS_HARDENING.PAGAMENTO_JA_REGISTRADO
+          : MENSAGENS_HARDENING.PAGAMENTO_REGISTRADO,
+        jaRegistrado ? 'info' : 'success'
+      );
+      this._pushLogOperacional('Pagamento registrado', { valor, forma: formaPagamento });
+      registrarLogOperacional('REGISTRAR_PAGAMENTO', {
+        consignacaoId: this.consignacaoId,
+        resultado: jaRegistrado ? 'JA_REGISTRADO' : 'OK',
+        detalhes: { valor, formaPagamento }
+      });
       return true;
     } catch (error) {
-      if (!this._acceptContextToken(token)) return false;
-      const humanizado = humanizarErroOperacional(error, 'pagamento');
-      this.pagamentoErro = humanizado.mensagem;
-      this._updateContent();
+      if (this._acceptContextToken(token)) {
+        const humanizado = humanizarErroOperacional(error, 'pagamento');
+        this.pagamentoErro = humanizado.mensagem;
+      }
       return false;
     } finally {
-      if (!this._acceptContextToken(token)) return false;
       this.loading.operation = false;
-      this._updateFooter();
+      if (this._isAlive() && this._acceptContextToken(token)) {
+        this._atualizarControlesPagamento({ incluirFinanceiro: true });
+      }
     }
+  }
+
+  _atualizarControlesPagamento({ incluirFinanceiro = false } = {}) {
+    if (!this._isAlive()) return;
+    if (this.currentStep === STEP_RESUMO) {
+      const scopes = incluirFinanceiro ? ['financeiro', 'pagamentos'] : ['pagamentos'];
+      const patched = this._patchCentralOperacional(scopes);
+      if (!patched) this._updateContent();
+      this._updateFooter();
+      if (incluirFinanceiro) this._updateHeaderMeta();
+      return;
+    }
+    this._updateFooter();
+  }
+
+  async _sincronizarResumoAposPagamento(token) {
+    await this._loadData(true, { skipUi: true });
+    if (token && !this._acceptContextToken(token)) return;
+    this._recalcularPainel();
+  }
+
+  _obterChaveIdempotenciaPagamento(valor, formaPagamento) {
+    const forma = String(formaPagamento || 'DINHEIRO').toUpperCase();
+    const v = round2(valor);
+    const atual = this._pagamentoAttempt;
+    if (atual && atual.valor === v && atual.forma === forma && atual.key) {
+      return atual.key;
+    }
+    const key = `pag-${this.consignacaoId}-${v}-${forma}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    this._pagamentoAttempt = { key, valor: v, forma };
+    return key;
+  }
+
+  _pagamentoLocalJaConfirmado(valor, formaPagamento) {
+    const last = this._ultimoPagamentoLocal;
+    if (!last) return false;
+    return last.valor === round2(valor)
+      && last.forma === String(formaPagamento || '').toUpperCase();
+  }
+
+  _assinaturaPagamentosOficiais() {
+    const lista = this.snapshot?.pagamentos || buildPagamentosHistorico(this.historico || []);
+    return {
+      ids: lista.map((p) => String(p.id || '')).filter(Boolean),
+      quantidade: lista.length,
+      recebido: round2(this.snapshot?.financeiro?.valorRecebido || 0)
+    };
+  }
+
+  _pagamentoOficialEncontrado(antes, valor, formaPagamento) {
+    this._recalcularPainel();
+    const lista = this.snapshot?.pagamentos || buildPagamentosHistorico(this.historico || []);
+    const idsAntes = new Set(antes?.ids || []);
+    const novos = lista.filter((p) => p.id != null && !idsAntes.has(String(p.id)));
+    const forma = String(formaPagamento || '').toUpperCase();
+    const alvo = round2(valor);
+    if (novos.some((p) => round2(p.valor) === alvo
+      && (String(p.forma || '').toUpperCase() === forma || p.forma === '—'))) {
+      return true;
+    }
+    const recebido = round2(this.snapshot?.financeiro?.valorRecebido || 0);
+    if (round2(recebido - Number(antes?.recebido || 0)) === alvo) return true;
+    return lista.length > Number(antes?.quantidade || 0);
+  }
+
+  _erroPagamentoIncerto(error) {
+    const raw = String(error?.message || error || '');
+    const name = String(error?.name || '');
+    return name === 'AbortError'
+      || /TIMEOUT|ETIMEDOUT|ECONNABORTED|TEMPO\s*ESGOTADO|ABORT|FAILED TO FETCH|NETWORK|ENOTFOUND|ECONNREFUSED/i.test(raw);
   }
 
   /** Retornos → Resumo Final. Nunca registra pagamento. */
   _goNext() {
     const avancar = async () => {
       if (this.currentStep !== STEP_RETORNOS) return;
+
+      if (!this._podeAvancarParaFechamento()) {
+        notify(MENSAGENS_HARDENING.PRESTACAO_AGUARDE_HIDRATACAO, 'warning');
+        return;
+      }
 
       this.salvandoConferencia = true;
       this.conferenciaAlerta = null;
@@ -2069,7 +2380,17 @@ class PrestacaoContasPage {
         return;
       }
 
+      if (!this._podeAvancarParaFechamento()) {
+        notify(MENSAGENS_HARDENING.PRESTACAO_AGUARDE_HIDRATACAO, 'warning');
+        return;
+      }
+
       await this._consolidarRetornosAntesAvancar();
+
+      if (!this._podeAvancarParaFechamento()) {
+        notify(MENSAGENS_HARDENING.PRESTACAO_AGUARDE_HIDRATACAO, 'warning');
+        return;
+      }
 
       this.steps[STEP_RETORNOS].state = 'completed';
       this.currentStep = STEP_RESUMO;
@@ -2083,7 +2404,7 @@ class PrestacaoContasPage {
       });
     };
 
-    avancar().catch((error) => {
+    return avancar().catch((error) => {
       this.salvandoConferencia = false;
       this._updateFooter();
       notify(humanizarErroOperacional(error).mensagem, 'error');
@@ -2485,7 +2806,7 @@ class PrestacaoContasPage {
       shell.appendChild(Loading.create({ message: 'Carregando atendimento...' }));
     } else if (this.error) {
       shell.appendChild(Alert.create({
-        message: 'Erro ao carregar: ' + this.error.message,
+        message: this._mensagemErroCarregamento(),
         variant: 'error',
         dismissible: true
       }));
@@ -2558,13 +2879,9 @@ class PrestacaoContasPage {
         this.destroy();
         return;
       }
-      if (this.loading.operation || this.encerrado || this.editing.rowIndex >= 0) return;
-      if (this.root.querySelector('#fechar-retornos-grade')
-        && document.activeElement?.closest?.('#fechar-retornos-grade')) {
-        return;
-      }
-      // Consulta SOMENTE a consignação/prestação aberta nesta estação.
-      this._loadData(true);
+      if (this.loading.operation || this.encerrado) return;
+      if (this._inputOperacionalComFoco()) return;
+      this._loadData(true, { modo: LOAD_MODO.AUTO_REFRESH });
     }, 45000);
   }
 
@@ -2574,3 +2891,4 @@ class PrestacaoContasPage {
 }
 
 module.exports = PrestacaoContasPage;
+module.exports.LOAD_MODO = LOAD_MODO;

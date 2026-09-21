@@ -113,6 +113,9 @@ async function main() {
   ok(pdf.html.includes('Assinatura do Cliente'), 'área de assinatura');
   ok(pdf.html.includes('Emitido pelo CDS Sistemas'), 'rodapé CDS');
   ok(pdf.html.includes('Resumo Financeiro') || pdf.html.includes('RESUMO FINANCEIRO') || pdf.html.includes('sec-title'), 'bloco financeiro');
+  ok(!pdf.html.includes('>Limite<'), 'sem limite de crédito no cupom');
+  ok(!pdf.html.includes('Crédito Disponível') && !pdf.html.includes('Crédito disponível'), 'sem crédito disponível no cupom');
+  ok(!texto.includes('Limite:') && !texto.includes('Crédito disponível:'), 'texto compartilhado sem limite/crédito');
   ok(!pdf.html.includes('Hash '), 'sem hash no layout impresso');
   ok(!pdf.html.includes('Histórico'), 'sem histórico no layout impresso');
   ok(!pdf.html.includes('Índice de perdas'), 'sem índice de perdas');

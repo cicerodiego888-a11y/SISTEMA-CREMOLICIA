@@ -6144,6 +6144,15 @@ ${collectAllStyles()}`;
           }
         },
         {
+          path: "/consignacoes/:id/alterar-entrega",
+          name: "alterar-entrega",
+          component: "AlterarEntrega",
+          meta: {
+            title: "Alterar Entrega",
+            requiresAuth: true
+          }
+        },
+        {
           path: "/consignacoes/:id/comprovante",
           name: "comprovante-entrega",
           component: "ComprovanteEntrega",
@@ -6809,7 +6818,7 @@ ${lines.join("\n")}
         "module": "motor-comercial",
         "version": "1.0.3",
         "sprint": "UX-10",
-        "buildTime": "2026-09-20 08:32:50",
+        "buildTime": "2026-09-21 18:37:36",
         "hash": null,
         "ambiente": "development"
       };
@@ -7231,6 +7240,9 @@ ${lines.join("\n")}
         var _a2, _b2;
         const data = unwrapData(response);
         if (!data || typeof data !== "object") return data;
+        if (data.comprovante != null || Array.isArray(data.entregas) || Array.isArray(data.itensNovos) || Array.isArray(data.movimentacoes)) {
+          return data;
+        }
         if (data.perfil) return data.perfil;
         if (data.consignacao) return data.consignacao;
         if ((_a2 = data.dados) == null ? void 0 : _a2.perfil) return data.dados.perfil;
@@ -7697,12 +7709,33 @@ ${lines.join("\n")}
           return unwrapUseCaseData(response);
         }
         /**
-         * RCM-8.7 — Histórico Entrega Original + Complementares (somente leitura).
+         * RCM-8.13 — Alteração Pós-Entrega (delta; novo comprovante completo).
+         */
+        async registrarAlteracaoPosEntrega(id, data = {}) {
+          const response = await this.client.post(
+            `/consignacoes/${id}/alteracao-pos-entrega`,
+            this._withUsuario(data),
+            { timeout: 12e4 }
+          );
+          return unwrapUseCaseData(response);
+        }
+        /**
+         * RCM-8.7/8.13 — Histórico de entregas / atualizações (somente leitura).
          */
         async consultarEntregasConsignacao(id, params = {}) {
           const response = await this.client.get(`/consignacoes/${id}/entregas`, {
             params: { ...params, _t: Date.now() }
           });
+          return unwrapData(response);
+        }
+        /**
+         * RCM-8.13 — Reimpressão de comprovante histórico (sem efeitos).
+         */
+        async obterComprovanteEntregaHistorico(id, correlationId) {
+          const response = await this.client.get(
+            `/consignacoes/${id}/entregas/${encodeURIComponent(correlationId)}/comprovante`,
+            { params: { _t: Date.now() } }
+          );
           return unwrapData(response);
         }
         async obterComprovanteEntrega(id, params = {}) {
@@ -7820,14 +7853,20 @@ ${lines.join("\n")}
           const response = await this.client.post(`/consignacoes/${id}/prestacao/cortesia`, this._withUsuario(payload));
           return unwrapData(response);
         }
-        async registrarPagamento(id, data = {}) {
+        async registrarPagamento(id, data = {}, options = {}) {
           const payload = {
             ...data,
             valor: Number(String(data.valor ?? "").replace(",", ".")),
             formaPagamento: data.formaPagamento || "DINHEIRO",
             observacao: data.observacao || null
           };
-          const response = await this.client.post(`/consignacoes/${id}/prestacao/pagamento`, this._withUsuario(payload));
+          const headers = options.headers || data.headers || {};
+          delete payload.headers;
+          const response = await this.client.post(
+            `/consignacoes/${id}/prestacao/pagamento`,
+            this._withUsuario(payload),
+            { headers }
+          );
           return unwrapData(response);
         }
         /**
@@ -7982,7 +8021,9 @@ ${lines.join("\n")}
           return this.obterProjecaoHistorico(params);
         }
         async obterProjecaoResumoPrestacao(params = {}) {
-          const response = await this.client.get("/projections/resumo-prestacao", { params });
+          const response = await this.client.get("/projections/resumo-prestacao", {
+            params: { ...params, _t: Date.now() }
+          });
           return normalizeResumoPrestacao(unwrapData(response));
         }
         async obterResumoPrestacao(params = {}) {
@@ -12494,9 +12535,17 @@ ${lines.join("\n")}
           return [];
         }
       }
+      var ERRO_CONSIGNACAO_OFICIAL_NAO_LOCALIZADA = "N\xE3o foi poss\xEDvel localizar os dados oficiais desta consigna\xE7\xE3o.";
+      function consignacaoOficialValida(consignacao) {
+        return consignacao != null && consignacao.id != null && consignacao.id !== "";
+      }
       async function carregarConsignacaoCompleta(api, projectionApi, consignacaoId) {
         var _a2;
-        const consignacao = await api.obterConsignacao(consignacaoId);
+        const cabecalho = await api.obterConsignacao(consignacaoId);
+        if (!consignacaoOficialValida(cabecalho)) {
+          throw new Error(ERRO_CONSIGNACAO_OFICIAL_NAO_LOCALIZADA);
+        }
+        const consignacao = cabecalho;
         let perfil = null;
         let situacao = null;
         let resumo = null;
@@ -12564,6 +12613,8 @@ ${lines.join("\n")}
         cacheItensConsignacao,
         obterItensCacheConsignacao,
         carregarConsignacaoCompleta,
+        consignacaoOficialValida,
+        ERRO_CONSIGNACAO_OFICIAL_NAO_LOCALIZADA,
         withLoading,
         isOperadorAutorizado,
         possuiPermissao,
@@ -85095,9 +85146,40 @@ ${lines.join("\n")}
     }
   });
 
+  // frontend/modules/motor-comercial/utils/timestampOperacional.js
+  var require_timestampOperacional = __commonJS({
+    "frontend/modules/motor-comercial/utils/timestampOperacional.js"(exports, module) {
+      function normalizarTimestampLegado(raw) {
+        if (raw == null || raw === "") return null;
+        const s3 = String(raw).trim();
+        if (!s3) return null;
+        if (/[zZ]$/.test(s3) || /[+-]\d{2}:?\d{2}$/.test(s3)) return s3;
+        if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(s3)) {
+          const withT = s3.includes("T") ? s3 : s3.replace(" ", "T");
+          return /[zZ]$|[+-]\d{2}:?\d{2}$/.test(withT) ? withT : `${withT}Z`;
+        }
+        return s3;
+      }
+      function resolverTimestampOperacional(mov) {
+        var _a2;
+        if (!mov) return null;
+        const operacional = mov.dataMovimentacao || ((_a2 = mov.snapshot) == null ? void 0 : _a2.capturadoEm) || mov.data || null;
+        if (operacional != null && String(operacional).trim() !== "") {
+          return String(operacional).trim();
+        }
+        return normalizarTimestampLegado(mov.createdAt || mov.dataHora);
+      }
+      module.exports = {
+        normalizarTimestampLegado,
+        resolverTimestampOperacional
+      };
+    }
+  });
+
   // frontend/modules/motor-comercial/pages/PrestacaoContas/prestacaoFinanceiroSnapshot.js
   var require_prestacaoFinanceiroSnapshot = __commonJS({
     "frontend/modules/motor-comercial/pages/PrestacaoContas/prestacaoFinanceiroSnapshot.js"(exports, module) {
+      var { resolverTimestampOperacional } = require_timestampOperacional();
       var SITUACAO = Object.freeze({
         SEM_VENDA: "SEM_VENDA",
         QUITADA: "QUITADA",
@@ -85144,7 +85226,7 @@ ${lines.join("\n")}
           const snap = mov.snapshot || {};
           return {
             id: mov.id || null,
-            data: mov.createdAt || mov.dataHora || mov.data || snap.dataHora || null,
+            data: resolverTimestampOperacional(mov) || resolverTimestampOperacional({ dataMovimentacao: snap.dataHora, createdAt: mov.createdAt }) || null,
             forma: mov.formaPagamento || snap.formaPagamento || ((_a2 = snap.operacaoMeta) == null ? void 0 : _a2.formaPagamento) || ((_b2 = snap.meta) == null ? void 0 : _b2.formaPagamento) || "\u2014",
             valor: round2(mov.valor ?? snap.valor ?? ((_c = snap.operacaoMeta) == null ? void 0 : _c.valor) ?? 0),
             operador: mov.usuarioNome || mov.operador || mov.usuario || snap.usuarioNome || snap.operador || snap.usuario || "\u2014",
@@ -85220,7 +85302,8 @@ ${lines.join("\n")}
       var { formatDocumento } = require_helpers();
       var {
         buildFinanceiroFromResumo,
-        labelSituacaoFinanceira
+        labelSituacaoFinanceira,
+        round2
       } = require_prestacaoFinanceiroSnapshot();
       var MOMENTOS_FECHAMENTO = [
         { key: "retornos", label: "Registrar Retornos" },
@@ -85331,14 +85414,33 @@ ${lines.join("\n")}
           return acc;
         }, { vendidos: 0, devolvidos: 0, perdas: 0, cortesias: 0, pendentes: 0 });
       }
+      function precoSnapshotItem(item = {}) {
+        return Number(
+          item.precoUnitario ?? item.valorUnitario ?? item.preco ?? item.precoVenda ?? 0
+        );
+      }
+      function quantidadeNaturezaItem(item = {}, campo = "vendido") {
+        if (campo === "vendido") return Number(item.vendido ?? item.quantidadeVendida ?? 0);
+        if (campo === "devolvido") return Number(item.devolvido ?? item.quantidadeDevolvida ?? 0);
+        if (campo === "perdido") {
+          return Number(item.perdido ?? item.quantidadePerdida ?? item.quantidadePerda ?? 0);
+        }
+        if (campo === "cortesia") return Number(item.cortesia ?? item.quantidadeCortesia ?? 0);
+        return 0;
+      }
+      function calcularValorNaturezaItens(itens = [], campo = "vendido") {
+        return round2((itens || []).reduce((sum, item) => sum + quantidadeNaturezaItem(item, campo) * precoSnapshotItem(item), 0));
+      }
       function calcularValorVendidoItens(itens = []) {
-        return itens.reduce((sum, item) => {
-          const qtd = Number(item.vendido || item.quantidadeVendida || 0);
-          const preco = Number(
-            item.preco ?? item.precoUnitario ?? item.valorUnitario ?? item.precoVenda ?? 0
-          );
-          return sum + qtd * preco;
-        }, 0);
+        return calcularValorNaturezaItens(itens, "vendido");
+      }
+      function calcularValoresNaturezaItens(itens = []) {
+        return {
+          valorVendidos: calcularValorNaturezaItens(itens, "vendido"),
+          valorDevolvidos: calcularValorNaturezaItens(itens, "devolvido"),
+          valorPerdas: calcularValorNaturezaItens(itens, "perdido"),
+          valorCortesias: calcularValorNaturezaItens(itens, "cortesia")
+        };
       }
       var LINHA_RETORNO_SELECTOR = ".cds-fechar-consignacao__grade-row--retornos";
       function seletorLinhaRetorno(index2, rootSelector = "#fechar-retornos-grade") {
@@ -85370,9 +85472,11 @@ ${lines.join("\n")}
       }
       function buildPainelLateral(resumo = {}, itens = [], financeiro = null) {
         const operacional = buildPainelOperacional(itens);
+        const valores = calcularValoresNaturezaItens(itens);
         const fin = financeiro || buildFinanceiroFromResumo(resumo);
         return {
           ...operacional,
+          ...valores,
           financeiro: fin,
           // chaves oficiais espelhadas para o painel (sem aliases legados)
           valorVenda: fin.valorVenda,
@@ -85385,8 +85489,8 @@ ${lines.join("\n")}
       function buildPainelLateralPreview(resumo = {}, itens = [], financeiro = null) {
         const operacional = buildPainelOperacional(itens);
         const finSsot = financeiro || buildFinanceiroFromResumo(resumo);
-        const estimadoVenda = calcularValorVendidoItens(itens);
-        const valorVenda = Math.max(Number(finSsot.valorVenda || 0), estimadoVenda);
+        const valores = calcularValoresNaturezaItens(itens);
+        const valorVenda = valores.valorVendidos;
         const valorRecebido = Number(finSsot.valorRecebido || 0);
         const fin = buildFinanceiroFromResumo({
           valorVenda,
@@ -85394,13 +85498,14 @@ ${lines.join("\n")}
         });
         return {
           ...operacional,
+          ...valores,
           financeiro: fin,
           valorVenda: fin.valorVenda,
           valorRecebido: fin.valorRecebido,
           saldoEmAberto: fin.saldoEmAberto,
           situacaoFinanceira: fin.situacaoFinanceira,
           preview: true,
-          financeiroEstimado: estimadoVenda > Number(finSsot.valorVenda || 0) + 0.01
+          financeiroEstimado: Math.abs(valorVenda - Number(finSsot.valorVenda || 0)) > 0.01
         };
       }
       function mergeItensRetornos(servidor = [], rascunho = []) {
@@ -85814,7 +85919,9 @@ ${lines.join("\n")}
           if (Number.isFinite(produtoId) && produtoId > 0) porProduto.set(produtoId, ci);
           if (Number.isFinite(itemId) && itemId > 0) porItemId.set(itemId, ci);
         });
-        return itens.map((item, index2) => {
+        const presentesItemIds = /* @__PURE__ */ new Set();
+        const presentesProdutoKeys = /* @__PURE__ */ new Set();
+        const enriquecidos = (itens || []).map((item, index2) => {
           const itemId = Number(item.itemId ?? item.id);
           const produtoId = Number(item.produtoId);
           let ref = Number.isFinite(itemId) && porItemId.get(itemId) || Number.isFinite(produtoId) && porProduto.get(produtoId) || null;
@@ -85824,22 +85931,43 @@ ${lines.join("\n")}
           if (!ref && consignacaoItens.length === 1) {
             ref = consignacaoItens[0];
           }
+          if (Number.isFinite(itemId) && itemId > 0) presentesItemIds.add(itemId);
+          if (Number.isFinite(produtoId) && produtoId > 0) {
+            presentesProdutoKeys.add(`${item.consignacaoId || (ref == null ? void 0 : ref.consignacaoId) || ""}::${produtoId}`);
+          }
+          const entregueOficial = (ref == null ? void 0 : ref.quantidadeEntregue) ?? (ref == null ? void 0 : ref.quantidade) ?? item.quantidadeEntregue ?? item.enviado ?? item.quantidade ?? 0;
           const merged = mapItemConsignacao({
             ...item,
             ...ref || {},
-            // qtds da grade prevalecem sobre o snapshot da consignação
             quantidadeVendida: item.quantidadeVendida ?? item.vendido ?? (ref == null ? void 0 : ref.quantidadeVendida),
             quantidadeDevolvida: item.quantidadeDevolvida ?? item.devolvido ?? (ref == null ? void 0 : ref.quantidadeDevolvida),
             quantidadePerdida: item.quantidadePerdida ?? item.quantidadePerda ?? item.perdido ?? (ref == null ? void 0 : ref.quantidadePerdida),
             quantidadeCortesia: item.quantidadeCortesia ?? item.cortesia ?? (ref == null ? void 0 : ref.quantidadeCortesia),
-            quantidadeEntregue: item.quantidadeEntregue ?? item.enviado ?? item.quantidade ?? (ref == null ? void 0 : ref.quantidadeEntregue) ?? (ref == null ? void 0 : ref.quantidade),
-            produtoNome: resolverProdutoNome(item) || resolverProdutoNome(ref || {}),
+            quantidadeEntregue: entregueOficial,
+            enviado: entregueOficial,
+            produtoNome: resolverProdutoNome(ref || {}) || resolverProdutoNome(item),
             observacao: item.observacao != null && item.observacao !== "" ? item.observacao : (ref == null ? void 0 : ref.observacao) ?? "",
             dirty: item.dirty,
             dirtyCampos: item.dirtyCampos
           });
           return syncStatusOperacional(merged);
         });
+        for (const ci of consignacaoItens || []) {
+          const itemId = Number(ci.id ?? ci.itemId);
+          const produtoId = Number(ci.produtoId);
+          const jaTemItem = Number.isFinite(itemId) && itemId > 0 && presentesItemIds.has(itemId);
+          const chaveProd = `${ci.consignacaoId || ""}::${produtoId}`;
+          const jaTemProduto = Number.isFinite(produtoId) && produtoId > 0 && presentesProdutoKeys.has(chaveProd);
+          if (jaTemItem || jaTemProduto) continue;
+          enriquecidos.push(syncStatusOperacional(mapItemConsignacao({
+            ...ci,
+            itemId: ci.id ?? ci.itemId,
+            consignacaoId: ci.consignacaoId,
+            quantidadeEntregue: ci.quantidadeEntregue ?? ci.quantidade ?? 0,
+            enviado: ci.quantidadeEntregue ?? ci.quantidade ?? 0
+          })));
+        }
+        return enriquecidos;
       }
       function buildPayloadOperacao(item = {}, delta = 0, tipo = "") {
         const quantidade = Number(delta);
@@ -85904,7 +86032,10 @@ ${lines.join("\n")}
         formatDate,
         formatDateTime,
         calcularTotaisItens,
+        precoSnapshotItem,
+        calcularValorNaturezaItens,
         calcularValorVendidoItens,
+        calcularValoresNaturezaItens,
         coletarItensComRascunho,
         seletorLinhaRetorno,
         LINHA_RETORNO_SELECTOR,
@@ -86648,6 +86779,30 @@ ${lines.join("\n")}
     }
   });
 
+  // frontend/modules/motor-comercial/pages/Consignacoes/cockpitFinanceiroMappers.js
+  var require_cockpitFinanceiroMappers = __commonJS({
+    "frontend/modules/motor-comercial/pages/Consignacoes/cockpitFinanceiroMappers.js"(exports, module) {
+      function mapFinanceiroConsignacao({ contaCorrente = null, perfil = null, situacao = null } = {}) {
+        const cc = contaCorrente || {};
+        const aReceberDestaOperacao = Number(cc.saldoEmAberto ?? 0);
+        const estoqueConsignadoDestaOperacao = Number(
+          cc.estoqueConsignado != null ? cc.estoqueConsignado : Math.max(0, Number(cc.saldoAtual ?? 0) - aReceberDestaOperacao)
+        );
+        const saldoDevedorGlobalCliente = Number(
+          (perfil == null ? void 0 : perfil.saldoAberto) ?? (situacao == null ? void 0 : situacao.saldoDevedor) ?? (situacao == null ? void 0 : situacao.saldo) ?? 0
+        );
+        return {
+          aReceberDestaOperacao,
+          estoqueConsignadoDestaOperacao,
+          saldoDevedorGlobalCliente
+        };
+      }
+      module.exports = {
+        mapFinanceiroConsignacao
+      };
+    }
+  });
+
   // frontend/modules/motor-comercial/pages/Consignacoes/CockpitDrawer.js
   var require_CockpitDrawer = __commonJS({
     "frontend/modules/motor-comercial/pages/Consignacoes/CockpitDrawer.js"(exports, module) {
@@ -86660,6 +86815,7 @@ ${lines.join("\n")}
       var StatCard2 = require_StatCard2();
       var { createOperationalBadge } = require_badges();
       var { carregarConsignacaoCompleta, navigate } = require_operacional();
+      var { mapFinanceiroConsignacao } = require_cockpitFinanceiroMappers();
       var DRAWER_TABS = [
         { key: "resumo", label: "Resumo" },
         { key: "itens", label: "Itens" },
@@ -86908,7 +87064,7 @@ ${lines.join("\n")}
           [
             StatCard2.create({ title: "Vendido", value: this.page._formatCurrency(prestacao.valorVendido || 0), icon: "\u{1F4B0}" }),
             StatCard2.create({ title: "Recebido", value: this.page._formatCurrency(prestacao.valorRecebido || 0), icon: "\u{1F4B5}" }),
-            StatCard2.create({ title: "Saldo", value: this.page._formatCurrency(prestacao.saldoAtual || 0), icon: "\u2696\uFE0F", color: "warning" })
+            StatCard2.create({ title: "Saldo a receber", value: this.page._formatCurrency(prestacao.saldoAtual || 0), icon: "\u2696\uFE0F", color: "warning" })
           ].forEach((c4) => cards.appendChild(c4));
           wrap.appendChild(cards);
           const actions = document.createElement("div");
@@ -86922,19 +87078,40 @@ ${lines.join("\n")}
           return wrap;
         }
         async _tabFinanceiro() {
-          const { contaCorrente, situacao } = await this._getBundle();
+          const { contaCorrente, situacao, perfil } = await this._getBundle();
           const wrap = document.createElement("div");
           wrap.className = "cds-cockpit-drawer__grid";
-          wrap.appendChild(this._field("Saldo", this.page._formatCurrency((contaCorrente == null ? void 0 : contaCorrente.saldo) ?? (situacao == null ? void 0 : situacao.saldoEmAberto) ?? 0)));
-          wrap.appendChild(this._field("Saldo em Aberto", this.page._formatCurrency((contaCorrente == null ? void 0 : contaCorrente.saldoEmAberto) ?? 0)));
-          wrap.appendChild(this._field("Limite Dispon\xEDvel", this.page._formatCurrency((situacao == null ? void 0 : situacao.limiteDisponivel) ?? 0)));
-          const movs = (contaCorrente == null ? void 0 : contaCorrente.movimentacoes) || [];
+          const fin = mapFinanceiroConsignacao({ contaCorrente, perfil, situacao });
+          const titulo = document.createElement("h4");
+          titulo.className = "cds-cockpit-drawer__section-title";
+          titulo.textContent = "Financeiro da consigna\xE7\xE3o";
+          wrap.appendChild(titulo);
+          wrap.appendChild(this._field(
+            "A receber desta opera\xE7\xE3o",
+            this.page._formatCurrency(fin.aReceberDestaOperacao)
+          ));
+          wrap.appendChild(this._field(
+            "Estoque consignado desta opera\xE7\xE3o",
+            this.page._formatCurrency(fin.estoqueConsignadoDestaOperacao)
+          ));
+          wrap.appendChild(this._field(
+            "Saldo devedor global do cliente",
+            this.page._formatCurrency(fin.saldoDevedorGlobalCliente)
+          ));
+          wrap.appendChild(this._field(
+            "Limite dispon\xEDvel",
+            this.page._formatCurrency((situacao == null ? void 0 : situacao.limiteDisponivel) ?? 0)
+          ));
+          const movs = (contaCorrente == null ? void 0 : contaCorrente.lancamentos) || (contaCorrente == null ? void 0 : contaCorrente.movimentacoes) || [];
           if (!movs.length) {
             wrap.appendChild(EmptyState.create({ title: "Sem movimenta\xE7\xF5es financeiras" }));
             return wrap;
           }
           movs.slice(0, 8).forEach((mov) => {
-            wrap.appendChild(this._field(mov.tipo || "Movimento", `${this.page._formatCurrency(mov.valor || 0)} \u2014 ${this.page._formatDate(mov.data)}`));
+            wrap.appendChild(this._field(
+              mov.tipo || mov.tipoMovimentacao || "Movimento",
+              `${this.page._formatCurrency(mov.valor || 0)} \u2014 ${this.page._formatDate(mov.data || mov.dataMovimentacao)}`
+            ));
           });
           return wrap;
         }
@@ -86948,7 +87125,15 @@ ${lines.join("\n")}
           }
           wrap.appendChild(this._field("Tipo", perfil.perfilTipo));
           wrap.appendChild(this._field("Limite", this.page._formatCurrency(perfil.limiteComercial || 0)));
-          wrap.appendChild(this._field("Saldo Aberto", this.page._formatCurrency(perfil.saldoAberto || 0)));
+          wrap.appendChild(this._field(
+            "Saldo devedor global",
+            this.page._formatCurrency(perfil.saldoAberto || 0)
+          ));
+          const hint = document.createElement("p");
+          hint.className = "cds-cockpit-drawer__hint";
+          hint.style.cssText = "margin:0 0 12px;font-size:12px;color:#64748b;";
+          hint.textContent = "Estoque consignado + valores a receber de todas as opera\xE7\xF5es do cliente.";
+          wrap.appendChild(hint);
           wrap.appendChild(this._field("Score", (situacao == null ? void 0 : situacao.score) ?? "-"));
           wrap.appendChild(this._field("N\xEDvel de Risco", (situacao == null ? void 0 : situacao.nivelRisco) ?? "-"));
           const actions = document.createElement("div");
@@ -93823,6 +94008,281 @@ A consigna\xE7\xE3o permanecer\xE1 em prepara\xE7\xE3o.`,
     }
   });
 
+  // frontend/modules/motor-comercial/services/comprovanteAtualizadoEntrega.js
+  var require_comprovanteAtualizadoEntrega = __commonJS({
+    "frontend/modules/motor-comercial/services/comprovanteAtualizadoEntrega.js"(exports, module) {
+      function renderComprovanteTexto(comprovante = {}) {
+        const lines = [];
+        lines.push(`CONSIGNA\xC7\xC3O N\xBA ${comprovante.numeroConsignacao || "\u2014"}`);
+        lines.push("");
+        lines.push(comprovante.titulo || `COMPROVANTE DE ENTREGA N\xBA ${comprovante.numeroComprovante || "001"}`);
+        lines.push("");
+        for (const item of comprovante.listaCompleta || []) {
+          const nome = String(item.produtoNome || "").padEnd(28, ".");
+          lines.push(`${nome} ${item.quantidade}`);
+        }
+        if (comprovante.atualizacao) {
+          lines.push("");
+          lines.push(comprovante.atualizacao.titulo);
+          lines.push("");
+          lines.push(comprovante.atualizacao.tipo);
+          lines.push("");
+          for (const item of comprovante.atualizacao.itens || []) {
+            lines.push(item.produtoNome || `Produto #${item.produtoId}`);
+            if (item.afetado) {
+              lines.push(`Quantidade anterior: ${item.quantidadeAnterior}`);
+              if (item.complemento != null) lines.push(`Complemento: ${item.complemento}`);
+              if (item.alteracao != null) lines.push(`Altera\xE7\xE3o: ${item.alteracao}`);
+              lines.push(`Quantidade atual: ${item.quantidadeAtual}`);
+            } else {
+              lines.push(`Quantidade atual: ${item.quantidadeAtual}`);
+            }
+            lines.push("");
+          }
+          if (comprovante.atualizacao.motivo) {
+            lines.push("Motivo:");
+            lines.push(String(comprovante.atualizacao.motivo));
+            lines.push("");
+          }
+        }
+        lines.push(comprovante.totalAtualLabel || `TOTAL ATUAL DA CONSIGNA\xC7\xC3O: ${comprovante.quantidadeTotalAtual ?? 0}`);
+        return lines.join("\n");
+      }
+      function escapeHtml(value) {
+        return String(value || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+      }
+      function montarHtmlDocumentoComprovante(texto, titulo) {
+        const safe = escapeHtml(texto);
+        const safeTitle = escapeHtml(titulo || "Comprovante de Entrega");
+        return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <title>${safeTitle}</title>
+  <style>
+    body { margin: 0; padding: 24px; font-family: ui-monospace, Consolas, monospace; font-size: 13px; line-height: 1.45; color: #0f172a; }
+    pre { margin: 0; white-space: pre-wrap; word-break: break-word; }
+    @media print { body { padding: 12px; } }
+  </style>
+</head>
+<body><pre>${safe}</pre></body>
+</html>`;
+      }
+      function montarHtmlComprovante(comprovante = {}, consignacao = {}) {
+        var _a2;
+        const numeroCons = ((_a2 = consignacao == null ? void 0 : consignacao.documento) == null ? void 0 : _a2.numero) || comprovante.numeroConsignacao || `CONS-${(consignacao == null ? void 0 : consignacao.id) || ""}`;
+        const dados = {
+          ...comprovante,
+          numeroConsignacao: numeroCons
+        };
+        const texto = typeof comprovante.texto === "string" && comprovante.texto ? comprovante.texto : renderComprovanteTexto(dados);
+        const pre = document.createElement("pre");
+        pre.className = "cds-comprovante-atualizado__texto";
+        pre.style.cssText = [
+          "white-space:pre-wrap",
+          "word-break:break-word",
+          "font-family:ui-monospace,Consolas,monospace",
+          "font-size:13px",
+          "line-height:1.45",
+          "margin:0",
+          "padding:16px",
+          "background:#f8fafc",
+          "border:1px solid #e2e8f0",
+          "border-radius:8px",
+          "max-height:60vh",
+          "overflow:auto"
+        ].join(";");
+        pre.textContent = texto;
+        return pre;
+      }
+      function injetarHtmlNoIframe(iframe, html2) {
+        let objectUrl = null;
+        const tentarWrite = () => {
+          var _a2;
+          try {
+            const doc = iframe.contentDocument || ((_a2 = iframe.contentWindow) == null ? void 0 : _a2.document);
+            if (!doc) return false;
+            doc.open();
+            doc.write(html2);
+            doc.close();
+            return true;
+          } catch (_error) {
+            return false;
+          }
+        };
+        if (!tentarWrite()) {
+          objectUrl = URL.createObjectURL(new Blob([html2], { type: "text/html;charset=utf-8" }));
+          iframe.src = objectUrl;
+        }
+        return () => {
+          if (objectUrl) {
+            URL.revokeObjectURL(objectUrl);
+            objectUrl = null;
+          }
+        };
+      }
+      function openModalLocal(backdrop) {
+        requestAnimationFrame(() => {
+          backdrop.classList.add("cds-modal-backdrop--open", "is-open");
+        });
+        document.body.appendChild(backdrop);
+      }
+      function closeModalLocal(backdrop) {
+        backdrop.classList.remove("cds-modal-backdrop--open", "is-open");
+        setTimeout(() => backdrop.remove(), 250);
+      }
+      async function exibirDialogoComprovanteAtualizado(options = {}) {
+        var _a2;
+        const { consignacao, comprovante } = options;
+        if (!comprovante) return null;
+        const titulo = comprovante.titulo || `COMPROVANTE DE ENTREGA N\xBA ${comprovante.numeroComprovante || "001"}`;
+        const texto = renderComprovanteTexto({
+          ...comprovante,
+          numeroConsignacao: ((_a2 = consignacao == null ? void 0 : consignacao.documento) == null ? void 0 : _a2.numero) || comprovante.numeroConsignacao
+        });
+        if (typeof document === "undefined") {
+          if (typeof window !== "undefined" && window.alert) window.alert(texto.slice(0, 1800));
+          return "ok";
+        }
+        try {
+          const Modal = require_Modal2();
+          const Button = require_Button2();
+          return await new Promise((resolve) => {
+            const content = document.createElement("div");
+            content.style.cssText = "display:flex;flex-direction:column;gap:12px;min-width:min(520px,92vw);";
+            const pre = montarHtmlComprovante(comprovante, consignacao);
+            content.appendChild(pre);
+            const iframe = document.createElement("iframe");
+            iframe.title = titulo;
+            iframe.setAttribute("aria-hidden", "true");
+            iframe.style.cssText = "position:fixed;left:-9999px;top:0;width:1px;height:1px;border:0;opacity:0;pointer-events:none;";
+            content.appendChild(iframe);
+            let cleanupIframe = () => {
+            };
+            let backdrop = null;
+            let resolved = false;
+            const finish = (value) => {
+              if (resolved) return;
+              resolved = true;
+              cleanupIframe();
+              if (backdrop) closeModalLocal(backdrop);
+              resolve(value);
+            };
+            const imprimir = () => {
+              try {
+                cleanupIframe = injetarHtmlNoIframe(
+                  iframe,
+                  montarHtmlDocumentoComprovante(texto, titulo)
+                );
+                const win = iframe.contentWindow;
+                if (!win) {
+                  const blob = new Blob(
+                    [montarHtmlDocumentoComprovante(texto, titulo)],
+                    { type: "text/html;charset=utf-8" }
+                  );
+                  const url = URL.createObjectURL(blob);
+                  const w2 = window.open(url, "_blank");
+                  if (w2) {
+                    setTimeout(() => {
+                      try {
+                        w2.focus();
+                        w2.print();
+                      } catch (_e2) {
+                      }
+                      setTimeout(() => URL.revokeObjectURL(url), 6e4);
+                    }, 300);
+                  }
+                  return;
+                }
+                setTimeout(() => {
+                  try {
+                    win.focus();
+                    win.print();
+                  } catch (_e2) {
+                  }
+                }, 150);
+              } catch (_error) {
+                window.alert(texto.slice(0, 1800));
+              }
+            };
+            const footer = document.createElement("div");
+            footer.style.cssText = "display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end;";
+            footer.appendChild(Button.create({
+              text: "Imprimir",
+              variant: "primary",
+              onClick: () => {
+                imprimir();
+              }
+            }));
+            footer.appendChild(Button.create({
+              text: "Fechar",
+              variant: "secondary",
+              onClick: () => finish("ok")
+            }));
+            backdrop = Modal.create({
+              title: titulo,
+              content,
+              footer,
+              open: false,
+              onClose: () => finish(null)
+            });
+            const modal = backdrop.querySelector(".cds-modal");
+            if (modal) {
+              modal.style.maxWidth = "640px";
+              modal.style.width = "92vw";
+            }
+            openModalLocal(backdrop);
+          });
+        } catch (_e2) {
+          if (typeof window !== "undefined" && window.alert) {
+            window.alert(texto.slice(0, 1800));
+          }
+          return "ok";
+        }
+      }
+      async function emitirComprovanteAposOperacaoEntrega(options = {}) {
+        var _a2;
+        const {
+          api = null,
+          consignacaoId = null,
+          consignacao = null,
+          resultado = null,
+          exibir = true
+        } = options;
+        let comprovante = (resultado == null ? void 0 : resultado.comprovante) || null;
+        const correlationId = (resultado == null ? void 0 : resultado.correlationId) || null;
+        const id = consignacaoId ?? ((_a2 = resultado == null ? void 0 : resultado.consignacao) == null ? void 0 : _a2.id) ?? (consignacao == null ? void 0 : consignacao.id) ?? null;
+        if (!comprovante && correlationId && id != null && (api == null ? void 0 : api.obterComprovanteEntregaHistorico)) {
+          try {
+            const payload = await api.obterComprovanteEntregaHistorico(id, correlationId);
+            comprovante = (payload == null ? void 0 : payload.comprovante) || payload || null;
+          } catch (_e2) {
+            comprovante = null;
+          }
+        }
+        if (!comprovante && Array.isArray(resultado == null ? void 0 : resultado.entregas) && correlationId) {
+          const ev = resultado.entregas.find((e2) => String(e2.correlationId) === String(correlationId));
+          comprovante = (ev == null ? void 0 : ev.comprovante) || null;
+        }
+        if (!comprovante) return null;
+        if (exibir) {
+          await exibirDialogoComprovanteAtualizado({
+            consignacao: (resultado == null ? void 0 : resultado.consignacao) || consignacao,
+            comprovante
+          });
+        }
+        return comprovante;
+      }
+      module.exports = {
+        montarHtmlComprovante,
+        montarHtmlDocumentoComprovante,
+        exibirDialogoComprovanteAtualizado,
+        emitirComprovanteAposOperacaoEntrega,
+        renderComprovanteTexto
+      };
+    }
+  });
+
   // frontend/modules/motor-comercial/pages/EntregaComplementar/index.js
   var require_EntregaComplementar = __commonJS({
     "frontend/modules/motor-comercial/pages/EntregaComplementar/index.js"(exports, module) {
@@ -94182,10 +94642,13 @@ A consigna\xE7\xE3o permanecer\xE1 em prepara\xE7\xE3o.`,
           var _a2, _b2;
           if (!this.itensNovos.length || this.confirmando) return;
           const ok = await confirmDialog({
-            title: "Confirmar Entrega Complementar",
-            message: `Confirma a complementa\xE7\xE3o de ${this.itensNovos.length} produto(s) (${formatCurrency(totalItensComplementares(this.itensNovos))})?
+            title: "Confirmar complementa\xE7\xE3o",
+            message: `Esta complementa\xE7\xE3o ser\xE1 adicionada \xE0 consigna\xE7\xE3o.
+A entrega anterior ser\xE1 preservada e um novo comprovante atualizado ser\xE1 emitido.
 
-Somente os novos itens ser\xE3o movimentados no estoque e no Ledger.`
+${this.itensNovos.length} produto(s) \xB7 ${formatCurrency(totalItensComplementares(this.itensNovos))}`,
+            confirmLabel: "Confirmar complementa\xE7\xE3o",
+            cancelLabel: "Voltar"
           });
           if (!ok) return;
           this.confirmando = true;
@@ -94212,13 +94675,34 @@ Somente os novos itens ser\xE3o movimentados no estoque e no Ledger.`
               (resultado == null ? void 0 : resultado.idempotente) ? "Entrega complementar j\xE1 registrada (idempotente)." : "Entrega complementar confirmada.",
               "success"
             );
+            try {
+              const {
+                emitirComprovanteAposOperacaoEntrega
+              } = require_comprovanteAtualizadoEntrega();
+              await emitirComprovanteAposOperacaoEntrega({
+                api: this.api,
+                consignacaoId: this.consignacaoId,
+                consignacao: this.consignacao,
+                resultado
+              });
+            } catch (_e2) {
+            }
             this.itensNovos = [];
             const retorno = String(
               ((_a2 = this.routeQuery) == null ? void 0 : _a2.retorno) || ((_b2 = this.routeQuery) == null ? void 0 : _b2.voltarPara) || ""
             ).toLowerCase();
-            const destino = retorno === "prestacao" ? `/consignacoes/${this.consignacaoId}/prestacao` : `/consignacoes/${this.consignacaoId}`;
+            if (retorno === "prestacao") {
+              const path = routeWithActiveContext(
+                `/consignacoes/${this.consignacaoId}/prestacao`,
+                this.navigationContext,
+                { aposComplementar: "1", _t: String(Date.now()) }
+              );
+              const url = path.includes("aposComplementar=") ? path : `${path}${path.includes("?") ? "&" : "?"}aposComplementar=1&_t=${Date.now()}`;
+              await navigate(url);
+              return;
+            }
             await navigate(routeWithActiveContext(
-              destino,
+              `/consignacoes/${this.consignacaoId}`,
               this.navigationContext
             ));
           } catch (error) {
@@ -94249,6 +94733,340 @@ Somente os novos itens ser\xE3o movimentados no estoque e no Ledger.`
         }
       };
       module.exports = EntregaComplementarPage;
+    }
+  });
+
+  // frontend/modules/motor-comercial/pages/AlterarEntrega/alterarEntregaMappers.js
+  var require_alterarEntregaMappers = __commonJS({
+    "frontend/modules/motor-comercial/pages/AlterarEntrega/alterarEntregaMappers.js"(exports, module) {
+      var {
+        podeAdicionarProdutoComplementar,
+        MENSAGEM_PRESTACAO_ENCERRADA
+      } = require_entregaComplementarMappers();
+      var MOTIVOS_ALTERACAO_POS_ENTREGA = Object.freeze([
+        "CLIENTE_DESISTIU",
+        "ERRO_DIGITACAO",
+        "AJUSTE_OPERACIONAL",
+        "OUTRO"
+      ]);
+      var MENSAGEM_CONFIRMACAO_ALTERACAO = "Esta altera\xE7\xE3o ser\xE1 registrada como uma nova atualiza\xE7\xE3o da entrega. O comprovante anterior ser\xE1 preservado e um novo comprovante ser\xE1 emitido.";
+      function podeAlterarEntrega(consignacao) {
+        return podeAdicionarProdutoComplementar(consignacao);
+      }
+      function montarLinhasEdicao(itens = []) {
+        return (itens || []).map((item) => ({
+          itemId: item.id,
+          produtoId: item.produtoId,
+          produtoNome: item.produtoNome || item.produto || `Produto #${item.produtoId}`,
+          quantidadeAnterior: Number(item.quantidadeEntregue ?? item.quantidade ?? 0),
+          quantidadeNova: Number(item.quantidadeEntregue ?? item.quantidade ?? 0),
+          precoUnitario: Number(item.precoUnitario || 0),
+          unidadeComercial: item.unidadeComercial || "UN"
+        }));
+      }
+      function calcularDeltas(linhas = []) {
+        return (linhas || []).map((l3) => {
+          const anterior = Number(l3.quantidadeAnterior) || 0;
+          const nova = Number(l3.quantidadeNova);
+          const delta = nova - anterior;
+          return {
+            ...l3,
+            delta,
+            alterado: Number.isFinite(nova) && delta !== 0
+          };
+        }).filter((l3) => l3.alterado);
+      }
+      function opcoesMotivo() {
+        return MOTIVOS_ALTERACAO_POS_ENTREGA.map((m4) => ({
+          value: m4,
+          label: m4.replace(/_/g, " ")
+        }));
+      }
+      module.exports = {
+        MOTIVOS_ALTERACAO_POS_ENTREGA,
+        MENSAGEM_CONFIRMACAO_ALTERACAO,
+        MENSAGEM_PRESTACAO_ENCERRADA,
+        podeAlterarEntrega,
+        podeAdicionarProdutoComplementar,
+        montarLinhasEdicao,
+        calcularDeltas,
+        opcoesMotivo
+      };
+    }
+  });
+
+  // frontend/modules/motor-comercial/pages/AlterarEntrega/index.js
+  var require_AlterarEntrega = __commonJS({
+    "frontend/modules/motor-comercial/pages/AlterarEntrega/index.js"(exports, module) {
+      var Workspace = require_Workspace2();
+      var Button = require_Button2();
+      var Loading = require_Loading2();
+      var Alert = require_Alert2();
+      var EmptyState = require_EmptyState2();
+      var MotorComercialApi = require_MotorComercialApi();
+      var {
+        notify,
+        navigate,
+        withLoading,
+        confirmDialog,
+        getUsuarioId,
+        carregarConsignacaoCompleta
+      } = require_operacional();
+      var {
+        parseNavigationContext,
+        resolveBackPath,
+        routeWithActiveContext,
+        getBackButtonLabel
+      } = require_cliente360Context();
+      var { formatDocumento } = require_helpers();
+      var {
+        podeAlterarEntrega,
+        montarLinhasEdicao,
+        calcularDeltas,
+        opcoesMotivo,
+        MENSAGEM_CONFIRMACAO_ALTERACAO,
+        MENSAGEM_PRESTACAO_ENCERRADA
+      } = require_alterarEntregaMappers();
+      var {
+        emitirComprovanteAposOperacaoEntrega
+      } = require_comprovanteAtualizadoEntrega();
+      var AlterarEntregaPage = class _AlterarEntregaPage {
+        constructor(consignacaoId, routeQuery = {}) {
+          this.consignacaoId = consignacaoId;
+          this.routeQuery = routeQuery;
+          this.navigationContext = parseNavigationContext(routeQuery);
+          this.api = new MotorComercialApi();
+          this.consignacao = null;
+          this.linhas = [];
+          this.motivo = "CLIENTE_DESISTIU";
+          this.observacao = "";
+          this.loading = true;
+          this.error = null;
+          this.root = null;
+        }
+        static create(consignacaoId, query = {}) {
+          const page = new _AlterarEntregaPage(consignacaoId, query);
+          return page.render();
+        }
+        render() {
+          this.root = Workspace.create({
+            variant: "station",
+            className: "cds-alterar-entrega-workspace",
+            header: Workspace.Header.create({
+              title: "ALTERAR ENTREGA",
+              subtitle: "Alterar produtos de uma entrega j\xE1 realizada",
+              context: this._headerContext(),
+              onBack: () => this._voltar()
+            }),
+            body: Workspace.Body.create({
+              children: this._shell(),
+              scroll: true
+            }),
+            footer: Workspace.Footer.create({
+              left: [
+                Button.create({
+                  text: getBackButtonLabel(this.navigationContext, "Voltar"),
+                  variant: "ghost",
+                  onClick: () => this._voltar()
+                })
+              ],
+              right: [
+                Button.create({
+                  text: "Confirmar altera\xE7\xE3o",
+                  variant: "primary",
+                  onClick: () => this._confirmar()
+                })
+              ]
+            })
+          });
+          this.root.id = "alterar-entrega-root";
+          this.root.dataset.rcm = "8.13";
+          this._load();
+          return this.root;
+        }
+        _headerContext() {
+          var _a2;
+          const doc = formatDocumento((_a2 = this.consignacao) == null ? void 0 : _a2.documento);
+          return doc ? `Consigna\xE7\xE3o ${doc}` : `Consigna\xE7\xE3o #${this.consignacaoId}`;
+        }
+        _shell() {
+          const host = document.createElement("div");
+          host.id = "alterar-entrega-body";
+          host.appendChild(Loading.create({ message: "Carregando consigna\xE7\xE3o\u2026" }));
+          return host;
+        }
+        _host() {
+          var _a2, _b2;
+          return ((_b2 = (_a2 = this.root) == null ? void 0 : _a2.querySelector) == null ? void 0 : _b2.call(_a2, "#alterar-entrega-body")) || document.getElementById("alterar-entrega-body");
+        }
+        async _load() {
+          var _a2;
+          this.loading = true;
+          this.error = null;
+          try {
+            this.consignacao = await withLoading(
+              "Carregando\u2026",
+              () => carregarConsignacaoCompleta(this.api, this.consignacaoId)
+            );
+            const check = podeAlterarEntrega(this.consignacao);
+            if (!check.elegivel) {
+              this.error = check.mensagem || MENSAGEM_PRESTACAO_ENCERRADA;
+            }
+            this.linhas = montarLinhasEdicao(((_a2 = this.consignacao) == null ? void 0 : _a2.itens) || []);
+          } catch (err2) {
+            this.error = err2.message || "Falha ao carregar consigna\xE7\xE3o";
+          } finally {
+            this.loading = false;
+            this._renderBody();
+          }
+        }
+        _renderBody() {
+          const host = this._host();
+          if (!host) return;
+          host.innerHTML = "";
+          if (this.loading) {
+            host.appendChild(Loading.create({ message: "Carregando\u2026" }));
+            return;
+          }
+          if (this.error) {
+            host.appendChild(Alert.create({ variant: "error", message: this.error }));
+            return;
+          }
+          if (!this.linhas.length) {
+            host.appendChild(EmptyState.create({
+              title: "Sem itens",
+              description: "N\xE3o h\xE1 produtos entregues para alterar."
+            }));
+            return;
+          }
+          const intro = document.createElement("p");
+          intro.className = "cds-alterar-entrega__intro";
+          intro.textContent = "Informe a nova quantidade de cada produto. O comprovante anterior ser\xE1 preservado.";
+          host.appendChild(intro);
+          const table = document.createElement("table");
+          table.className = "cds-alterar-entrega__table";
+          table.innerHTML = `
+      <thead>
+        <tr>
+          <th>Produto</th>
+          <th>Anterior</th>
+          <th>Nova qtd</th>
+          <th>Delta</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    `;
+          const tbody = table.querySelector("tbody");
+          this.linhas.forEach((linha, idx) => {
+            const tr = document.createElement("tr");
+            const delta = Number(linha.quantidadeNova) - Number(linha.quantidadeAnterior);
+            tr.innerHTML = `
+        <td>${linha.produtoNome}</td>
+        <td>${linha.quantidadeAnterior}</td>
+        <td></td>
+        <td class="cds-alterar-entrega__delta">${delta >= 0 ? `+${delta}` : delta}</td>
+      `;
+            const input = document.createElement("input");
+            input.type = "number";
+            input.min = "0";
+            input.step = "1";
+            input.value = String(linha.quantidadeNova);
+            input.addEventListener("input", () => {
+              linha.quantidadeNova = Number(input.value);
+              const d2 = Number(linha.quantidadeNova) - Number(linha.quantidadeAnterior);
+              tr.querySelector(".cds-alterar-entrega__delta").textContent = d2 >= 0 ? `+${d2}` : String(d2);
+            });
+            tr.children[2].appendChild(input);
+            tbody.appendChild(tr);
+            void idx;
+          });
+          host.appendChild(table);
+          const motivoWrap = document.createElement("div");
+          motivoWrap.className = "cds-alterar-entrega__motivo";
+          const label = document.createElement("label");
+          label.textContent = "Motivo";
+          const select = document.createElement("select");
+          opcoesMotivo().forEach((opt) => {
+            const o3 = document.createElement("option");
+            o3.value = opt.value;
+            o3.textContent = opt.label;
+            if (opt.value === this.motivo) o3.selected = true;
+            select.appendChild(o3);
+          });
+          select.addEventListener("change", () => {
+            this.motivo = select.value;
+          });
+          motivoWrap.appendChild(label);
+          motivoWrap.appendChild(select);
+          host.appendChild(motivoWrap);
+          const obsWrap = document.createElement("div");
+          obsWrap.className = "cds-alterar-entrega__obs";
+          const obsLabel = document.createElement("label");
+          obsLabel.textContent = "Observa\xE7\xE3o (opcional)";
+          const textarea = document.createElement("textarea");
+          textarea.rows = 2;
+          textarea.value = this.observacao;
+          textarea.addEventListener("input", () => {
+            this.observacao = textarea.value;
+          });
+          obsWrap.appendChild(obsLabel);
+          obsWrap.appendChild(textarea);
+          host.appendChild(obsWrap);
+        }
+        async _confirmar() {
+          const deltas = calcularDeltas(this.linhas);
+          if (!deltas.length) {
+            notify("Altere ao menos uma quantidade.", "warning");
+            return;
+          }
+          if (!this.motivo) {
+            notify("Informe o motivo da altera\xE7\xE3o.", "warning");
+            return;
+          }
+          const confirmed = await confirmDialog({
+            title: "Confirmar altera\xE7\xE3o",
+            message: MENSAGEM_CONFIRMACAO_ALTERACAO,
+            confirmLabel: "Confirmar altera\xE7\xE3o",
+            cancelLabel: "Voltar"
+          });
+          if (!confirmed) return;
+          try {
+            const result = await withLoading(
+              "Registrando altera\xE7\xE3o\u2026",
+              () => this.api.registrarAlteracaoPosEntrega(this.consignacaoId, {
+                motivo: this.motivo,
+                observacao: this.observacao || null,
+                usuarioId: getUsuarioId(),
+                itens: deltas.map((d2) => ({
+                  itemId: d2.itemId,
+                  produtoId: d2.produtoId,
+                  quantidadeNova: d2.quantidadeNova
+                }))
+              })
+            );
+            notify("Altera\xE7\xE3o registrada. Novo comprovante emitido.", "success");
+            await emitirComprovanteAposOperacaoEntrega({
+              api: this.api,
+              consignacaoId: this.consignacaoId,
+              consignacao: this.consignacao,
+              resultado: result
+            });
+            navigate(routeWithActiveContext(
+              `/consignacoes/${this.consignacaoId}`,
+              this.navigationContext
+            ));
+          } catch (err2) {
+            notify(err2.message || "Falha ao registrar altera\xE7\xE3o", "error");
+          }
+        }
+        _voltar() {
+          navigate(resolveBackPath(
+            this.navigationContext,
+            `/consignacoes/${this.consignacaoId}`
+          ));
+        }
+      };
+      module.exports = AlterarEntregaPage;
     }
   });
 
@@ -94984,6 +95802,7 @@ Somente os novos itens ser\xE3o movimentados no estoque e no Ledger.`
         ...MENSAGENS,
         PRESTACAO_SALVA: "\u2713 Presta\xE7\xE3o salva.",
         PAGAMENTO_REGISTRADO: "\u2713 Pagamento registrado.",
+        PAGAMENTO_JA_REGISTRADO: "Pagamento j\xE1 registrado.",
         EMITINDO_NFCE: "Emitindo NFC-e...",
         CRIANDO_VENDA: "Criando Venda Oficial...",
         ENCERRANDO: "Encerrando Presta\xE7\xE3o...",
@@ -94996,7 +95815,10 @@ Somente os novos itens ser\xE3o movimentados no estoque e no Ledger.`
         ERRO_GENERICO: "\u26A0 N\xE3o foi poss\xEDvel concluir a opera\xE7\xE3o.\nTente novamente ou contate o suporte.",
         STATUS_VAZIO: "\u2014",
         CAMPO_AUSENTE: "\u2014",
-        OPERACAO_EM_ANDAMENTO: "Opera\xE7\xE3o em andamento..."
+        OPERACAO_EM_ANDAMENTO: "Opera\xE7\xE3o em andamento...",
+        PRESTACAO_AGUARDE_HIDRATACAO: "Carregando os dados da presta\xE7\xE3o. Aguarde um momento para continuar.",
+        PRESTACAO_CONSIGNACAO_OFICIAL_AUSENTE: "N\xE3o foi poss\xEDvel carregar os dados oficiais da consigna\xE7\xE3o para continuar o fechamento.",
+        PRESTACAO_CONSIGNACAO_NAO_LOCALIZADA: "N\xE3o foi poss\xEDvel localizar os dados oficiais desta consigna\xE7\xE3o."
       });
       var PLACEHOLDER_RE = /^(Produto|Cliente|Item)\s*#/i;
       function safeText(value, fallback = MENSAGENS_HARDENING.CAMPO_AUSENTE) {
@@ -95015,6 +95837,14 @@ Somente os novos itens ser\xE3o movimentados no estoque e no Ledger.`
       function humanizarErroOperacional(error, contexto = "") {
         const raw = String((error == null ? void 0 : error.message) || error || "");
         const upper = raw.toUpperCase();
+        if (raw === MENSAGENS_HARDENING.PRESTACAO_AGUARDE_HIDRATACAO || raw === MENSAGENS_HARDENING.PRESTACAO_CONSIGNACAO_OFICIAL_AUSENTE || raw === MENSAGENS_HARDENING.PRESTACAO_CONSIGNACAO_NAO_LOCALIZADA) {
+          return {
+            mensagem: raw,
+            retryable: true,
+            tipo: "HIDRATACAO",
+            acaoSugerida: "Aguardar o carregamento"
+          };
+        }
         if (/NCM|CFOP|CST|GTIN|CEST|CADASTRO FISCAL|PRODUTO.*FISCAL/i.test(raw)) {
           return {
             mensagem: MENSAGENS_HARDENING.ERRO_CADASTRO_FISCAL,
@@ -95055,6 +95885,14 @@ Somente os novos itens ser\xE3o movimentados no estoque e no Ledger.`
             acaoSugerida: null
           };
         }
+        if (/Cannot read propert(y|ies) of (null|undefined).*itens/i.test(raw)) {
+          return {
+            mensagem: MENSAGENS_HARDENING.PRESTACAO_AGUARDE_HIDRATACAO,
+            retryable: true,
+            tipo: "HIDRATACAO",
+            acaoSugerida: "Aguardar o carregamento"
+          };
+        }
         if (/Error:|TypeError|at\s+\w+|SQLITE|SQL\s|HTTP\s*\d{3}/i.test(raw) || raw.length > 180) {
           return {
             mensagem: MENSAGENS_HARDENING.ERRO_GENERICO,
@@ -95085,8 +95923,12 @@ Somente os novos itens ser\xE3o movimentados no estoque e no Ledger.`
           podeEncerrarPermissao = true,
           dirty = false,
           situacaoFiscal = "",
-          salvando = false
+          salvando = false,
+          hidratando = false
         } = ctx;
+        if (hidratando && acao === "continuar") {
+          return MENSAGENS_HARDENING.PRESTACAO_AGUARDE_HIDRATACAO;
+        }
         if (loading || emitindo) {
           if (acao === "emitir") return MENSAGENS_HARDENING.EMITINDO_NFCE;
           if (acao === "encerrar") return MENSAGENS_HARDENING.ENCERRANDO;
@@ -96196,6 +97038,9 @@ Somente os novos itens ser\xE3o movimentados no estoque e no Ledger.`
             if (el) el.textContent = String(value);
           });
         }
+        static _htmlNaturezaDd(qtyKey, qty, valor) {
+          return `<strong data-painel="${qtyKey}">${qty ?? 0}</strong><span data-painel="valor${qtyKey.charAt(0).toUpperCase()}${qtyKey.slice(1)}" class="cds-retornos-sidebar__natureza-valor">${formatCurrency(valor || 0)}</span>`;
+        }
         static _situacaoSidebarTone(codigo = "") {
           const key = String(codigo || "").toUpperCase();
           if (key === "QUITADA" || key === "SEM_VENDA") return "ok";
@@ -96207,27 +97052,24 @@ Somente os novos itens ser\xE3o movimentados no estoque e no Ledger.`
           const fin = painel.preview && painel.financeiro ? painel.financeiro : ((_a2 = state.snapshot) == null ? void 0 : _a2.financeiro) || painel.financeiro || {};
           const situacaoLabel = labelSituacaoFinanceiraOficial(fin.situacaoFinanceira) || labelSituacaoFinanceira(fin.situacaoFinanceira) || "\u2014";
           const tone = _FecharConsignacaoView._situacaoSidebarTone(fin.situacaoFinanceira);
-          const semVenda = _isSemVenda(fin);
           const aside = document.createElement("aside");
           aside.className = "cds-op-card cds-retornos-sidebar cds-fechar-consignacao__painel";
           aside.id = "fechar-painel-lateral";
           aside.innerHTML = `
       <h3 class="cds-op-card__titulo">Resumo Financeiro</h3>
       <div class="cds-retornos-sidebar__fin">
-        ${semVenda ? "" : `
         <div class="cds-retornos-sidebar__metric cds-retornos-sidebar__metric--venda">
-          <span>Valor da Venda</span>
+          <span>Total vendido</span>
           <strong data-painel="valorVenda">${formatCurrency(fin.valorVenda)}</strong>
         </div>
         <div class="cds-retornos-sidebar__metric cds-retornos-sidebar__metric--recebido">
           <span>Recebido</span>
           <strong data-painel="valorRecebido">${formatCurrency(fin.valorRecebido)}</strong>
         </div>
-        <div class="cds-retornos-sidebar__metric cds-retornos-sidebar__metric--saldo">
-          <span>Saldo em Aberto</span>
+        <div class="cds-retornos-sidebar__metric cds-retornos-sidebar__metric--saldo cds-retornos-sidebar__metric--receber">
+          <span>A receber</span>
           <strong data-painel="saldoEmAberto">${formatCurrency(fin.saldoEmAberto)}</strong>
         </div>
-        `}
         <div class="cds-retornos-sidebar__metric cds-retornos-sidebar__metric--sit cds-retornos-sidebar__metric--${tone}">
           <span>Situa\xE7\xE3o Financeira</span>
           <strong data-painel="situacaoFinanceira">${safeText(situacaoLabel)}</strong>
@@ -96235,11 +97077,26 @@ Somente os novos itens ser\xE3o movimentados no estoque e no Ledger.`
       </div>
       <h4 class="cds-retornos-sidebar__natureza-title">Resumo por natureza</h4>
       <dl class="cds-retornos-sidebar__natureza">
-        <div><dt>Vendidos</dt><dd data-painel="vendidos" class="is-vendidos">${painel.produtosVendidos ?? 0}</dd></div>
-        <div><dt>Devolvidos</dt><dd data-painel="devolvidos" class="is-devolvidos">${painel.produtosDevolvidos ?? 0}</dd></div>
-        <div><dt>Perdas</dt><dd data-painel="perdas" class="is-perdas">${painel.perdas ?? 0}</dd></div>
-        <div><dt>Cortesias</dt><dd data-painel="cortesias" class="is-cortesias">${painel.cortesias ?? 0}</dd></div>
-        <div><dt>Saldo</dt><dd data-painel="pendentes" class="is-saldo">${painel.pendentes ?? 0}</dd></div>
+        <div>
+          <dt>Vendidos</dt>
+          <dd class="is-vendidos">${_FecharConsignacaoView._htmlNaturezaDd("vendidos", painel.produtosVendidos, painel.valorVendidos)}</dd>
+        </div>
+        <div>
+          <dt>Devolvidos</dt>
+          <dd class="is-devolvidos">${_FecharConsignacaoView._htmlNaturezaDd("devolvidos", painel.produtosDevolvidos, painel.valorDevolvidos)}</dd>
+        </div>
+        <div>
+          <dt>Perdas</dt>
+          <dd class="is-perdas">${_FecharConsignacaoView._htmlNaturezaDd("perdas", painel.perdas, painel.valorPerdas)}</dd>
+        </div>
+        <div>
+          <dt>Cortesias</dt>
+          <dd class="is-cortesias">${_FecharConsignacaoView._htmlNaturezaDd("cortesias", painel.cortesias, painel.valorCortesias)}</dd>
+        </div>
+        <div>
+          <dt>Saldo</dt>
+          <dd class="is-saldo"><strong data-painel="pendentes">${painel.pendentes ?? 0}</strong></dd>
+        </div>
       </dl>
     `;
           const persist = document.createElement("div");
@@ -96292,22 +97149,23 @@ Somente os novos itens ser\xE3o movimentados no estoque e no Ledger.`
         static patchPainelLateral(asideEl, painel, state = {}) {
           var _a2;
           if (!asideEl || !painel) return;
-          const fin = painel.preview && painel.financeiro ? painel.financeiro : ((_a2 = state.snapshot) == null ? void 0 : _a2.financeiro) || painel.financeiro || {};
+          const fin = painel.preview && painel.financeiro ? painel.financeiro : painel.financeiro || ((_a2 = state.snapshot) == null ? void 0 : _a2.financeiro) || {};
           const situacaoLabel = labelSituacaoFinanceiraOficial(fin.situacaoFinanceira) || labelSituacaoFinanceira(fin.situacaoFinanceira) || "\u2014";
-          const semVenda = _isSemVenda(fin);
           const fields = {
             vendidos: String(painel.produtosVendidos ?? 0),
             devolvidos: String(painel.produtosDevolvidos ?? 0),
             perdas: String(painel.perdas ?? 0),
             cortesias: String(painel.cortesias ?? 0),
             pendentes: String(painel.pendentes ?? 0),
+            valorVendidos: formatCurrency(painel.valorVendidos ?? 0),
+            valorDevolvidos: formatCurrency(painel.valorDevolvidos ?? 0),
+            valorPerdas: formatCurrency(painel.valorPerdas ?? 0),
+            valorCortesias: formatCurrency(painel.valorCortesias ?? 0),
+            valorVenda: formatCurrency(fin.valorVenda),
+            valorRecebido: formatCurrency(fin.valorRecebido),
+            saldoEmAberto: formatCurrency(fin.saldoEmAberto),
             situacaoFinanceira: situacaoLabel
           };
-          if (!semVenda) {
-            fields.valorVenda = formatCurrency(fin.valorVenda);
-            fields.valorRecebido = formatCurrency(fin.valorRecebido);
-            fields.saldoEmAberto = formatCurrency(fin.saldoEmAberto);
-          }
           Object.entries(fields).forEach(([key, value]) => {
             const el = asideEl.querySelector(`[data-painel="${key}"]`);
             if (el) el.textContent = value;
@@ -96315,9 +97173,9 @@ Somente os novos itens ser\xE3o movimentados no estoque e no Ledger.`
           ["valorVenda", "valorRecebido", "saldoEmAberto"].forEach((key) => {
             var _a3, _b2;
             const metric = (_a3 = asideEl.querySelector(`[data-painel="${key}"]`)) == null ? void 0 : _a3.closest(".cds-retornos-sidebar__metric");
-            if (metric) metric.hidden = semVenda;
+            if (metric) metric.hidden = false;
             const legacy = (_b2 = asideEl.querySelector(`[data-painel="${key}"]`)) == null ? void 0 : _b2.closest(".cds-fechar-consignacao__painel-campo");
-            if (legacy) legacy.hidden = semVenda;
+            if (legacy) legacy.hidden = false;
           });
           const sitMetric = asideEl.querySelector(".cds-retornos-sidebar__metric--sit");
           if (sitMetric) {
@@ -96970,9 +97828,30 @@ Somente os novos itens ser\xE3o movimentados no estoque e no Ledger.`
         }
         return pendencias;
       }
+      function _espelharQtyOficial(item, campo, value) {
+        const n2 = Number(value || 0);
+        item[campo] = n2;
+        if (campo === "vendido") item.quantidadeVendida = n2;
+        if (campo === "devolvido") item.quantidadeDevolvida = n2;
+        if (campo === "perdido") {
+          item.quantidadePerdida = n2;
+          item.quantidadePerda = n2;
+        }
+        if (campo === "cortesia") item.quantidadeCortesia = n2;
+        return item;
+      }
+      function _acharItemEstado(serverItem, index2, stateItens = []) {
+        const key = itemKey(serverItem);
+        if (key) {
+          const byKey = (stateItens || []).find((p3) => itemKey(p3) === key);
+          if (byKey) return byKey;
+        }
+        return stateItens[index2];
+      }
       function mesclarServidorPreservandoDirty(servidorItens = [], stateItens = []) {
         return (servidorItens || []).map((serverItem, index2) => {
-          const prev = stateItens[index2];
+          var _a2;
+          const prev = _acharItemEstado(serverItem, index2, stateItens);
           if (!prev || !itemEstaDirty(prev)) {
             const clean = {
               ...serverItem,
@@ -96984,12 +97863,14 @@ Somente os novos itens ser\xE3o movimentados no estoque e no Ledger.`
           }
           const merged = { ...serverItem };
           CAMPOS_QTY.forEach((campo) => {
-            var _a2;
-            if ((_a2 = prev.dirtyCampos) == null ? void 0 : _a2[campo]) {
-              merged[campo] = Number(prev[campo] || 0);
+            var _a3;
+            if ((_a3 = prev.dirtyCampos) == null ? void 0 : _a3[campo]) {
+              _espelharQtyOficial(merged, campo, prev[campo]);
             }
           });
-          if (prev.observacao != null) merged.observacao = prev.observacao;
+          if (((_a2 = prev.dirtyCampos) == null ? void 0 : _a2.observacao) || prev.observacao != null) {
+            merged.observacao = prev.observacao;
+          }
           merged.dirty = true;
           merged.dirtyCampos = { ...prev.dirtyCampos || {} };
           return syncStatusOperacional(merged);
@@ -97388,7 +98269,8 @@ Somente os novos itens ser\xE3o movimentados no estoque e no Ledger.`
       var {
         buildPrestacaoSnapshot,
         buildPagamentosHistorico,
-        buildFinanceiroFromResumo
+        buildFinanceiroFromResumo,
+        round2
       } = require_prestacaoFinanceiroSnapshot();
       var {
         buildTimelineOficial,
@@ -97422,6 +98304,13 @@ Somente os novos itens ser\xE3o movimentados no estoque e no Ledger.`
         labelStatusPersistencia,
         CAMPOS_QTY
       } = require_gradeConsistencia();
+      var { lerRateioDoDom } = require_rateioPerdaUi();
+      var LOAD_MODO = Object.freeze({
+        INICIAL: "inicial",
+        MANUAL: "manual",
+        POS_PERSISTENCIA: "posPersistencia",
+        AUTO_REFRESH: "autoRefresh"
+      });
       var { buildResumoFinanceiroCentral: buildResumoLegacy } = require_prestacaoCentralMappers();
       var {
         imprimirComprovante,
@@ -97553,6 +98442,9 @@ Somente os novos itens ser\xE3o movimentados no estoque e no Ledger.`
           this.root = null;
           this.lastSyncedAt = null;
           this._startedAtRetornos = false;
+          this._ultimoModoLoad = LOAD_MODO.INICIAL;
+          this._pagamentoAttempt = null;
+          this._ultimoPagamentoLocal = null;
         }
         static create(consignacaoId, query = {}) {
           const page = new _PrestacaoContasPage(consignacaoId, query);
@@ -97582,7 +98474,7 @@ Somente os novos itens ser\xE3o movimentados no estoque e no Ledger.`
           this._loadTimeout = setTimeout(() => {
             this._loadTimeout = null;
             if (!this._isAlive()) return;
-            this._loadData();
+            this._loadData(false, { modo: LOAD_MODO.INICIAL });
             this._startAutoRefresh();
           }, 0);
           return this.root;
@@ -97630,6 +98522,39 @@ Somente os novos itens ser\xE3o movimentados no estoque e no Ledger.`
             return false;
           }
           return isContextCurrent(token, this.operacaoContext, { disposed: this._disposed });
+        }
+        /**
+         * RCM-8.16.1 — fechamento só avança com consignação/resumo oficiais hidratados.
+         * Não mascara null com array vazio.
+         */
+        _hidratacaoOficialPendente() {
+          if (!this._isAlive()) return true;
+          if (this.loading.consignacao || this.loading.prestacao) return true;
+          if (this.consignacao == null || this.consignacao.id == null || this.consignacao.id === "") {
+            return true;
+          }
+          if (this.resumoPrestacao == null || typeof this.resumoPrestacao !== "object") {
+            return true;
+          }
+          if (!Array.isArray(this.resumoPrestacao.itens)) return true;
+          return false;
+        }
+        _podeAvancarParaFechamento() {
+          if (this._hidratacaoOficialPendente()) return false;
+          if (this.loading.operation || this.salvandoConferencia) return false;
+          if (!this._acceptContextToken(this._captureContextToken())) return false;
+          return true;
+        }
+        _mensagemErroCarregamento() {
+          return humanizarErroOperacional(
+            this.error,
+            "carregamento"
+          ).mensagem || MENSAGENS_HARDENING.PRESTACAO_CONSIGNACAO_NAO_LOCALIZADA;
+        }
+        _assertConsignacaoOficial(consignacao) {
+          if (consignacao == null || consignacao.id == null || consignacao.id === "") {
+            throw new Error(MENSAGENS_HARDENING.PRESTACAO_CONSIGNACAO_OFICIAL_AUSENTE);
+          }
         }
         /** @private — sincroniza prestacaoId/clienteId sem invalidar a versão */
         _syncOperacaoContextFromConsignacao(consignacao = {}) {
@@ -97699,7 +98624,7 @@ Somente os novos itens ser\xE3o movimentados no estoque e no Ledger.`
             shell.appendChild(Loading.create({ message: "Carregando atendimento..." }));
           } else if (this.error) {
             shell.appendChild(Alert.create({
-              message: "Erro ao carregar: " + this.error.message,
+              message: this._mensagemErroCarregamento(),
               variant: "error",
               dismissible: true
             }));
@@ -97885,10 +98810,12 @@ Somente os novos itens ser\xE3o movimentados no estoque e no Ledger.`
           const dirty = temAlteracoesPendentes(((_a2 = this.resumoPrestacao) == null ? void 0 : _a2.itens) || []);
           const permissao = this._canEncerrar();
           if (this.currentStep === STEP_RETORNOS) {
-            const dis = this.loading.operation || this.salvandoConferencia;
+            const hidratando = this._hidratacaoOficialPendente();
+            const dis = this.loading.operation || this.salvandoConferencia || hidratando;
             const motivo = motivoBotaoDesabilitado("continuar", {
               loading: this.loading.operation,
               salvando: this.salvandoConferencia,
+              hidratando,
               dirty: false
             });
             const continuarBtn = aplicarTooltipDesabilitado(Button.create({
@@ -98326,14 +99253,22 @@ Somente os novos itens ser\xE3o movimentados no estoque e no Ledger.`
         }
         /**
          * @param {boolean} silent
-         * @param {{ skipUi?: boolean }} [options] STAB-07.3 — recarrega dados sem remontar a estação
+         * @param {{ skipUi?: boolean, modo?: string }} [options]
          */
         async _loadData(silent = false, options = {}) {
-          var _a2, _b2, _c;
+          var _a2, _b2, _c, _d, _e2, _f;
           const token = this._captureContextToken();
           if (!this._acceptContextToken(token)) return;
           const skipUi = Boolean(options.skipUi);
-          if (!silent) {
+          const modo = this._resolverModoLoad(silent, options);
+          this._ultimoModoLoad = modo;
+          const autoRefresh = modo === LOAD_MODO.AUTO_REFRESH;
+          const itensLocais = this._clonarItensEstado();
+          const dirtyItens = temAlteracoesPendentes(itensLocais) || this.editing.rowIndex >= 0;
+          const rateioLocal = this._rateioTemAlteracaoLocal();
+          const pagamentoLocal = this._pagamentoTemRascunho();
+          if (pagamentoLocal) this._sincronizarPagamentoDoDom();
+          if (!silent && !autoRefresh) {
             this.loading.consignacao = true;
             this.loading.prestacao = true;
             this._updateUI();
@@ -98352,21 +99287,61 @@ Somente os novos itens ser\xE3o movimentados no estoque e no Ledger.`
               this.api.obterRateioPerda(consignacaoId).catch(() => null)
             ]);
             if (!this._acceptContextToken(token)) return;
-            if ((consignacao == null ? void 0 : consignacao.id) != null && String(consignacao.id) !== String(consignacaoId)) {
+            if (consignacao == null || consignacao.id == null || consignacao.id === "") {
+              throw new Error(MENSAGENS_HARDENING.PRESTACAO_CONSIGNACAO_NAO_LOCALIZADA);
+            }
+            if (String(consignacao.id) !== String(consignacaoId)) {
               return;
+            }
+            const aposComplementar = String(
+              ((_b2 = this.routeQuery) == null ? void 0 : _b2.aposComplementar) || ((_c = this.routeQuery) == null ? void 0 : _c.atualizado) || ""
+            ) === "1";
+            if (aposComplementar && typeof this.api.listarItensConsignacao === "function") {
+              try {
+                const itensFrescos = await this.api.listarItensConsignacao(consignacaoId);
+                if (Array.isArray(itensFrescos) && itensFrescos.length) {
+                  consignacao.itens = itensFrescos;
+                  try {
+                    const { cacheItensConsignacao } = require_operacional();
+                    cacheItensConsignacao(consignacaoId, itensFrescos);
+                  } catch (_e3) {
+                  }
+                }
+              } catch (_e3) {
+              }
             }
             this.consignacao = consignacao;
             this.historico = historico;
             this.contaCorrente = contaCorrente;
-            this.rateioPerda = rateioPerda;
+            if (!rateioLocal) this.rateioPerda = rateioPerda;
             this._syncOperacaoContextFromConsignacao(consignacao);
-            this.resumoPrestacao = this._buildResumoFromData(prestacao, historico, consignacao, contaCorrente);
-            limparDirtyTodos(((_b2 = this.resumoPrestacao) == null ? void 0 : _b2.itens) || []);
-            this._capturarBaseline();
-            this.persistenciaStatus = "saved";
+            const novo = this._buildResumoFromData(prestacao, historico, consignacao, contaCorrente);
+            if (autoRefresh && dirtyItens) {
+              novo.itens = mesclarServidorPreservandoDirty(novo.itens || [], itensLocais);
+              this.resumoPrestacao = novo;
+              this.persistenciaStatus = statusPersistencia(novo.itens);
+            } else if (autoRefresh) {
+              this.resumoPrestacao = novo;
+              limparDirtyTodos(((_d = this.resumoPrestacao) == null ? void 0 : _d.itens) || []);
+              this._capturarBaseline();
+              this.persistenciaStatus = "saved";
+            } else {
+              this.resumoPrestacao = novo;
+              limparDirtyTodos(((_e2 = this.resumoPrestacao) == null ? void 0 : _e2.itens) || []);
+              this._capturarBaseline();
+              this.persistenciaStatus = "saved";
+            }
             this._recalcularPainel();
+            this._forceRemountAposComplementar = aposComplementar;
+            if (aposComplementar) {
+              try {
+                delete this.routeQuery.aposComplementar;
+                delete this.routeQuery.atualizado;
+              } catch (_e3) {
+              }
+            }
             const statusCons = String(consignacao.status || "").toUpperCase();
-            const prestStatus = String(((_c = consignacao.prestacaoContasAtiva) == null ? void 0 : _c.status) || "").toUpperCase();
+            const prestStatus = String(((_f = consignacao.prestacaoContasAtiva) == null ? void 0 : _f.status) || "").toUpperCase();
             const jaFechada = ["ACERTADA", "ENCERRADA", "QUITADA"].includes(statusCons) && prestStatus !== "ABERTA";
             if (prestStatus === "ABERTA") {
               this.prestacaoPronta = true;
@@ -98391,12 +99366,13 @@ Somente os novos itens ser\xE3o movimentados no estoque e no Ledger.`
             this.error = null;
           } catch (error) {
             if (!this._acceptContextToken(token)) return;
+            if (autoRefresh) return;
             this.error = error;
           } finally {
             const mesmaConsignacao = String((token == null ? void 0 : token.consignacaoId) || "") === String(this.consignacaoId || "");
             if (this._disposed) return;
             if (!this._acceptContextToken(token)) {
-              if (mesmaConsignacao) {
+              if (mesmaConsignacao && !autoRefresh) {
                 this.loading.consignacao = false;
                 this.loading.prestacao = false;
                 this._updateUI();
@@ -98407,17 +99383,90 @@ Somente os novos itens ser\xE3o movimentados no estoque e no Ledger.`
             this.loading.prestacao = false;
             if (skipUi) {
               this._updateFooter();
+            } else if (autoRefresh) {
+              this._aplicarAutoRefreshNaUi();
             } else if (this._devePreservarGradeRetornos()) {
               this._atualizarPainelPreview();
               this._updateFooter();
             } else {
               this._updateUI();
             }
+            this._forceRemountAposComplementar = false;
+          }
+        }
+        _resolverModoLoad(silent, options = {}) {
+          if (options.modo) return options.modo;
+          if (options.skipUi) return LOAD_MODO.POS_PERSISTENCIA;
+          if (silent) return LOAD_MODO.AUTO_REFRESH;
+          return LOAD_MODO.INICIAL;
+        }
+        _clonarItensEstado() {
+          var _a2;
+          return (((_a2 = this.resumoPrestacao) == null ? void 0 : _a2.itens) || []).map((item) => ({
+            ...item,
+            dirtyCampos: { ...item.dirtyCampos || {} }
+          }));
+        }
+        _pagamentoTemRascunho() {
+          const d2 = this.pagamentoDraft || {};
+          return String(d2.valor || "").trim() !== "" || String(d2.observacoes || "").trim() !== "";
+        }
+        _rateioTemAlteracaoLocal() {
+          var _a2;
+          const host = this._qs("#fechar-rateio-perda");
+          if (!host) return false;
+          if (typeof document !== "undefined" && host.contains(document.activeElement)) return true;
+          const draft = lerRateioDoDom(host);
+          if (!draft) return false;
+          const salvo = ((_a2 = this.rateioPerda) == null ? void 0 : _a2.rateio) || {};
+          if (draft.motivoPerda && String(draft.motivoPerda) !== String(salvo.motivoPerda || "")) return true;
+          if (draft.observacaoPerda && String(draft.observacaoPerda) !== String(salvo.observacaoPerda || "")) {
+            return true;
+          }
+          if (draft.valorCliente != null && Number(draft.valorCliente) !== Number(salvo.valorCliente ?? Number(draft.valorCliente))) {
+            return Number(draft.valorCliente) !== Number(salvo.valorCliente || 0);
+          }
+          if (draft.valorEmpresa != null && Number(draft.valorEmpresa) !== Number(salvo.valorEmpresa || 0)) {
+            return true;
+          }
+          if (salvo.tipoRateio && String(draft.tipoRateio || "") !== String(salvo.tipoRateio || "")) {
+            return true;
+          }
+          return false;
+        }
+        _inputOperacionalComFoco() {
+          var _a2;
+          if (typeof document === "undefined") return false;
+          const el = document.activeElement;
+          if (!el || !((_a2 = this.root) == null ? void 0 : _a2.contains(el))) return false;
+          const tag = String(el.tagName || "").toUpperCase();
+          return tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA";
+        }
+        _aplicarAutoRefreshNaUi() {
+          var _a2;
+          if (!this._isAlive()) return;
+          this._ensureStartAtRetornos();
+          this._updateHeaderMeta();
+          this._atualizarIndicadorPersistencia();
+          const itens = ((_a2 = this.resumoPrestacao) == null ? void 0 : _a2.itens) || [];
+          itens.forEach((item, index2) => {
+            if (item.dirty) return;
+            this._patchLinhaRetorno(index2);
+          });
+          if (this.currentStep === STEP_RETORNOS) {
+            this._atualizarPainelPreview();
+          } else if (this.currentStep >= STEP_RESUMO) {
+            this._recalcularPainel();
+            if (!this._pagamentoTemRascunho() && !this._rateioTemAlteracaoLocal()) {
+              this._patchCentralOperacional(["financeiro"]);
+            }
           }
         }
         _devePreservarGradeRetornos() {
-          var _a2, _b2;
-          return this.currentStep === STEP_RETORNOS && Boolean(this._qs("#fechar-retornos-grade")) && (temAlteracoesPendentes(((_a2 = this.resumoPrestacao) == null ? void 0 : _a2.itens) || []) || this.editing.rowIndex >= 0 || ((_b2 = document.activeElement) == null ? void 0 : _b2.closest("#fechar-retornos-grade")));
+          var _a2, _b2, _c;
+          if (this._forceRemountAposComplementar) return false;
+          if (String(((_a2 = this.routeQuery) == null ? void 0 : _a2.aposComplementar) || "") === "1") return false;
+          return this.currentStep === STEP_RETORNOS && Boolean(this._qs("#fechar-retornos-grade")) && (temAlteracoesPendentes(((_b2 = this.resumoPrestacao) == null ? void 0 : _b2.itens) || []) || this.editing.rowIndex >= 0 || ((_c = document.activeElement) == null ? void 0 : _c.closest("#fechar-retornos-grade")));
         }
         _capturarBaseline() {
           var _a2;
@@ -98483,10 +99532,16 @@ Somente os novos itens ser\xE3o movimentados no estoque e no Ledger.`
           });
           const saldoEl = row.querySelector("[data-saldo-index]");
           if (saldoEl) saldoEl.textContent = String(item.saldo ?? 0);
+          const obs = row.querySelector('input[data-campo="observacao"]');
+          if (obs && document.activeElement !== obs) {
+            const nextObs = item.observacao != null ? String(item.observacao) : "";
+            if (obs.value !== nextObs) obs.value = nextObs;
+          }
           row.classList.toggle("cds-fechar-consignacao__grade-row--dirty", Boolean(item.dirty));
         }
-        _buildResumoFromData(prestacao, historico, consignacao = {}, contaCorrente = null) {
+        _buildResumoFromData(prestacao, historico, consignacao, contaCorrente = null) {
           var _a2, _b2, _c, _d;
+          this._assertConsignacaoOficial(consignacao);
           const resumo = {
             ...prestacao || {},
             valorVendido: Number((prestacao == null ? void 0 : prestacao.valorVendido) ?? (prestacao == null ? void 0 : prestacao.totalVendido) ?? 0),
@@ -98516,14 +99571,31 @@ Somente os novos itens ser\xE3o movimentados no estoque e no Ledger.`
               (_a2 = consignacao.prestacaoContasAtiva) == null ? void 0 : _a2.id
             );
           }
+          const itensConsignacao = Array.isArray(consignacao.itens) ? consignacao.itens.map((item) => ({
+            ...item,
+            consignacaoId: item.consignacaoId ?? consignacao.id,
+            documentoConsignacao: consignacao.documento
+          })) : [];
           const prevItens = ((_b2 = this.resumoPrestacao) == null ? void 0 : _b2.itens) || [];
           resumo.itens = enriquecerItensPrestacao(
             itens || [],
-            consignacao.itens || []
+            itensConsignacao
           ).map((item, index2) => {
             const prev = prevItens.find((p3) => p3.itemId && item.itemId && String(p3.itemId) === String(item.itemId) || p3.produtoId && item.produtoId && String(p3.produtoId) === String(item.produtoId) && String(p3.consignacaoId || "") === String(item.consignacaoId || "")) || prevItens[index2];
             if ((prev == null ? void 0 : prev.observacao) && !item.observacao) {
               item.observacao = prev.observacao;
+            }
+            if (prev && prev.dirty) {
+              item.quantidadeVendida = prev.quantidadeVendida ?? prev.vendido ?? item.quantidadeVendida;
+              item.quantidadeDevolvida = prev.quantidadeDevolvida ?? prev.devolvido ?? item.quantidadeDevolvida;
+              item.quantidadePerdida = prev.quantidadePerdida ?? prev.perdido ?? item.quantidadePerdida;
+              item.quantidadeCortesia = prev.quantidadeCortesia ?? prev.cortesia ?? item.quantidadeCortesia;
+              item.vendido = item.quantidadeVendida;
+              item.devolvido = item.quantidadeDevolvida;
+              item.perdido = item.quantidadePerdida;
+              item.cortesia = item.quantidadeCortesia;
+              item.dirty = prev.dirty;
+              item.dirtyCampos = prev.dirtyCampos;
             }
             return syncStatusOperacional(item);
           });
@@ -98961,6 +100033,7 @@ Somente os novos itens ser\xE3o movimentados no estoque e no Ledger.`
             }).catch(() => null)
           ]);
           if (!this._acceptContextToken(token)) return;
+          this._assertConsignacaoOficial(this.consignacao);
           this.historico = historico;
           this.contaCorrente = contaCorrente;
           const novo = this._buildResumoFromData(prestacao, historico, this.consignacao, contaCorrente);
@@ -99105,77 +100178,161 @@ Somente os novos itens ser\xE3o movimentados no estoque e no Ledger.`
         }
         /**
          * ÚNICA porta FE que cria movimento financeiro na Prestação (STAB-07.1).
-         * Navegação nunca chama este método.
+         * Card e footer compartilham this.loading.operation (RCM-8.17.2).
          */
         async _registrarPagamento() {
-          const token = this._captureContextToken();
-          this._sincronizarPagamentoDoDom();
-          if (!await this._garantirPrestacaoAberta()) return false;
-          if (!this._acceptContextToken(token)) return false;
-          let valor = Number(String(this.pagamentoDraft.valor).replace(",", "."));
-          if (!valor || valor <= 0) {
-            this.pagamentoErro = "Informe um valor v\xE1lido para o pagamento";
-            this._updateContent();
-            return false;
-          }
-          const saldoAberto = this._saldoDevedorServidor();
-          if (saldoAberto <= 0) {
-            this.pagamentoErro = "N\xE3o h\xE1 saldo a pagar neste atendimento.";
-            this._updateContent();
-            return false;
-          }
+          if (this.loading.operation) return false;
           this.loading.operation = true;
           this.pagamentoErro = null;
-          this._updateFooter();
+          this._atualizarControlesPagamento();
+          const token = this._captureContextToken();
+          this._sincronizarPagamentoDoDom();
           try {
-            await withLoading(MENSAGENS_HARDENING.REGISTRANDO_PAGAMENTO, () => this.api.registrarPagamento(this.consignacaoId, {
-              valor,
-              formaPagamento: this.pagamentoDraft.formaPagamento || "DINHEIRO",
-              observacao: this.pagamentoDraft.observacoes || null,
-              usuarioId: getUsuarioId()
-            }));
+            if (!await this._garantirPrestacaoAberta()) return false;
             if (!this._acceptContextToken(token)) return false;
-            notify(MENSAGENS_HARDENING.PAGAMENTO_REGISTRADO, "success");
-            this._pushLogOperacional("Pagamento registrado", {
-              valor,
-              forma: this.pagamentoDraft.formaPagamento || "DINHEIRO"
-            });
-            registrarLogOperacional("REGISTRAR_PAGAMENTO", {
-              consignacaoId: this.consignacaoId,
-              resultado: "OK",
-              detalhes: { valor }
-            });
+            const valor = Number(String(this.pagamentoDraft.valor).replace(",", "."));
+            if (!valor || valor <= 0) {
+              this.pagamentoErro = "Informe um valor v\xE1lido para o pagamento";
+              return false;
+            }
+            const saldoAberto = this._saldoDevedorServidor();
+            if (saldoAberto <= 0) {
+              this.pagamentoErro = "N\xE3o h\xE1 saldo a pagar neste atendimento.";
+              return false;
+            }
+            const formaPagamento = this.pagamentoDraft.formaPagamento || "DINHEIRO";
+            if (this._pagamentoLocalJaConfirmado(valor, formaPagamento)) {
+              notify(MENSAGENS_HARDENING.PAGAMENTO_JA_REGISTRADO, "info");
+              this.pagamentoDraft.valor = "";
+              this.pagamentoDraft.observacoes = "";
+              await this._sincronizarResumoAposPagamento(token);
+              return true;
+            }
+            const assinaturaAntes = this._assinaturaPagamentosOficiais();
+            const chave = this._obterChaveIdempotenciaPagamento(valor, formaPagamento);
+            let jaRegistrado = false;
+            try {
+              await withLoading(
+                MENSAGENS_HARDENING.REGISTRANDO_PAGAMENTO,
+                () => this.api.registrarPagamento(this.consignacaoId, {
+                  valor,
+                  formaPagamento,
+                  observacao: this.pagamentoDraft.observacoes || null,
+                  usuarioId: getUsuarioId()
+                }, {
+                  headers: { "Idempotency-Key": chave }
+                })
+              );
+            } catch (error) {
+              if (!this._erroPagamentoIncerto(error)) throw error;
+              await this._loadData(true, { skipUi: true });
+              if (!this._pagamentoOficialEncontrado(assinaturaAntes, valor, formaPagamento)) {
+                throw error;
+              }
+              jaRegistrado = true;
+            }
+            if (!this._acceptContextToken(token)) return true;
+            this._ultimoPagamentoLocal = { valor: round2(valor), forma: String(formaPagamento).toUpperCase() };
+            this._pagamentoAttempt = null;
             this.pagamentoDraft.valor = "";
             this.pagamentoDraft.observacoes = "";
-            await this._loadData(true, { skipUi: true });
-            if (!this._acceptContextToken(token)) return false;
-            this._recalcularPainel();
-            if (this.currentStep === STEP_RESUMO) {
-              const patched = this._patchCentralOperacional(["financeiro", "pagamentos"]);
-              if (!patched) this._updateContent();
-              this._updateFooter();
-              this._updateHeaderMeta();
-            } else {
-              this._updateUI();
-            }
+            await this._sincronizarResumoAposPagamento(token);
+            if (!this._acceptContextToken(token)) return true;
+            notify(
+              jaRegistrado ? MENSAGENS_HARDENING.PAGAMENTO_JA_REGISTRADO : MENSAGENS_HARDENING.PAGAMENTO_REGISTRADO,
+              jaRegistrado ? "info" : "success"
+            );
+            this._pushLogOperacional("Pagamento registrado", { valor, forma: formaPagamento });
+            registrarLogOperacional("REGISTRAR_PAGAMENTO", {
+              consignacaoId: this.consignacaoId,
+              resultado: jaRegistrado ? "JA_REGISTRADO" : "OK",
+              detalhes: { valor, formaPagamento }
+            });
             return true;
           } catch (error) {
-            if (!this._acceptContextToken(token)) return false;
-            const humanizado = humanizarErroOperacional(error, "pagamento");
-            this.pagamentoErro = humanizado.mensagem;
-            this._updateContent();
+            if (this._acceptContextToken(token)) {
+              const humanizado = humanizarErroOperacional(error, "pagamento");
+              this.pagamentoErro = humanizado.mensagem;
+            }
             return false;
           } finally {
-            if (!this._acceptContextToken(token)) return false;
             this.loading.operation = false;
-            this._updateFooter();
+            if (this._isAlive() && this._acceptContextToken(token)) {
+              this._atualizarControlesPagamento({ incluirFinanceiro: true });
+            }
           }
+        }
+        _atualizarControlesPagamento({ incluirFinanceiro = false } = {}) {
+          if (!this._isAlive()) return;
+          if (this.currentStep === STEP_RESUMO) {
+            const scopes = incluirFinanceiro ? ["financeiro", "pagamentos"] : ["pagamentos"];
+            const patched = this._patchCentralOperacional(scopes);
+            if (!patched) this._updateContent();
+            this._updateFooter();
+            if (incluirFinanceiro) this._updateHeaderMeta();
+            return;
+          }
+          this._updateFooter();
+        }
+        async _sincronizarResumoAposPagamento(token) {
+          await this._loadData(true, { skipUi: true });
+          if (token && !this._acceptContextToken(token)) return;
+          this._recalcularPainel();
+        }
+        _obterChaveIdempotenciaPagamento(valor, formaPagamento) {
+          const forma = String(formaPagamento || "DINHEIRO").toUpperCase();
+          const v3 = round2(valor);
+          const atual = this._pagamentoAttempt;
+          if (atual && atual.valor === v3 && atual.forma === forma && atual.key) {
+            return atual.key;
+          }
+          const key = `pag-${this.consignacaoId}-${v3}-${forma}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+          this._pagamentoAttempt = { key, valor: v3, forma };
+          return key;
+        }
+        _pagamentoLocalJaConfirmado(valor, formaPagamento) {
+          const last = this._ultimoPagamentoLocal;
+          if (!last) return false;
+          return last.valor === round2(valor) && last.forma === String(formaPagamento || "").toUpperCase();
+        }
+        _assinaturaPagamentosOficiais() {
+          var _a2, _b2, _c;
+          const lista = ((_a2 = this.snapshot) == null ? void 0 : _a2.pagamentos) || buildPagamentosHistorico(this.historico || []);
+          return {
+            ids: lista.map((p3) => String(p3.id || "")).filter(Boolean),
+            quantidade: lista.length,
+            recebido: round2(((_c = (_b2 = this.snapshot) == null ? void 0 : _b2.financeiro) == null ? void 0 : _c.valorRecebido) || 0)
+          };
+        }
+        _pagamentoOficialEncontrado(antes, valor, formaPagamento) {
+          var _a2, _b2, _c;
+          this._recalcularPainel();
+          const lista = ((_a2 = this.snapshot) == null ? void 0 : _a2.pagamentos) || buildPagamentosHistorico(this.historico || []);
+          const idsAntes = new Set((antes == null ? void 0 : antes.ids) || []);
+          const novos = lista.filter((p3) => p3.id != null && !idsAntes.has(String(p3.id)));
+          const forma = String(formaPagamento || "").toUpperCase();
+          const alvo = round2(valor);
+          if (novos.some((p3) => round2(p3.valor) === alvo && (String(p3.forma || "").toUpperCase() === forma || p3.forma === "\u2014"))) {
+            return true;
+          }
+          const recebido = round2(((_c = (_b2 = this.snapshot) == null ? void 0 : _b2.financeiro) == null ? void 0 : _c.valorRecebido) || 0);
+          if (round2(recebido - Number((antes == null ? void 0 : antes.recebido) || 0)) === alvo) return true;
+          return lista.length > Number((antes == null ? void 0 : antes.quantidade) || 0);
+        }
+        _erroPagamentoIncerto(error) {
+          const raw = String((error == null ? void 0 : error.message) || error || "");
+          const name = String((error == null ? void 0 : error.name) || "");
+          return name === "AbortError" || /TIMEOUT|ETIMEDOUT|ECONNABORTED|TEMPO\s*ESGOTADO|ABORT|FAILED TO FETCH|NETWORK|ENOTFOUND|ECONNREFUSED/i.test(raw);
         }
         /** Retornos → Resumo Final. Nunca registra pagamento. */
         _goNext() {
           const avancar = async () => {
             var _a2;
             if (this.currentStep !== STEP_RETORNOS) return;
+            if (!this._podeAvancarParaFechamento()) {
+              notify(MENSAGENS_HARDENING.PRESTACAO_AGUARDE_HIDRATACAO, "warning");
+              return;
+            }
             this.salvandoConferencia = true;
             this.conferenciaAlerta = null;
             this._patchConferenciaAlerta();
@@ -99194,7 +100351,15 @@ Somente os novos itens ser\xE3o movimentados no estoque e no Ledger.`
               notify("Ainda existem altera\xE7\xF5es pendentes na grade. Aguarde a grava\xE7\xE3o.", "warning");
               return;
             }
+            if (!this._podeAvancarParaFechamento()) {
+              notify(MENSAGENS_HARDENING.PRESTACAO_AGUARDE_HIDRATACAO, "warning");
+              return;
+            }
             await this._consolidarRetornosAntesAvancar();
+            if (!this._podeAvancarParaFechamento()) {
+              notify(MENSAGENS_HARDENING.PRESTACAO_AGUARDE_HIDRATACAO, "warning");
+              return;
+            }
             this.steps[STEP_RETORNOS].state = "completed";
             this.currentStep = STEP_RESUMO;
             this.steps[STEP_RESUMO].state = "current";
@@ -99205,7 +100370,7 @@ Somente os novos itens ser\xE3o movimentados no estoque e no Ledger.`
               this._patchPainelLateral(this.painel);
             });
           };
-          avancar().catch((error) => {
+          return avancar().catch((error) => {
             this.salvandoConferencia = false;
             this._updateFooter();
             notify(humanizarErroOperacional(error).mensagem, "error");
@@ -99557,7 +100722,7 @@ Somente os novos itens ser\xE3o movimentados no estoque e no Ledger.`
             shell.appendChild(Loading.create({ message: "Carregando atendimento..." }));
           } else if (this.error) {
             shell.appendChild(Alert.create({
-              message: "Erro ao carregar: " + this.error.message,
+              message: this._mensagemErroCarregamento(),
               variant: "error",
               dismissible: true
             }));
@@ -99611,7 +100776,7 @@ Somente os novos itens ser\xE3o movimentados no estoque e no Ledger.`
         _startAutoRefresh() {
           if (this.refreshTimer) clearInterval(this.refreshTimer);
           this.refreshTimer = setInterval(() => {
-            var _a2, _b2, _c;
+            var _a2;
             if (!this._isAlive()) {
               if (this.refreshTimer) {
                 clearInterval(this.refreshTimer);
@@ -99623,11 +100788,9 @@ Somente os novos itens ser\xE3o movimentados no estoque e no Ledger.`
               this.destroy();
               return;
             }
-            if (this.loading.operation || this.encerrado || this.editing.rowIndex >= 0) return;
-            if (this.root.querySelector("#fechar-retornos-grade") && ((_c = (_b2 = document.activeElement) == null ? void 0 : _b2.closest) == null ? void 0 : _c.call(_b2, "#fechar-retornos-grade"))) {
-              return;
-            }
-            this._loadData(true);
+            if (this.loading.operation || this.encerrado) return;
+            if (this._inputOperacionalComFoco()) return;
+            this._loadData(true, { modo: LOAD_MODO.AUTO_REFRESH });
           }, 45e3);
         }
         _formatCurrency(value) {
@@ -99635,6 +100798,7 @@ Somente os novos itens ser\xE3o movimentados no estoque e no Ledger.`
         }
       };
       module.exports = PrestacaoContasPage;
+      module.exports.LOAD_MODO = LOAD_MODO;
     }
   });
 
@@ -108878,9 +110042,14 @@ ${rows.join("\n")}`;
           const check = podeAdicionarProdutoComplementar(this.consignacao);
           if (check.elegivel) {
             bar.appendChild(Button.create({
-              text: "+ Adicionar produto",
+              text: "Ent. Complementar",
               variant: "primary",
               onClick: () => this._abrirEntregaComplementar()
+            }));
+            bar.appendChild(Button.create({
+              text: "Alterar Entrega",
+              variant: "ghost",
+              onClick: () => this._abrirAlterarEntrega()
             }));
           }
           if (status === "ENTREGUE") {
@@ -108946,6 +110115,17 @@ ${rows.join("\n")}`;
           }
           await navigate(routeWithActiveContext(
             `/consignacoes/${this.consignacaoId}/entrega-complementar`,
+            this.navigationContext
+          ));
+        }
+        async _abrirAlterarEntrega() {
+          const check = podeAdicionarProdutoComplementar(this.consignacao);
+          if (!check.elegivel) {
+            notify(check.mensagem || MENSAGEM_PRESTACAO_ENCERRADA, "warning");
+            return;
+          }
+          await navigate(routeWithActiveContext(
+            `/consignacoes/${this.consignacaoId}/alterar-entrega`,
             this.navigationContext
           ));
         }
@@ -109775,6 +110955,7 @@ ${rows.join("\n")}`;
       var NovaConsignacaoPage = require_NovaConsignacao();
       var EntregaConsignacaoPage = require_EntregaConsignacao();
       var EntregaComplementarPage = require_EntregaComplementar();
+      var AlterarEntregaPage = require_AlterarEntrega();
       var ComprovanteEntregaPage = require_ComprovanteEntrega();
       var PrestacaoContasPage = require_PrestacaoContas();
       var PrestacaoLocatorPage = require_PrestacaoLocator();
@@ -109832,6 +111013,12 @@ ${rows.join("\n")}`;
             throw new Error("Informe o ID da consigna\xE7\xE3o para a entrega complementar.");
           }
           return EntregaComplementarPage.create(params.id, query);
+        },
+        AlterarEntrega: (params, query) => {
+          if (!params || !params.id) {
+            throw new Error("Informe o ID da consigna\xE7\xE3o para alterar a entrega.");
+          }
+          return AlterarEntregaPage.create(params.id, query);
         },
         ComprovanteEntrega: (params, query) => {
           if (!params || !params.id) {
@@ -110282,10 +111469,10 @@ if (typeof MotorComercialBundle !== "undefined") { window.MotorComercial = Motor
 /*__CDS_BUILD_INFO_START__*/
 
 (function (global) {
-  var info = {"module":"motor-comercial","version":"1.0.3","sprint":"UX-10","buildTime":"2026-09-20 08:32:50","hash":"0B61B67C31D28C15F856E82016D059D24A2BDFE7E40BFC4CB55568D1414CD3B3","ambiente":"development"};
+  var info = {"module":"motor-comercial","version":"1.0.3","sprint":"UX-10","buildTime":"2026-09-21 18:37:36","hash":"18B9492FBC21D26B4AA08258CD75F86DB023FEBD159D7F7DAE611316F13C5F73","ambiente":"development"};
   global.CDS_BUILD = info;
   if (typeof console !== "undefined" && console.info) {
-    console.info("\n================================================\nCDS Sistemas\nMotor Comercial\nSprint\nUX-10\nBuild\n2026-09-20 08:32:50\nHash\n0B61B67C31D28C15F856E82016D059D24A2BDFE7E40BFC4CB55568D1414CD3B3\n================================================\n");
+    console.info("\n================================================\nCDS Sistemas\nMotor Comercial\nSprint\nUX-10\nBuild\n2026-09-21 18:37:36\nHash\n18B9492FBC21D26B4AA08258CD75F86DB023FEBD159D7F7DAE611316F13C5F73\n================================================\n");
   }
 })(typeof window !== "undefined" ? window : globalThis);
 

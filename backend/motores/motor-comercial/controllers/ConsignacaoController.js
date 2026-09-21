@@ -14,6 +14,7 @@ const {
   AlterarQuantidadeItemRequest,
   RegistrarEntregaRequest,
   RegistrarEntregaComplementarRequest,
+  RegistrarAlteracaoPosEntregaRequest,
   RegistrarEmissaoTermoEntregaRequest,
   AbrirPrestacaoRequest,
   RegistrarDevolucaoRequest,
@@ -497,8 +498,43 @@ class ConsignacaoController {
   }
 
   /**
+   * POST /consignacoes/:id/alteracao-pos-entrega
+   * RCM-8.13 — Alteração Pós-Entrega (delta; novo comprovante completo).
+   */
+  async registrarAlteracaoPosEntrega(req, res, next) {
+    try {
+      const { id } = req.params;
+      const inputData = RegistrarAlteracaoPosEntregaRequest.fromJSON(req.body);
+      const validation = RegistrarAlteracaoPosEntregaRequest.validate(inputData);
+      if (validation) {
+        return responderValidacao(res, req, validation);
+      }
+
+      inputData.consignacaoId = id;
+      inputData.correlationId = inputData.correlationId || req.correlationId;
+      inputData.requestId = req.requestId || null;
+      inputData.usuarioId = inputData.usuarioId || req.user?.id || null;
+
+      const useCase = this._container.registrarAlteracaoPosEntregaUseCase;
+      const result = await useCase.executar(inputData);
+
+      const response = ResultHttpMapper.map(result);
+      if (!ResultHttpMapper._isFailure(result)) {
+        await registrarLogOperacaoComercial(req, {
+          acao: 'alteracao_pos_entrega_consignacao',
+          consignacaoId: id
+        });
+      }
+      const enriched = StandardResponse.enrich(response, req);
+      return res.status(StandardResponse.getStatusCode(response)).json(enriched);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
    * GET /consignacoes/:id/entregas
-   * Histórico: Entrega Original + Entregas Complementares (somente leitura).
+   * Histórico: Original + Complementares + Alterações Pós-Entrega.
    */
   async consultarEntregas(req, res, next) {
     try {
@@ -519,9 +555,13 @@ class ConsignacaoController {
         montarHistoricoEntregas,
         avaliarElegibilidadeEntregaComplementar
       } = require('../usecases/consignacao/entregaComplementarHelpers');
+      const {
+        avaliarElegibilidadeAlteracaoPosEntrega
+      } = require('../usecases/consignacao/atualizacaoEntregaHelpers');
 
       const entregas = montarHistoricoEntregas(movimentacoes, itens);
       const elegibilidade = avaliarElegibilidadeEntregaComplementar(consignacao);
+      const elegAlt = avaliarElegibilidadeAlteracaoPosEntrega(consignacao);
       const valorTotal = entregas.reduce((s, e) => s + Number(e.valorTotal || 0), 0);
 
       const payload = {
@@ -531,8 +571,74 @@ class ConsignacaoController {
         bloqueioComplementar: elegibilidade.elegivel
           ? null
           : { codigo: elegibilidade.codigo, mensagem: elegibilidade.mensagem },
+        elegivelAlteracaoPosEntrega: elegAlt.elegivel,
+        bloqueioAlteracaoPosEntrega: elegAlt.elegivel
+          ? null
+          : { codigo: elegAlt.codigo, mensagem: elegAlt.mensagem },
         entregas,
         valorTotal
+      };
+
+      return res.status(200).json(StandardResponse.enrich(
+        StandardResponse.success(payload),
+        req
+      ));
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * GET /consignacoes/:id/entregas/:correlationId/comprovante
+   * Reimpressão histórica (somente leitura — sem efeitos).
+   */
+  async obterComprovanteEntrega(req, res, next) {
+    try {
+      const { id, correlationId } = req.params;
+      const consignacao = await this._container.consignacaoRepository.buscarPorId(id);
+      if (!consignacao) {
+        const response = StandardResponse.notFound('Consignação não encontrada');
+        return res.status(StandardResponse.getStatusCode(response)).json(
+          StandardResponse.enrich(response, req)
+        );
+      }
+
+      const itens = await this._container.consignacaoItemRepository.listarPorConsignacao(id);
+      const movimentacoes = await this._container.movimentacaoComercialRepository.listar({
+        consignacaoId: id
+      });
+      const { montarHistoricoEntregas } = require('../usecases/consignacao/entregaComplementarHelpers');
+      const {
+        obterComprovanteDoHistorico,
+        renderComprovanteTexto
+      } = require('../usecases/consignacao/atualizacaoEntregaHelpers');
+
+      const entregas = montarHistoricoEntregas(movimentacoes, itens);
+      const comprovante = obterComprovanteDoHistorico(entregas, correlationId);
+      if (!comprovante) {
+        const response = StandardResponse.notFound('Comprovante de entrega não encontrado');
+        return res.status(StandardResponse.getStatusCode(response)).json(
+          StandardResponse.enrich(response, req)
+        );
+      }
+
+      const payload = {
+        consignacaoId: Number(id),
+        correlationId,
+        comprovante,
+        texto: renderComprovanteTexto({
+          ...comprovante,
+          numeroConsignacao: consignacao.documento?.numero
+            || comprovante.numeroConsignacao
+            || `CONS-${id}`
+        }),
+        reimpressao: true,
+        efeitos: {
+          estoque: false,
+          ledger: false,
+          prestacao: false,
+          novoEvento: false
+        }
       };
 
       return res.status(200).json(StandardResponse.enrich(

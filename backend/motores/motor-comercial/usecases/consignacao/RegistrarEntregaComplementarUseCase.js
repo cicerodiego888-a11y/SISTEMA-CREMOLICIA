@@ -29,6 +29,7 @@ const {
   montarSnapshotPrecificacaoItem,
   montarHistoricoEntregas
 } = require('./entregaComplementarHelpers');
+const { obterComprovanteDoHistorico } = require('./atualizacaoEntregaHelpers');
 const { sincronizarCacheConsignacao } = require('../../services/projections/ledgerCacheSync');
 const { sincronizarCreditoComercial } = require('../../services/sincronizarCreditoComercial');
 const { validarQuantidadePorUnidade } = require('../../services/quantidadeUnidadeComercial');
@@ -117,7 +118,8 @@ class RegistrarEntregaComplementarUseCase extends ConsignacaoWriteUseCase {
           valorIncremental: Number(evento?.valorTotal || 0),
           correlationId,
           idempotente: true,
-          entregas: historico
+          entregas: historico,
+          comprovante: evento?.comprovante || obterComprovanteDoHistorico(historico, correlationId)
         };
       }
     }
@@ -262,6 +264,8 @@ class RegistrarEntregaComplementarUseCase extends ConsignacaoWriteUseCase {
             subtotalEntregue: subAnterior + valorEvento
           });
           unidadeEvento = existente.unidadeComercial || linha.unidadeComercial;
+          item._quantidadeAnterior = qtdAnterior;
+          item._quantidadeAtual = qtdAnterior + quantidadeEvento;
         } else {
           item = await uow.consignacaoItem.inserir({
             consignacaoId: consTx.id,
@@ -278,6 +282,8 @@ class RegistrarEntregaComplementarUseCase extends ConsignacaoWriteUseCase {
           });
           precoEvento = item.precoUnitario;
           unidadeEvento = item.unidadeComercial;
+          item._quantidadeAnterior = 0;
+          item._quantidadeAtual = linha.quantidade;
         }
 
         // Payload de efeitos (estoque/ledger) sempre com a qtd incremental do evento
@@ -291,6 +297,8 @@ class RegistrarEntregaComplementarUseCase extends ConsignacaoWriteUseCase {
         itensNovos.push(itemEvento);
 
         const valorItem = Number(quantidadeEvento) * Number(precoEvento);
+        const qtdAnteriorSnap = Number(item._quantidadeAnterior || 0);
+        const qtdAtualSnap = Number(item._quantidadeAtual || quantidadeEvento);
         const mov = await registrarMovimentacaoComercial(uow, {
           consignacaoId: consTx.id,
           consignacaoItemId: item.id,
@@ -307,7 +315,11 @@ class RegistrarEntregaComplementarUseCase extends ConsignacaoWriteUseCase {
             item: {
               id: item.id,
               produtoId: item.produtoId,
+              produtoNome: item.produtoNome || linha.produtoNome || null,
               quantidade: quantidadeEvento,
+              quantidadeAnterior: qtdAnteriorSnap,
+              delta: quantidadeEvento,
+              quantidadeAtual: qtdAtualSnap,
               precoUnitario: precoEvento,
               unidadeComercial: unidadeEvento,
               linhaComercialId: existente
@@ -336,6 +348,9 @@ class RegistrarEntregaComplementarUseCase extends ConsignacaoWriteUseCase {
           detalhes: {
             entregaComplementar: true,
             itemIncrementado: Boolean(existente),
+            quantidadeAnterior: qtdAnteriorSnap,
+            quantidadeAtual: qtdAtualSnap,
+            delta: quantidadeEvento,
             liberacaoGerencial: liberacaoOk ? liberacaoGerencial : null
           }
         });
@@ -416,6 +431,7 @@ class RegistrarEntregaComplementarUseCase extends ConsignacaoWriteUseCase {
         ? await uow.movimentacaoComercial.listar({ consignacaoId: consTx.id })
         : movimentacoes;
       const todosItens = await uow.consignacaoItem.listarPorConsignacao(consTx.id);
+      const entregas = montarHistoricoEntregas(todasMovs, todosItens);
 
       return {
         consignacao: consignacaoAtualizada || consTx,
@@ -424,7 +440,8 @@ class RegistrarEntregaComplementarUseCase extends ConsignacaoWriteUseCase {
         valorIncremental,
         correlationId,
         idempotente: false,
-        entregas: montarHistoricoEntregas(todasMovs, todosItens)
+        entregas,
+        comprovante: obterComprovanteDoHistorico(entregas, correlationId)
       };
     });
   }

@@ -42,6 +42,7 @@ const ConsignacoesPage = require('../pages/Consignacoes');
 const NovaConsignacaoPage = require('../pages/NovaConsignacao');
 const EntregaConsignacaoPage = require('../pages/EntregaConsignacao');
 const EntregaComplementarPage = require('../pages/EntregaComplementar');
+const AlterarEntregaPage = require('../pages/AlterarEntrega');
 const ComprovanteEntregaPage = require('../pages/ComprovanteEntrega');
 const PrestacaoContasPage = require('../pages/PrestacaoContas');
 const PrestacaoLocatorPage = require('../pages/PrestacaoLocator');
@@ -101,6 +102,12 @@ const PAGE_COMPONENTS = {
       throw new Error('Informe o ID da consignação para a entrega complementar.');
     }
     return EntregaComplementarPage.create(params.id, query);
+  },
+  AlterarEntrega: (params, query) => {
+    if (!params || !params.id) {
+      throw new Error('Informe o ID da consignação para alterar a entrega.');
+    }
+    return AlterarEntregaPage.create(params.id, query);
   },
   ComprovanteEntrega: (params, query) => {
     if (!params || !params.id) {

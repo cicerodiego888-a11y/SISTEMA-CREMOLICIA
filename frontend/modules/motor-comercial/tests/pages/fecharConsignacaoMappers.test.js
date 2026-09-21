@@ -165,6 +165,46 @@ describe('fecharConsignacaoMappers', () => {
     expect(itens[0].saldo).toBe(4);
   });
 
+  test('enriquecerItensPrestacao inclui produto novo da complementação e atualiza entregue', () => {
+    const itens = enriquecerItensPrestacao(
+      [
+        {
+          itemId: 1,
+          produtoId: 50,
+          produtoNome: 'CREMOSA',
+          quantidadeEntregue: 100,
+          enviado: 100,
+          vendido: 0,
+          consignacaoId: 21
+        }
+      ],
+      [
+        {
+          id: 1,
+          produtoId: 50,
+          produtoNome: 'CREMOSA',
+          quantidadeEntregue: 125,
+          consignacaoId: 21,
+          precoUnitario: 1.5
+        },
+        {
+          id: 2,
+          produtoId: 99,
+          produtoNome: 'SKIMOS',
+          quantidadeEntregue: 625,
+          consignacaoId: 21,
+          precoUnitario: 4
+        }
+      ]
+    );
+    expect(itens).toHaveLength(2);
+    expect(itens[0].quantidadeEntregue).toBe(125);
+    expect(itens[0].enviado).toBe(125);
+    expect(itens[1].produtoNome).toBe('SKIMOS');
+    expect(itens[1].quantidadeEntregue).toBe(625);
+    expect(itens[1].saldo).toBe(625);
+  });
+
   test('buildPayloadOperacao normaliza tipos numéricos para venda', () => {
     const payload = buildPayloadOperacao(
       { produtoId: '3', itemId: '10', preco: '5.5' },
@@ -203,6 +243,36 @@ describe('fecharConsignacaoMappers', () => {
     expect(painel.valorRecebido).toBe(50);
     expect(painel.saldoEmAberto).toBe(0);
     expect(painel.preview).toBe(true);
+  });
+
+  test('buildPainelLateralPreview projeta redução local (50→40) sem SSOT máximo', () => {
+    const painel = buildPainelLateralPreview(
+      { valorVendido: 500, valorRecebido: 0 },
+      [{ vendido: 40, devolvido: 0, perdido: 0, cortesia: 0, precoUnitario: 10, enviado: 50 }]
+    );
+    expect(painel.produtosVendidos).toBe(40);
+    expect(painel.valorVenda).toBe(400);
+    expect(painel.valorVendidos).toBe(400);
+    expect(painel.saldoEmAberto).toBe(400);
+    expect(painel.financeiroEstimado).toBe(true);
+  });
+
+  test('buildPainelLateralPreview usa precoUnitario congelado (não inventa preço)', () => {
+    const painel = buildPainelLateralPreview(
+      { valorVendido: 0, valorRecebido: 100 },
+      [
+        { vendido: 40, precoUnitario: 10, devolvido: 5, perdido: 2, cortesia: 1 },
+        { vendido: 25, precoUnitario: 5, devolvido: 0, perdido: 0, cortesia: 0 }
+      ]
+    );
+    expect(painel.produtosVendidos).toBe(65);
+    expect(painel.valorVendidos).toBe(525);
+    expect(painel.valorDevolvidos).toBe(50);
+    expect(painel.valorPerdas).toBe(20);
+    expect(painel.valorCortesias).toBe(10);
+    expect(painel.valorVenda).toBe(525);
+    expect(painel.valorRecebido).toBe(100);
+    expect(painel.saldoEmAberto).toBe(425);
   });
 
   test('buildPainelLateralPreview estima valorVenda quando SSOT ainda é zero', () => {

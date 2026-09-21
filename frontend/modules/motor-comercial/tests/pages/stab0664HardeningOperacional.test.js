@@ -47,6 +47,8 @@ describe('STAB-06.6.4 hardening operacional', () => {
       situacaoFiscal: 'PENDENTE'
     })).toBe('');
 
+    expect(motivoBotaoDesabilitado('continuar', { hidratando: true }))
+      .toBe(MENSAGENS_HARDENING.PRESTACAO_AGUARDE_HIDRATACAO);
     expect(motivoBotaoDesabilitado('continuar', { dirty: true })).toBe('Existem alterações pendentes.');
     expect(motivoBotaoDesabilitado('emitir', { emitindo: true })).toBe(MENSAGENS_HARDENING.EMITINDO_NFCE);
   });
