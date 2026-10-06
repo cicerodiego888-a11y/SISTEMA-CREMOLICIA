@@ -42,6 +42,9 @@ class CentralDashboardService {
     return CentralDashboardDTO.create({
       contadores: {
         novas: contadores[DocumentoFiscalStatus.SINCRONIZADA] || 0,
+        aguardandoXml: (contadores[DocumentoFiscalStatus.AGUARDANDO_XML] || 0)
+          + (contadores[DocumentoFiscalStatus.XML_RECUPERANDO] || 0)
+          + (contadores[DocumentoFiscalStatus.ERRO_RECUPERACAO] || 0),
         emProcessamento: contadores[DocumentoFiscalStatus.EM_PROCESSAMENTO] || 0,
         aguardandoRevisao: contadores[DocumentoFiscalStatus.AGUARDANDO_REVISAO] || 0,
         prontasParaCompra: contadores[DocumentoFiscalStatus.PRONTA_PARA_COMPRA] || 0,

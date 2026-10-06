@@ -14,11 +14,7 @@ const {
 const { auditarRuntimeImpressao } = require('./backend/services/fiscal/ComprovanteRuntimeAuditoria');
 
 // Configuração do banco de dados
-process.env.DB_DIR = process.env.DB_DIR || path.join(
-  process.env.PROGRAMDATA || 'C:\\ProgramData',
-  'MercantilFiscal',
-  'dados'
-);
+process.env.DB_DIR = require('./backend/config/dataDir').resolverDbDir();
 
 console.log('DB_DIR definido para:', process.env.DB_DIR);
 

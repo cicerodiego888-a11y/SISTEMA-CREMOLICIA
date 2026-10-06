@@ -4428,12 +4428,15 @@ function abrirModalAjustarEstoque(produtoId) {
                                             <label for="ajuste_motivo" class="form-label">Motivo *</label>
                                             <textarea class="form-control" id="ajuste_motivo" rows="2" required placeholder="Descreva o motivo do ajuste"></textarea>
                                         </div>
+                                        <div class="col-12">
+                                            <div class="alert alert-warning py-2 mb-0 d-none" id="ajuste_erro_local"></div>
+                                        </div>
                                     </div>
                                 </form>
                             </div>
                             <div class="modal-footer">
                                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
-                                <button type="button" class="btn btn-primary" id="btnConfirmarAjusteEstoque" onclick="salvarAjusteEstoque()">Confirmar Ajuste</button>
+                                <button type="button" class="btn btn-primary" id="btnConfirmarAjusteEstoque">Confirmar Ajuste</button>
                             </div>
                         </div>
                     </div>
@@ -4441,8 +4444,36 @@ function abrirModalAjustarEstoque(produtoId) {
             `;
 
             $('#ajustarEstoqueModal').remove();
-            $('#modal-container').append(modalHtml);
-            $('#ajustarEstoqueModal').modal('show');
+            const host = document.body || document.getElementById('modal-container');
+            host.insertAdjacentHTML('beforeend', modalHtml);
+            const modalEl = document.getElementById('ajustarEstoqueModal');
+            modalEl.style.zIndex = '2060';
+            const confirmar = document.getElementById('btnConfirmarAjusteEstoque');
+            if (confirmar) {
+                confirmar.addEventListener('click', (ev) => {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    salvarAjusteEstoque();
+                });
+            }
+            const formAjuste = document.getElementById('ajustarEstoqueForm');
+            if (formAjuste) {
+                formAjuste.addEventListener('submit', (ev) => {
+                    ev.preventDefault();
+                    salvarAjusteEstoque();
+                });
+            }
+            if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
+                const instancia = bootstrap.Modal.getOrCreateInstance(modalEl, { backdrop: true, keyboard: true, focus: true });
+                modalEl.addEventListener('shown.bs.modal', () => {
+                    if (window.electronAPI && typeof window.electronAPI.forcarReflow === 'function') {
+                        window.electronAPI.forcarReflow();
+                    }
+                    const campo = document.getElementById('ajuste_fiscal');
+                    if (campo) campo.focus();
+                }, { once: true });
+                instancia.show();
+            }
 
             carregarUnidadesAjusteEstoque(produtoId, unidade).then(() => {
                 atualizarPreviewAjusteEstoque();
@@ -4543,6 +4574,19 @@ function atualizarPreviewAjusteEstoque() {
 }
 window.atualizarPreviewAjusteEstoque = atualizarPreviewAjusteEstoque;
 
+function avisoAjusteEstoque(mensagem, foco) {
+    const caixa = document.getElementById('ajuste_erro_local');
+    if (caixa) {
+        caixa.textContent = mensagem;
+        caixa.classList.remove('d-none');
+    }
+    if (typeof showNotification === 'function') showNotification(mensagem, 'warning');
+    if (foco) {
+        const campo = document.getElementById(foco);
+        if (campo) campo.focus();
+    }
+}
+
 function salvarAjusteEstoque() {
     const produtoId = $('#ajuste_produto_id').val();
     const motivo = ($('#ajuste_motivo').val() || '').trim();
@@ -4551,22 +4595,21 @@ function salvarAjusteEstoque() {
     const controlaValidade = $('#ajuste_controla_validade').val() === '1';
     const modoFiscal = typeof isModoFiscalVisualizacaoAtivo === 'function' && isModoFiscalVisualizacaoAtivo();
     const unidadeOrigem = ($('#ajuste_unidade_origem').val() || '').trim();
+    const caixa = document.getElementById('ajuste_erro_local');
+    if (caixa) caixa.classList.add('d-none');
 
     if (!motivo) {
-        showNotification('Informe o motivo do ajuste.', 'warning');
-        $('#ajuste_motivo').focus();
+        avisoAjusteEstoque('Informe o motivo do ajuste.', 'ajuste_motivo');
         return;
     }
 
     if (ajusteFiscal === 0 && ajusteNaoFiscal === 0) {
-        showNotification('Informe ao menos um ajuste diferente de zero.', 'warning');
-        $('#ajuste_fiscal').focus();
+        avisoAjusteEstoque('Informe um ajuste diferente de zero no campo Ajuste Fiscal.', 'ajuste_fiscal');
         return;
     }
 
     if (!unidadeOrigem) {
-        showNotification('Selecione a unidade do ajuste.', 'warning');
-        $('#ajuste_unidade_origem').focus();
+        avisoAjusteEstoque('Selecione a unidade do ajuste.', 'ajuste_unidade_origem');
         return;
     }
 

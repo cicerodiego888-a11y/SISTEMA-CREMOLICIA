@@ -134,6 +134,24 @@ router.get('/servico/status', async (req, res) => {
   }
 });
 
+router.get('/diagnostico', async (req, res) => {
+  try {
+    const diagnostico = await centralEntradasService.obterDiagnostico();
+    return res.json(diagnostico);
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/nsu', async (req, res) => {
+  try {
+    const nsu = await centralEntradasService.obterControleNsu();
+    return res.json(nsu);
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
 router.get('/eventos', async (req, res) => {
   try {
     const resultado = await centralEntradasService.listarEventos({
@@ -183,16 +201,37 @@ router.patch('/notificacoes/:id/lida', async (req, res) => {
   }
 });
 
+router.get('/ao-abrir', async (req, res) => {
+  try {
+    const abertura = await centralEntradasService.abrirCentral();
+    return res.json(abertura);
+  } catch (error) {
+    return res.status(500).json({
+      sucesso: false,
+      operacional: false,
+      erro: {
+        codigo: 'ERRO_INTERNO',
+        mensagem: error.message,
+        operacional: false
+      }
+    });
+  }
+});
+
 router.post('/sincronizar-ao-abrir', async (req, res) => {
   try {
     const resultado = await centralEntradasService.sincronizarAoAbrir();
-    if (!resultado) {
-      return res.json({ ignorado: true, motivo: 'sync_ao_abrir desabilitado' });
-    }
-    const statusCode = resultado.sucesso ? 200 : (resultado.ignorado ? 200 : 502);
-    return res.status(statusCode).json(resultado);
+    return res.json(resultado);
   } catch (error) {
-    return res.status(500).json({ error: error.message });
+    const { classificarErroSefaz } = require('../services/fiscal/sefazErroOperacional');
+    const classificado = classificarErroSefaz(error);
+    return res.status(classificado.operacional ? 200 : 500).json({
+      sucesso: false,
+      operacional: classificado.operacional,
+      erros: [classificado.mensagem],
+      mensagem: classificado.mensagem,
+      erro: classificado
+    });
   }
 });
 
@@ -225,10 +264,28 @@ router.get('/', async (req, res) => {
 router.post('/sincronizar', async (req, res) => {
   try {
     const resultado = await centralEntradasService.sincronizar();
-    const statusCode = resultado.sucesso ? 200 : 502;
-    return res.status(statusCode).json(resultado);
+    if (resultado.sucesso || resultado.operacional || resultado.erro) {
+      return res.json(resultado);
+    }
+    return res.status(500).json({
+      ...resultado,
+      sucesso: false,
+      erro: resultado.erro || {
+        codigo: 'ERRO_INTERNO',
+        mensagem: resultado.mensagem || 'Falha interna na sincronização',
+        operacional: false
+      }
+    });
   } catch (error) {
-    return res.status(500).json({ error: error.message });
+    const { classificarErroSefaz } = require('../services/fiscal/sefazErroOperacional');
+    const classificado = classificarErroSefaz(error);
+    return res.status(classificado.operacional ? 200 : 500).json({
+      sucesso: false,
+      operacional: classificado.operacional,
+      erros: [classificado.mensagem],
+      mensagem: classificado.mensagem,
+      erro: classificado
+    });
   }
 });
 
@@ -283,6 +340,45 @@ router.post('/:id/processar', async (req, res) => {
   } catch (error) {
     const code = error.statusCode || 500;
     return res.status(code).json({ error: error.message, sucesso: false });
+  }
+});
+
+router.post('/:id/recuperar-xml', async (req, res) => {
+  try {
+    const resultado = await centralEntradasService.recuperarXmlDocumento(req.params.id, {
+      usuarioId: req.body?.usuario_id,
+      origem: 'api'
+    });
+    return res.json(resultado);
+  } catch (error) {
+    const code = error.statusCode || 500;
+    return res.status(code).json({ error: error.message });
+  }
+});
+
+router.post('/:id/reprocessar', async (req, res) => {
+  try {
+    const resultado = await centralEntradasService.reprocessarDocumento(req.params.id, {
+      usuarioId: req.body?.usuario_id,
+      origem: 'api'
+    });
+    return res.json(resultado);
+  } catch (error) {
+    const code = error.statusCode || 500;
+    return res.status(code).json({ error: error.message, sucesso: false });
+  }
+});
+
+router.post('/:id/manifestacao', async (req, res) => {
+  try {
+    const tipo = req.body?.tipo || req.body?.codigo;
+    const resultado = await centralEntradasService.prepararManifestacao(req.params.id, tipo, {
+      origem: 'api'
+    });
+    return res.json(resultado);
+  } catch (error) {
+    const code = error.statusCode || 500;
+    return res.status(code).json({ error: error.message });
   }
 });
 

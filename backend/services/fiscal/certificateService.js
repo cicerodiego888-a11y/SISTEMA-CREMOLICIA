@@ -118,7 +118,8 @@ function carregarCertificadoPfx(certificadoPath, senha) {
     privateKeyPem,
     certPem,
     certBase64,
-    certBundlePem
+    certBundlePem,
+    certificado: certBagFolha.cert
   };
 }
 
@@ -158,4 +159,82 @@ function extrairNomeEmpresaDoCertificado(certificadoPath, senha) {
   }
 }
 
-module.exports = { carregarCertificadoPfx, extrairNomeEmpresaDoCertificado };
+function extrairCnpjDoSubject(cert) {
+  const attrs = cert?.subject?.attributes || [];
+  const pares = attrs.map((attr) => ({
+    nome: String(attr.shortName || attr.name || ''),
+    valor: String(attr.value || '')
+  }));
+
+  const cn = pares.find((a) => a.nome === 'CN' || a.nome === 'commonName');
+  if (cn) {
+    const noCn = cn.valor.match(/:(\d{14})\s*$/) || cn.valor.match(/(\d{14})/);
+    if (noCn) return noCn[1];
+  }
+
+  for (const attr of pares) {
+    const digits = attr.valor.replace(/\D/g, '');
+    if (digits.length === 14) return digits;
+    const embutido = attr.valor.match(/(\d{14})/);
+    if (embutido) return embutido[1];
+  }
+  return null;
+}
+
+function inspecionarCertificadoPfx(certificadoPath, senha) {
+  if (!certificadoPath) {
+    const erro = new Error('Caminho do certificado não configurado.');
+    erro.codigo = 'CERTIFICATE_CONFIGURATION_ERROR';
+    throw erro;
+  }
+  if (!fs.existsSync(certificadoPath)) {
+    const erro = new Error(`Certificado não encontrado em: ${certificadoPath}`);
+    erro.codigo = 'CERTIFICATE_NOT_FOUND';
+    throw erro;
+  }
+
+  let pfx;
+  try {
+    pfx = carregarCertificadoPfx(certificadoPath, senha);
+  } catch (error) {
+    const erro = new Error(error.message || 'Certificado digital inválido.');
+    erro.codigo = /não encontrado/i.test(error.message || '')
+      ? 'CERTIFICATE_NOT_FOUND'
+      : 'CERTIFICATE_INVALID';
+    throw erro;
+  }
+
+  const cert = pfx.certificado || (pfx.certPem ? forge.pki.certificateFromPem(pfx.certPem) : null);
+  if (!cert) {
+    const erro = new Error('Certificado folha não encontrado no PFX.');
+    erro.codigo = 'CERTIFICATE_INVALID';
+    throw erro;
+  }
+
+  const agora = new Date();
+  const notAfter = cert.validity?.notAfter || null;
+  const notBefore = cert.validity?.notBefore || null;
+  const expirado = Boolean(notAfter && agora > notAfter);
+
+  if (expirado) {
+    const erro = new Error(`Certificado expirado em ${notAfter.toISOString()}`);
+    erro.codigo = 'CERTIFICATE_EXPIRED';
+    throw erro;
+  }
+
+  return {
+    encontrado: true,
+    valido: !(notBefore && agora < notBefore),
+    expirado: false,
+    cnpj: extrairCnpjDoSubject(cert),
+    notBefore,
+    notAfter,
+    caminho: certificadoPath
+  };
+}
+
+module.exports = {
+  carregarCertificadoPfx,
+  extrairNomeEmpresaDoCertificado,
+  inspecionarCertificadoPfx
+};

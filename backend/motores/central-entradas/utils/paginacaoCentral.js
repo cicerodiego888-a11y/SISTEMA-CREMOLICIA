@@ -6,6 +6,7 @@
 
 const CAMPOS_ORDENACAO = Object.freeze({
   created_at: 'created_at',
+  updated_at: 'updated_at',
   data_emissao: 'data_emissao',
   valor_total: 'valor_total',
   fornecedor: 'fornecedor',

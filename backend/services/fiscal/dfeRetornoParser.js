@@ -84,10 +84,29 @@ function extrairDocumentosZip(xmlRetorno) {
       continue;
     }
 
-    documentos.push({ nsu, schema, xml, compactado });
+    documentos.push({ nsu, schema, xml, compactado, xmlCompleto: /<infNFe[\s>]/i.test(xml) || /<nfeProc[\s>]/i.test(xml) });
   }
 
   return documentos;
+}
+
+/**
+ * Lista todos os NSUs do lote, inclusive os que não são NF-e ou falharam no unzip.
+ *
+ * @param {string} xmlRetorno
+ * @returns {string[]}
+ */
+function extrairTodosNsus(xmlRetorno) {
+  const nsus = [];
+  const regex = /<docZip([^>]*)>/gi;
+  let match;
+
+  while ((match = regex.exec(String(xmlRetorno || ''))) !== null) {
+    const nsu = normalizarNsu((match[1] || '').match(/NSU="(\d+)"/i)?.[1]);
+    if (nsu && nsu !== NSU_ZERADO) nsus.push(nsu);
+  }
+
+  return nsus;
 }
 
 /**
@@ -104,6 +123,7 @@ module.exports = {
   nsuMenorQue,
   extrairMetadadosRetorno,
   extrairDocumentosZip,
+  extrairTodosNsus,
   isDocumentoNotaFiscal,
   retornoDistSucesso
 };

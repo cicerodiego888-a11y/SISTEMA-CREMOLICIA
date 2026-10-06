@@ -543,6 +543,20 @@ class CentralDocumentosRepository extends IRepository {
   }
 
   /**
+   * @returns {Promise<string[]>}
+   */
+  async listarNsusConhecidos() {
+    const sql = this._obterSql();
+    await sql.whenReady();
+
+    const rows = await sql.all(
+      `SELECT nsu FROM ${CentralDocumentosRepository.TABELA}
+       WHERE nsu IS NOT NULL AND nsu != ''`
+    );
+    return rows.map((row) => String(row.nsu));
+  }
+
+  /**
    * @param {number} [limite]
    * @returns {Promise<Object[]>}
    */

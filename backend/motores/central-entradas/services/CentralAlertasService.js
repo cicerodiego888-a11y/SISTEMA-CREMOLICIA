@@ -35,7 +35,8 @@ class CentralAlertasService {
       comprasAbertas,
       erros,
       xmlInvalido,
-      syncAtrasada
+      syncAtrasada,
+      aguardandoXml
     ] = await Promise.all([
       this._documentosRepository.listarFornecedoresNovos(),
       this._documentosRepository.listarPorStatus(DocumentoFiscalStatus.DUPLICADA, 50),
@@ -45,7 +46,15 @@ class CentralAlertasService {
       this._documentosRepository.listarComprasAbertas(50),
       this._documentosRepository.listarPorStatus(DocumentoFiscalStatus.ERRO, 50),
       this._documentosRepository.listarXmlInvalido(50),
-      this._nsuRepository.obterUltimaSincronizacao()
+      this._nsuRepository.obterUltimaSincronizacao(),
+      this._documentosRepository.listar({
+        statusIn: [
+          DocumentoFiscalStatus.AGUARDANDO_XML,
+          DocumentoFiscalStatus.XML_RECUPERANDO,
+          DocumentoFiscalStatus.ERRO_RECUPERACAO
+        ],
+        limite: 50
+      })
     ]);
 
     const alertas = [];
@@ -107,6 +116,13 @@ class CentralAlertasService {
     if (xmlInvalido.length) {
       alertas.push(this._montarAlerta('XML_INVALIDO', xmlInvalido, (docs) => ({
         descricao: `${docs.length} documento(s) com XML inválido ou ilegível.`,
+        documentoIds: docs.map((d) => d.id)
+      })));
+    }
+
+    if (aguardandoXml.length) {
+      alertas.push(this._montarAlerta('AGUARDANDO_XML', aguardandoXml, (docs) => ({
+        descricao: `${docs.length} documento(s) aguardando disponibilização do XML.`,
         documentoIds: docs.map((d) => d.id)
       })));
     }

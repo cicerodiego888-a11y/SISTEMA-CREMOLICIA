@@ -112,6 +112,19 @@ router.get('/', (req, res) => {
   });
 });
 
+async function resumoNfeParaVenda(venda, itens) {
+  if (!venda) return null;
+  try {
+    const configService = require('../services/configuracaoService');
+    if (!configService.recursoHabilitado('nfe')) return null;
+    const { resumoNfeDaVenda } = require('../services/fiscal/nfeEmissorVenda');
+    return await resumoNfeDaVenda(venda, itens || []);
+  } catch (e) {
+    console.warn('[vendas] resumo NF-e indisponível:', e.message);
+    return null;
+  }
+}
+
 // Buscar venda por ID
 router.get('/:id', (req, res) => {
   const { id } = req.params;
@@ -121,6 +134,13 @@ router.get('/:id', (req, res) => {
       v.*,
       c.nome AS cliente_nome,
       c.cpf_cnpj AS cliente_cpf,
+      c.rua AS cliente_rua,
+      c.numero AS cliente_numero,
+      c.bairro AS cliente_bairro,
+      c.cidade AS cliente_cidade,
+      c.uf AS cliente_uf,
+      c.cep AS cliente_cep,
+      c.inscricao_estadual AS cliente_inscricao_estadual,
       n.id AS nfce_id,
       n.numero AS nfce_numero,
       n.status AS nfce_status,
@@ -151,6 +171,7 @@ router.get('/:id', (req, res) => {
         res.status(500).json({ error: err.message });
         return;
       }
+      const nfe = await resumoNfeParaVenda(venda, itens);
       try {
         const svc = require('../modules/comercial/casquinha/CasquinhaSaboresService');
         const comSabores = [];
@@ -161,9 +182,9 @@ router.get('/:id', (req, res) => {
           }
           comSabores.push({ ...it, sabores });
         }
-        res.json({ ...venda, itens: comSabores });
+        res.json({ ...venda, itens: comSabores, nfe });
       } catch (_) {
-        res.json({ ...venda, itens });
+        res.json({ ...venda, itens, nfe });
       }
     });
   });

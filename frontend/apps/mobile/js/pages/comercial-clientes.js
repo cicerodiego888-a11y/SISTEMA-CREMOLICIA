@@ -164,6 +164,11 @@ function bindCapToggles(root) {
 
 async function salvarClienteEPerfis({ clienteId, isEdit, formEl }) {
   const cadastro = buildClientePayload(collectForm(formEl));
+  // O limite do cliente vem do campo da capacidade Crédito; na edição, sem ela marcada,
+  // o PUT preserva o limite atual.
+  if (isEdit && !formEl.querySelector('[name="cap_credito"]')?.checked) {
+    delete cadastro.limite_credito;
+  }
   if (!cadastro.nome) {
     throw new Error('Informe o nome do cliente.');
   }
@@ -310,6 +315,7 @@ export async function renderForm(root, clienteId) {
           ${cadastroSectionHtml('Identificação')}
           ${fieldHtml({ name: 'nome', label: 'Nome', value: cliente.nome, required: true, autocomplete: 'name' })}
           ${fieldHtml({ name: 'cpf_cnpj', label: 'CPF/CNPJ', value: cliente.cpf_cnpj, inputmode: 'numeric' })}
+          ${fieldHtml({ name: 'inscricao_estadual', label: 'Inscrição Estadual', value: cliente.inscricao_estadual })}
           ${fieldHtml({ name: 'telefone', label: 'Telefone', value: cliente.telefone, type: 'tel' })}
           ${fieldHtml({ name: 'email', label: 'E-mail', value: cliente.email, type: 'email' })}
           ${cadastroSectionHtml('Endereço')}
@@ -390,6 +396,7 @@ export async function renderDetalhe(root, clienteId) {
       <article class="cds-card cds-m-enter">
         <h3 class="cds-card__title" style="margin:0 0 8px">${escapeHtml(cliente.nome)}</h3>
         <div class="cds-row"><span>Documento</span><strong>${escapeHtml(cliente.cpf_cnpj || '—')}</strong></div>
+        <div class="cds-row"><span>Inscrição Estadual</span><strong>${escapeHtml(cliente.inscricao_estadual || '—')}</strong></div>
         <div class="cds-row"><span>Telefone</span><strong>${escapeHtml(cliente.telefone || '—')}</strong></div>
         <div class="cds-row"><span>Cidade</span><strong>${escapeHtml([cliente.cidade, cliente.uf].filter(Boolean).join('/') || '—')}</strong></div>
       </article>

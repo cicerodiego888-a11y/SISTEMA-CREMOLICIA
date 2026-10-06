@@ -41,6 +41,7 @@ export function buildClientePayload(raw = {}) {
   return {
     nome: String(raw.nome || '').trim(),
     cpf_cnpj: String(raw.cpf_cnpj || '').trim(),
+    inscricao_estadual: String(raw.inscricao_estadual || '').trim(),
     telefone: String(raw.telefone || '').trim(),
     email: String(raw.email || '').trim(),
     cep: String(raw.cep || '').trim(),
@@ -58,6 +59,7 @@ function fieldsCliente(c = {}) {
     ${cadastroSectionHtml('Identificação')}
     ${fieldHtml({ name: 'nome', label: 'Nome', value: c.nome, required: true, autocomplete: 'name' })}
     ${fieldHtml({ name: 'cpf_cnpj', label: 'CPF/CNPJ', value: c.cpf_cnpj, inputmode: 'numeric' })}
+    ${fieldHtml({ name: 'inscricao_estadual', label: 'Inscrição Estadual', value: c.inscricao_estadual })}
     ${fieldHtml({ name: 'telefone', label: 'Telefone', value: c.telefone, type: 'tel', inputmode: 'tel' })}
     ${fieldHtml({ name: 'email', label: 'E-mail', value: c.email, type: 'email' })}
     ${cadastroSectionHtml('Endereço')}
@@ -247,6 +249,7 @@ export async function renderDetail(root, id) {
       <article class="cds-card cds-m-enter">
         <h3 class="cds-card__title" style="margin:0 0 10px">${escapeHtml(asText(c.nome, 'Cliente'))}</h3>
         <div class="cds-row"><span>Documento</span><strong>${escapeHtml(asText(c.cpf_cnpj))}</strong></div>
+        <div class="cds-row"><span>Inscrição Estadual</span><strong>${escapeHtml(asText(c.inscricao_estadual))}</strong></div>
         <div class="cds-row"><span>Telefone</span><strong>${escapeHtml(asText(c.telefone))}</strong></div>
         <div class="cds-row"><span>E-mail</span><strong>${escapeHtml(asText(c.email))}</strong></div>
         <div class="cds-row"><span>Limite de crédito</span><strong>${escapeHtml(formatMoney(c.limite_credito || 0))}</strong></div>

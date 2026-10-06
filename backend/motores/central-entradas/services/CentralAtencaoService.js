@@ -132,6 +132,24 @@ class CentralAtencaoService {
       });
     }
 
+    const aguardandoXml = (alertas.alertas || []).find((a) => a.tipo === 'AGUARDANDO_XML');
+    if (aguardandoXml?.quantidade) {
+      itens.push({
+        id: 'aguardando_xml',
+        icone: 'fa-hourglass-half',
+        cor: '#64748b',
+        mensagem: aguardandoXml.quantidade === 1
+          ? 'Existe 1 documento aguardando XML.'
+          : `Existem ${aguardandoXml.quantidade} documentos aguardando XML.`,
+        quantidade: aguardandoXml.quantidade,
+        acao: {
+          tipo: 'filtrar_status',
+          status: DocumentoFiscalStatus.AGUARDANDO_XML,
+          label: 'Ver espera de XML'
+        }
+      });
+    }
+
     return {
       total: itens.length,
       itens

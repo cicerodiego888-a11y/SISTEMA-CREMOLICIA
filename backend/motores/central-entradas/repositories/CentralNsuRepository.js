@@ -222,9 +222,26 @@ class CentralNsuRepository extends IRepository {
    * @returns {Promise<Object|null>}
    */
   async atualizarSincronizacao(id, dados) {
+    const { nsuMenorQue, normalizarNsu } = require('../../../services/fiscal/dfeRetornoParser');
+    const atual = await this.buscarPorId(id);
+    let ultNsu = dados.ultNsu ?? dados.ult_nsu;
+    let maxNsu = dados.maxNsu ?? dados.max_nsu;
+
+    if (atual && ultNsu != null && nsuMenorQue(normalizarNsu(ultNsu), normalizarNsu(atual.ultNsu))) {
+      console.warn('[CE][NSU] regressao bloqueada no repositorio', {
+        proposto: ultNsu,
+        atual: atual.ultNsu
+      });
+      ultNsu = atual.ultNsu;
+    }
+
+    if (atual && maxNsu != null && nsuMenorQue(normalizarNsu(maxNsu), normalizarNsu(atual.maxNsu))) {
+      maxNsu = atual.maxNsu;
+    }
+
     return this.atualizar(id, {
-      ultNsu: dados.ultNsu ?? dados.ult_nsu,
-      maxNsu: dados.maxNsu ?? dados.max_nsu,
+      ultNsu,
+      maxNsu,
       dataSincronizacao: dados.dataSincronizacao ?? new Date().toISOString()
     });
   }

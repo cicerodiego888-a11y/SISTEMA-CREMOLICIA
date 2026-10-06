@@ -100,6 +100,55 @@ Object.assign(window.ERP_NAV_CATALOG, {
     aliases: ['diagnostico-comercial', 'diagnóstico comercial'],
     caminho: ['Configurações', 'Comercial', 'Diagnóstico Comercial'],
     grupo: 'configuracoes-comercial'
+  },
+  fiscal: {
+    page: 'fiscal',
+    titulo: 'NFC-e Emitidas',
+    aliases: ['/fiscal', 'nfc-e', 'nfce', 'nfc-e emitidas', 'nfce emitidas'],
+    caminho: ['Fiscal', 'NFC-e Emitidas'],
+    grupo: 'fiscal'
+  },
+  'fiscal-nfe-nova': {
+    page: 'fiscal-nfe-nova',
+    titulo: 'Nova NF-e',
+    aliases: ['/fiscal/nfe/nova', 'nova nf-e', 'nova nfe', 'emitir nf-e manual'],
+    caminho: ['Fiscal', 'NF-e', 'Nova NF-e'],
+    grupo: 'fiscal'
+  },
+  'fiscal-nfe': {
+    page: 'fiscal-nfe',
+    titulo: 'NF-e Emitidas',
+    aliases: ['/fiscal/nfe', 'nf-e', 'nfe', 'nf-e emitidas', 'nfe emitidas', 'notas fiscais eletrônicas'],
+    caminho: ['Fiscal', 'NF-e', 'NF-e Emitidas'],
+    grupo: 'fiscal'
+  },
+  'fiscal-nfe-monitor': {
+    page: 'fiscal-nfe-monitor',
+    titulo: 'Monitor NF-e',
+    aliases: ['/fiscal/nfe/monitor', 'monitor nf-e', 'monitor nfe'],
+    caminho: ['Fiscal', 'NF-e', 'Monitor NF-e'],
+    grupo: 'fiscal'
+  },
+  'fiscal-nfe-fila': {
+    page: 'fiscal-nfe-fila',
+    titulo: 'Fila NF-e',
+    aliases: ['/fiscal/nfe/fila', 'fila nf-e', 'fila nfe'],
+    caminho: ['Fiscal', 'NF-e', 'Fila NF-e'],
+    grupo: 'fiscal'
+  },
+  'fiscal-nfe-diagnostico': {
+    page: 'fiscal-nfe-diagnostico',
+    titulo: 'Diagnóstico NF-e',
+    aliases: ['/fiscal/nfe/diagnostico', 'diagnóstico nf-e', 'diagnostico nfe', 'prontidão nf-e'],
+    caminho: ['Fiscal', 'NF-e', 'Diagnóstico NF-e'],
+    grupo: 'fiscal'
+  },
+  'fiscal-contabil': {
+    page: 'fiscal-contabil',
+    titulo: 'Central Contábil',
+    aliases: ['/fiscal/contabil', 'central contábil', 'central contabil', 'contabilidade', 'contador'],
+    caminho: ['Fiscal', 'Central Contábil'],
+    grupo: 'fiscal'
   }
 });
 
@@ -140,6 +189,7 @@ function pesquisarNavErp(termo) {
   Object.values(catalog).forEach((meta) => {
     const page = meta.redirectTo || meta.page;
     if (seen.has(page)) return;
+    if (typeof paginaPermitidaPorImplantacao === 'function' && !paginaPermitidaPorImplantacao(page)) return;
     const hay = [meta.titulo, ...(meta.aliases || []), ...(meta.caminho || [])]
       .join(' ')
       .toLowerCase();

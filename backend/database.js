@@ -1,11 +1,12 @@
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const fs = require('fs');
+const { resolverDbDir } = require('./config/dataDir');
 
 // BANCO OFICIAL DEFINITIVO
 // Prioridade 1: variável DB_DIR
-// Prioridade 2: pasta padrão profissional do Windows
-const DB_DIR = process.env.DB_DIR || path.join(process.env.PROGRAMDATA || 'C:\\ProgramData', 'MercantilFiscal', 'dados');
+// Prioridade 2: C:\ProgramData\MercantilFiscal\dados
+const DB_DIR = resolverDbDir();
 
 if (!fs.existsSync(DB_DIR)) {
   fs.mkdirSync(DB_DIR, { recursive: true });

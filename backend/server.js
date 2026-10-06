@@ -147,6 +147,8 @@ const auditoriaRoutes = require('./rotas/auditoria');
 const licencaRoutes = require('./rotas/licenca');
 const dfeRoutes = require('./rotas/dfe');
 const centralEntradasRoutes = require('./rotas/central-entradas');
+const nfeRoutes = require('./rotas/nfe');
+const { orcamentosRouter, pedidosRouter } = require('./rotas/pedidos');
 const equipamentosRoutes = require('./rotas/equipamentos');
 const laboratorioEquipamentosRoutes = require('./rotas/laboratorioEquipamentos');
 const engenhariaReversaRoutes = require('./rotas/engenhariaReversa');
@@ -168,6 +170,8 @@ app.use('/api/miip', verificarToken, miipRoutes);
 app.use('/api/categorias', verificarToken, categoriasRoutes);
 app.use('/api/subcategorias', verificarToken, subcategoriasRoutes);
 app.use('/api/vendas', verificarToken, vendasRoutes);
+app.use('/api/orcamentos', verificarToken, orcamentosRouter);
+app.use('/api/pedidos', verificarToken, pedidosRouter);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/financeiro', verificarToken, financeiroRoutes);
 app.use('/api/contas-receber', verificarToken, contasReceberRoutes);
@@ -202,6 +206,7 @@ app.use('/api/auditoria', verificarToken, auditoriaRoutes);
 app.use('/api/sistema', verificarToken, require('./rotas/sistema'));
 app.use('/api/dfe', verificarToken, exigirRecurso('fiscal'), dfeRoutes);
 app.use('/api/central-entradas', verificarToken, exigirRecurso('fiscal'), centralEntradasRoutes);
+app.use('/api/nfe', verificarToken, exigirRecurso('nfe'), nfeRoutes);
 app.use('/api/equipamentos', verificarToken, equipamentosRoutes);
 app.use('/api/laboratorio-equipamentos', verificarToken, laboratorioEquipamentosRoutes);
 app.use('/api/engenharia-reversa', verificarToken, engenhariaReversaRoutes);
@@ -289,11 +294,31 @@ async function inicializarFinanceiroVendas() {
     }
 }
 
+async function inicializarNfe() {
+    if (!configService.recursoHabilitado('nfe')) return;
+    const { garantirTabelaNfeNotas } = require('./services/fiscal/nfeEmissorVenda');
+    const { garantirColunasNfeCentral } = require('./services/fiscal/nfeCentralService');
+    const nfeOperacional = require('./services/fiscal/nfeOperacionalService');
+    const { prepararConfiguracaoNfe } = require('./services/fiscal/configService');
+    await prepararConfiguracaoNfe();
+    await garantirTabelaNfeNotas();
+    await garantirColunasNfeCentral();
+    await nfeOperacional.garantirSchemaOperacional();
+    await nfeOperacional.retomarConsultasPendentes();
+    console.log('[NFe] Schema NF-e verificado; consultas automáticas pendentes retomadas.');
+}
+
 db.whenReady(async (readyErr) => {
     if (readyErr) {
         console.error('Servidor não iniciado: banco indisponível.', readyErr.message);
         process.exit(1);
         return;
+    }
+
+    try {
+        await inicializarNfe();
+    } catch (err) {
+        console.error('Falha ao inicializar NF-e:', err.message);
     }
 
     try {
@@ -318,7 +343,9 @@ db.whenReady(async (readyErr) => {
 
     try {
         const centralSyncBackground = require('./motores/central-entradas/services/CentralSyncBackgroundService');
+        const centralXmlWaitScheduler = require('./motores/central-entradas/services/CentralXmlWaitScheduler');
         await centralSyncBackground.iniciar();
+        await centralXmlWaitScheduler.iniciar();
     } catch (err) {
         console.error('Falha ao inicializar sync automática Central Entradas:', err.message);
     }
@@ -326,7 +353,9 @@ db.whenReady(async (readyErr) => {
     const encerrarSyncCentral = () => {
         try {
             const centralSyncBackground = require('./motores/central-entradas/services/CentralSyncBackgroundService');
+            const centralXmlWaitScheduler = require('./motores/central-entradas/services/CentralXmlWaitScheduler');
             centralSyncBackground.parar();
+            centralXmlWaitScheduler.parar();
         } catch { /* ignore */ }
     };
     process.on('SIGTERM', encerrarSyncCentral);

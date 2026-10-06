@@ -24,8 +24,16 @@ const CentralConfigService = require('./services/CentralConfigService');
 const CentralEventosService = require('./services/CentralEventosService');
 const CentralNotificacoesService = require('./services/CentralNotificacoesService');
 const CentralUploadService = require('./services/CentralUploadService');
+const CentralEntradasOrchestrator = require('./CentralEntradasOrchestrator');
+const CentralNsuControleService = require('./services/CentralNsuControleService');
+const CentralManifestacaoService = require('./services/CentralManifestacaoService');
+const CentralMirxService = require('./services/CentralMirxService');
+const CentralHealthMonitorService = require('./services/CentralHealthMonitorService');
+const CentralDiagnosticoService = require('./services/CentralDiagnosticoService');
+const sefazGate = require('./services/CentralSefazOperationalGate');
 const centralSyncExecucao = require('./services/CentralSyncExecucaoService');
 const centralSyncBackground = require('./services/CentralSyncBackgroundService');
+const centralXmlWaitScheduler = require('./services/CentralXmlWaitScheduler');
 const { ORIGENS } = require('./config/centralEventosTipos');
 const CentralDocumentosRepository = require('./repositories/CentralDocumentosRepository');
 const CentralHistoricoRepository = require('./repositories/CentralHistoricoRepository');
@@ -34,7 +42,7 @@ const { validarTransicao } = require('./core/MaquinaEstadosDocumento');
 const { TODOS: STATUS_TODOS, LABELS_UI, isValido } = require('./core/DocumentoFiscalStatus');
 const { paraDetalheCompletoDTO } = require('./utils/centralEntradasMapper');
 
-const VERSAO_MODULO = '1.0.0-sprint8';
+const VERSAO_MODULO = '1.0.0-ce01';
 
 class CentralEntradasService {
   /**
@@ -98,8 +106,39 @@ class CentralEntradasService {
     this._notificacoesService = deps.notificacoesService ?? new CentralNotificacoesService();
     /** @private */
     this._uploadService = deps.uploadService ?? new CentralUploadService();
-    /** @private */
     this._nsuRepository = nsuRepository;
+    this._nsuControleService = deps.nsuControleService
+      ?? new CentralNsuControleService({ nsuRepository, documentosRepository });
+    this._mirxService = deps.mirxService
+      ?? new CentralMirxService({
+        documentosRepository,
+        historicoService: this._historicoService,
+        processamentoService: this._processamentoService
+      });
+    this._manifestacaoService = deps.manifestacaoService
+      ?? new CentralManifestacaoService({ documentosRepository, configService: this._configService });
+    this._orchestrator = deps.orchestrator
+      ?? new CentralEntradasOrchestrator({
+        documentosRepository,
+        historicoService: this._historicoService,
+        processamentoService: this._processamentoService,
+        sincronizacaoService: this._sincronizacaoService,
+        comprasBridgeService: this._comprasBridgeService
+      });
+    this._healthMonitor = deps.healthMonitor
+      ?? new CentralHealthMonitorService({
+        documentosRepository,
+        nsuRepository,
+        eventosService: this._eventosService,
+        nsuControleService: this._nsuControleService,
+        flags: this._flags
+      });
+    this._diagnosticoService = deps.diagnosticoService
+      ?? new CentralDiagnosticoService({
+        documentosRepository,
+        nsuControleService: this._nsuControleService,
+        eventosService: this._eventosService
+      });
   }
 
   /**
@@ -113,44 +152,10 @@ class CentralEntradasService {
    * @returns {Promise<Object>}
    */
   async obterHealth() {
-    const [
-      ultimoNsu,
-      ultimoErro,
-      ultimaSync,
-      tempoMedioMs,
-      statusServico
-    ] = await Promise.all([
-      this._nsuRepository.obterUltimaSincronizacao(),
-      this._eventosService.obterUltimoErroSync(),
-      this._eventosService.obterUltimaSyncConcluida(),
-      this._eventosService.obterTempoMedioSyncMs(),
-      Promise.resolve(centralSyncBackground.obterStatus())
-    ]);
-
-    return {
-      modulo: 'central-entradas',
+    return this._healthMonitor.obter({
       versao: VERSAO_MODULO,
-      habilitado: this.estaHabilitado(),
-      status: statusServico.servicoAtivo ? 'ok' : 'ok',
-      sprint: 8,
-      servicoAtivo: statusServico.servicoAtivo,
-      syncAutomaticaHabilitada: statusServico.syncAutomaticaHabilitada,
-      executandoSync: statusServico.executando,
-      ultimaSincronizacao: ultimoNsu?.dataSincronizacao || ultimoNsu?.updatedAt || null,
-      ultimoErro: ultimoErro
-        ? { mensagem: ultimoErro.descricao, em: ultimoErro.createdAt }
-        : null,
-      tempoMedioSyncMs: tempoMedioMs,
-      proximaExecucao: statusServico.proximaExecucao,
-      ultimaExecucaoAutomatica: statusServico.ultimaExecucao,
-      ultimaSyncEvento: ultimaSync
-        ? {
-          notasNovas: ultimaSync.notasNovas,
-          duracaoMs: ultimaSync.duracaoMs,
-          em: ultimaSync.createdAt
-        }
-        : null
-    };
+      sprint: 'CE-01'
+    });
   }
 
   /**
@@ -277,8 +282,42 @@ class CentralEntradasService {
    */
   async sincronizarAoAbrir() {
     const cfg = await this._configService.obterResumo();
-    if (!cfg.syncAoAbrir) return null;
+    if (!cfg.syncAoAbrir) {
+      return {
+        sucesso: true,
+        ignorado: true,
+        motivo: 'sync_ao_abrir desabilitado',
+        operacional: true
+      };
+    }
     return this.sincronizar({ origem: ORIGENS.ABRIR_CENTRAL });
+  }
+
+  /**
+   * Abre a Central sem consultar a SEFAZ.
+   *
+   * @returns {Promise<Object>}
+   */
+  async abrirCentral() {
+    const [health, dashboard] = await Promise.all([
+      this.obterHealth(),
+      this.obterDashboard()
+    ]);
+
+    const sefazDisponivel = health.sefazDisponivel !== false;
+    return {
+      sucesso: true,
+      centralAberta: true,
+      sefazDisponivel,
+      health,
+      dashboard,
+      nsu: health.nsu || dashboard.sincronizacao || null,
+      ultimaSincronizacaoNsu: dashboard.sincronizacao?.dataSincronizacao || dashboard.ultimaSincronizacao || null,
+      ultimaTentativaSync: health.ultimaExecucaoAutomatica || null,
+      mensagem: sefazDisponivel
+        ? 'Central aberta'
+        : 'Central aberta — SEFAZ indisponível'
+    };
   }
 
   /**
@@ -341,7 +380,49 @@ class CentralEntradasService {
    * @returns {Promise<Object>}
    */
   async processarDocumento(id, opcoes = {}) {
-    return this._processamentoService.processar(id, opcoes);
+    return this._orchestrator.processar(id, opcoes);
+  }
+
+  /**
+   * @param {number|string} id
+   * @param {Object} [opcoes]
+   * @returns {Promise<Object>}
+   */
+  async recuperarXmlDocumento(id, opcoes = {}) {
+    return this._orchestrator.recuperarXml(id, opcoes);
+  }
+
+  /**
+   * @param {number|string} id
+   * @param {Object} [opcoes]
+   * @returns {Promise<Object>}
+   */
+  async reprocessarDocumento(id, opcoes = {}) {
+    return this._mirxService.reprocessar(id, opcoes);
+  }
+
+  /**
+   * @param {number|string} id
+   * @param {string} tipo
+   * @param {Object} [opcoes]
+   * @returns {Promise<Object>}
+   */
+  async prepararManifestacao(id, tipo, opcoes = {}) {
+    return this._manifestacaoService.preparar(id, tipo, opcoes);
+  }
+
+  /**
+   * @returns {Promise<Object>}
+   */
+  async obterDiagnostico() {
+    return this._diagnosticoService.obter();
+  }
+
+  /**
+   * @returns {Promise<Object>}
+   */
+  async obterControleNsu() {
+    return this._nsuControleService.obterEstado();
   }
 
   /**
@@ -464,6 +545,7 @@ class CentralEntradasService {
       detalhe: alteracoes
     });
     await centralSyncBackground.reiniciar();
+    await centralXmlWaitScheduler.reiniciar();
     return resultado;
   }
 
@@ -479,7 +561,11 @@ class CentralEntradasService {
    * @returns {Promise<Object>}
    */
   obterStatusServico() {
-    return centralSyncBackground.obterStatus();
+    return {
+      ...centralSyncBackground.obterStatus(),
+      xmlWait: centralXmlWaitScheduler.obterStatus(),
+      sefaz: sefazGate.obterEstado()
+    };
   }
 
   /**

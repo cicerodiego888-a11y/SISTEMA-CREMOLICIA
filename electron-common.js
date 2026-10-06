@@ -14,11 +14,7 @@ const {
 } = require('./electron-sessao-rede');
 const { auditarRuntimeImpressao } = require('./backend/services/fiscal/ComprovanteRuntimeAuditoria');
 
-process.env.DB_DIR = process.env.DB_DIR || path.join(
-  process.env.PROGRAMDATA || 'C:\\ProgramData',
-  'MercantilFiscal',
-  'dados'
-);
+process.env.DB_DIR = require('./backend/config/dataDir').resolverDbDir();
 
 let mainWindow;
 let appModuloAtual = 'erp';

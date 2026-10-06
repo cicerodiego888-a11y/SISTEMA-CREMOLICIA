@@ -8,6 +8,9 @@
 
 const DocumentoFiscalStatus = Object.freeze({
   RECEBIDA: 'RECEBIDA',
+  AGUARDANDO_XML: 'AGUARDANDO_XML',
+  XML_RECUPERANDO: 'XML_RECUPERANDO',
+  ERRO_RECUPERACAO: 'ERRO_RECUPERACAO',
   SINCRONIZADA: 'SINCRONIZADA',
   EM_PROCESSAMENTO: 'EM_PROCESSAMENTO',
   AGUARDANDO_REVISAO: 'AGUARDANDO_REVISAO',
@@ -30,6 +33,9 @@ const ESTADOS_TERMINAIS = Object.freeze([
 
 const LABELS_UI = Object.freeze({
   [DocumentoFiscalStatus.RECEBIDA]: 'Recebida',
+  [DocumentoFiscalStatus.AGUARDANDO_XML]: 'Aguardando XML',
+  [DocumentoFiscalStatus.XML_RECUPERANDO]: 'Recuperando XML',
+  [DocumentoFiscalStatus.ERRO_RECUPERACAO]: 'Erro de recuperação',
   [DocumentoFiscalStatus.SINCRONIZADA]: 'Nova',
   [DocumentoFiscalStatus.EM_PROCESSAMENTO]: 'Processando',
   [DocumentoFiscalStatus.AGUARDANDO_REVISAO]: 'Revisar produtos',

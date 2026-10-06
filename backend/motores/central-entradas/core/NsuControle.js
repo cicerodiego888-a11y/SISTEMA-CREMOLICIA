@@ -15,6 +15,10 @@ class NsuControle {
     this.cnpj = dados.cnpj ?? '';
     this.ambiente = dados.ambiente ?? 2;
     this.ultNsu = dados.ultNsu ?? dados.ult_nsu ?? '000000000000000';
+    this.maxNsu = dados.maxNsu ?? dados.max_nsu ?? '000000000000000';
+    this.nsuConsultado = dados.nsuConsultado ?? dados.nsu_consultado ?? this.ultNsu;
+    this.nsuProcessado = dados.nsuProcessado ?? dados.nsu_processado ?? this.ultNsu;
+    this.lacunas = dados.lacunas ?? [];
     this.updatedAt = dados.updatedAt ?? dados.updated_at ?? null;
   }
 
@@ -35,6 +39,10 @@ class NsuControle {
       cnpj: this.cnpj,
       ambiente: this.ambiente,
       ultNsu: this.ultNsu,
+      maxNsu: this.maxNsu,
+      nsuConsultado: this.nsuConsultado,
+      nsuProcessado: this.nsuProcessado,
+      lacunas: this.lacunas,
       updatedAt: this.updatedAt
     };
   }

@@ -238,7 +238,8 @@ async function showModalNovoUsuario(usuario = null) {
         fornecedores: 'Fornecedores', financeiro: 'Financeiro', caixa: 'Caixa',
         abrir_caixa: 'Abrir caixa', sangria_caixa: 'Sangria', suprimento_caixa: 'Adicionar dinheiro (suprimento)',
         fiscal: 'Fiscal', configuracoes: 'Configurações', usuarios: 'Usuários', relatorios: 'Relatórios',
-        categorias: 'Categorias', auditoria: 'Auditoria', gerenciar_faixa_atacado: 'Gerenciar Faixa Atacado'
+        categorias: 'Categorias', auditoria: 'Auditoria', gerenciar_faixa_atacado: 'Gerenciar Faixa Atacado',
+        'NF-E-EMITIR': 'NF-e: emitir e consultar', 'NF-E-CANCELAR': 'NF-e: cancelar'
     };
 
     const fallback = Object.entries(labelMap).map(([k, v]) => [k, v]);

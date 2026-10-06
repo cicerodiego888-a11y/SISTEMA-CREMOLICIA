@@ -1042,10 +1042,11 @@ db.all(`
 }
 
 function resolverOrigemPdv(req) {
-  const header = String(req.headers['x-cds-client'] || '').trim().toLowerCase();
+  const header = String(req.headers?.['x-cds-client'] || '').trim().toLowerCase();
   const raw = String(req.body?.origem_pdv || req.body?.origem_cliente || '').trim().toUpperCase();
   if (raw === 'PDV_MOBILE' || raw === 'MOBILE' || header === 'mobile') return 'PDV_MOBILE';
   if (raw === 'CONSIGNACAO' || raw === 'CONSIGNACAO_PRESTACAO') return 'CONSIGNACAO';
+  if (raw === 'PEDIDO' || raw === 'NFE_MANUAL') return raw;
   if (raw === 'PDV_DESKTOP' || raw === 'DESKTOP' || raw === 'PDV') return 'PDV_DESKTOP';
   return 'PDV_DESKTOP';
 }
@@ -1092,6 +1093,9 @@ const valorRecebidoConsignacao = Number(
 const forcarEfetivo = forcar || origemConsignacao;
 
 const vendaFiscal = parseVendaFiscalFlag(emitir_fiscal);
+// Venda faturada para NF-e modelo 55: prioriza a parcela fiscal, mas não emite NFC-e.
+const documentoNfe55 = String(req.body.documento_fiscal || '').trim().toUpperCase() === 'NFE';
+const emitirNfceAoConcluir = !!emitir_fiscal && !documentoNfe55;
 
 const cpfCnpjNotaLimpo = String(cpf_cnpj_nota || '').replace(/\D/g, '');
 
@@ -1612,7 +1616,7 @@ db.all(`
                           vendaId,
                           codigo,
                           message: 'Venda a prazo registrada com sucesso',
-                          emitirFiscal: !!emitir_fiscal,
+                          emitirFiscal: emitirNfceAoConcluir,
                           valorFiscal: totalFiscal,
                           valorNaoFiscal: totalNaoFiscal,
                           statusPagamento: statusPagamento,
@@ -1996,7 +2000,7 @@ const executarVenda = async () => {
                     message: origemConsignacao
                       ? 'Venda oficial (consignação) registrada com sucesso'
                       : 'Venda registrada com sucesso',
-                    emitirFiscal: !!emitir_fiscal,
+                    emitirFiscal: emitirNfceAoConcluir,
                     valorFiscal: totalFiscalFluxo,
                     valorNaoFiscal: totalNaoFiscalFluxo,
                     statusPagamento: statusPagamento,

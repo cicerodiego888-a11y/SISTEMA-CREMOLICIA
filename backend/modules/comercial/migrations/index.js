@@ -22,6 +22,9 @@ const migration017 = require('./017_ra68_indices_performance');
 const migration018 = require('./018_tipos_comerciais');
 const migration019 = require('./019_tipos_comerciais_canais');
 const migration020 = require('./020_central_precificacao_rcm83');
+const migration021 = require('./021_clientes_inscricao_estadual');
+const migration022 = require('./022_pedidos_comerciais');
+const migration023 = require('./023_nfe_pedidos');
 
 const MIGRATIONS = [
   { id: '001_canais_tabelas_preco', run: migration001 },
@@ -43,7 +46,10 @@ const MIGRATIONS = [
   { id: '017_ra68_indices_performance', run: migration017 },
   { id: '018_tipos_comerciais', run: migration018 },
   { id: '019_tipos_comerciais_canais', run: migration019 },
-  { id: '020_central_precificacao_rcm83', run: migration020 }
+  { id: '020_central_precificacao_rcm83', run: migration020 },
+  { id: '021_clientes_inscricao_estadual', run: migration021 },
+  { id: '022_pedidos_comerciais', run: migration022 },
+  { id: '023_nfe_pedidos', run: migration023 }
 ];
 
 /**

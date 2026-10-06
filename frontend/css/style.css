@@ -839,6 +839,20 @@ a,
   -webkit-app-region: no-drag !important;
 }
 
+#ajustarEstoqueModal {
+  z-index: 2060;
+}
+
+#ajustarEstoqueModal .modal-dialog,
+#ajustarEstoqueModal .modal-content,
+#ajustarEstoqueModal .modal-footer,
+#ajustarEstoqueModal .btn,
+#ajustarEstoqueModal input,
+#ajustarEstoqueModal select,
+#ajustarEstoqueModal textarea {
+  pointer-events: auto;
+}
+
 /* Cards resumo produtos (estoque / vencimentos) */
 .card-dashboard {
   display: flex;

@@ -75,6 +75,10 @@ function implantacaoPermiteMultiCaixa() {
     return obterRecursosImplantacao().multiCaixa === true;
 }
 
+function implantacaoPermiteNfe() {
+    return obterRecursosImplantacao().nfe === true;
+}
+
 async function carregarConfiguracaoImplantacao() {
     try {
         const response = await fetch(`${API_URL}/configuracoes-avancadas/recursos`, {
@@ -98,6 +102,7 @@ function aplicarRecursosImplantacao() {
 
     $('[data-recurso="fiscal"]').toggle(!!recursos.fiscal);
     $('[data-recurso="multiCaixa"]').toggle(!!recursos.multiCaixa);
+    $('[data-recurso="nfe"]').toggle(recursos.nfe === true);
 
     if (!recursos.fiscal) {
         localStorage.setItem('pdv_modo_fiscal_ativo', '0');
@@ -106,6 +111,7 @@ function aplicarRecursosImplantacao() {
     document.body.classList.toggle('implantacao-sem-fiscal', !recursos.fiscal);
     document.body.classList.toggle('implantacao-fiscal', !!recursos.fiscal);
     document.body.classList.toggle('implantacao-multicaixa', !!recursos.multiCaixa);
+    document.body.classList.toggle('implantacao-nfe', recursos.nfe === true);
 
     aplicarModoFiscalGlobal();
     if (typeof filtrarMenuPorPermissoes === 'function') {
@@ -114,7 +120,8 @@ function aplicarRecursosImplantacao() {
 }
 
 function paginaPermitidaPorImplantacao(page) {
-    if (page === 'fiscal' && !implantacaoPermiteFiscal()) return false;
+    if ((page === 'fiscal' || String(page || '').startsWith('fiscal-')) && !implantacaoPermiteFiscal()) return false;
+    if (String(page || '').startsWith('fiscal-nfe') && !implantacaoPermiteNfe()) return false;
     if (page === 'central-entradas' && !implantacaoPermiteFiscal()) return false;
     if (page === 'caixas' && !implantacaoPermiteMultiCaixa()) return false;
     return true;
@@ -556,6 +563,7 @@ function filtrarMenuPorPermissoes() {
         $item.show();
     });
 
+    $('#nav-fiscal').toggle(paginaPermitidaPorImplantacao('fiscal') && usuarioTemPermissao('fiscal'));
     $('#nav-config-avancadas').toggle(isSuperAdminUser());
     $('#nav-abrir-pdv').toggle(window.CDS_MODULE === 'erp' && podeAbrirPDV());
     $('#nav-config-rede-pdv').toggle(window.CDS_MODULE === 'pdv' && isSuperAdminUser());

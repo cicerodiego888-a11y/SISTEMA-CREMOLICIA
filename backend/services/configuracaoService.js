@@ -24,11 +24,8 @@ const MODOS_CONFIRMACAO_FISCAL = ['TEF', 'MANUAL'];
 const MIDP_POLITICAS = ['LEGADO', 'PRESERVAR_DINHEIRO'];
 
 function getDbDir() {
-  return process.env.DB_DIR || path.join(
-    process.env.PROGRAMDATA || 'C:\\ProgramData',
-    'MercantilFiscal',
-    'dados'
-  );
+  const { resolverDbDir } = require('../config/dataDir');
+  return resolverDbDir();
 }
 
 function getPersistentConfigDir() {

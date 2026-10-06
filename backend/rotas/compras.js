@@ -1577,7 +1577,7 @@ router.post('/:id/emitir-nfe-devolucao', async (req, res) => {
     });
   } catch (error) {
     console.error('Erro ao emitir NF-e de devolução:', error);
-    res.status(500).json({ error: error.message });
+    res.status(error.statusCode || 500).json({ error: error.message, codigo: error.codigo || null });
   }
 });
 

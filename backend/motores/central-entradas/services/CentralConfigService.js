@@ -16,7 +16,10 @@ const CHAVES = Object.freeze({
   HORARIO_PERMITIDO_FIM: 'sync_horario_permitido_fim',
   HORARIO_BLOQUEADO_INICIO: 'sync_horario_bloqueado_inicio',
   HORARIO_BLOQUEADO_FIM: 'sync_horario_bloqueado_fim',
-  NOTIFICAR_NOVAS: 'sync_notificar_novas_notas'
+  NOTIFICAR_NOVAS: 'sync_notificar_novas_notas',
+  XML_WAIT_INTERVALO: 'xml_wait_intervalo_minutos',
+  XML_WAIT_MAX: 'xml_wait_max_por_ciclo',
+  MANIFESTACAO_AUTO: 'manifestacao_automatica_habilitada'
 });
 
 class CentralConfigService {
@@ -63,7 +66,10 @@ class CentralConfigService {
       horarioPermitidoFim: config[CHAVES.HORARIO_PERMITIDO_FIM]?.valor || '23:59',
       horarioBloqueadoInicio: config[CHAVES.HORARIO_BLOQUEADO_INICIO]?.valor || '',
       horarioBloqueadoFim: config[CHAVES.HORARIO_BLOQUEADO_FIM]?.valor || '',
-      notificarNovasNotas: config[CHAVES.NOTIFICAR_NOVAS]?.valor !== false
+      notificarNovasNotas: config[CHAVES.NOTIFICAR_NOVAS]?.valor !== false,
+      xmlWaitIntervaloMinutos: Number(config[CHAVES.XML_WAIT_INTERVALO]?.valor) || 15,
+      xmlWaitMaxPorCiclo: Number(config[CHAVES.XML_WAIT_MAX]?.valor) || 5,
+      manifestacaoAutomaticaHabilitada: config[CHAVES.MANIFESTACAO_AUTO]?.valor === true
     };
   }
 
@@ -81,7 +87,10 @@ class CentralConfigService {
       horarioPermitidoFim: [CHAVES.HORARIO_PERMITIDO_FIM, 'string'],
       horarioBloqueadoInicio: [CHAVES.HORARIO_BLOQUEADO_INICIO, 'string'],
       horarioBloqueadoFim: [CHAVES.HORARIO_BLOQUEADO_FIM, 'string'],
-      notificarNovasNotas: [CHAVES.NOTIFICAR_NOVAS, 'boolean']
+      notificarNovasNotas: [CHAVES.NOTIFICAR_NOVAS, 'boolean'],
+      xmlWaitIntervaloMinutos: [CHAVES.XML_WAIT_INTERVALO, 'number'],
+      xmlWaitMaxPorCiclo: [CHAVES.XML_WAIT_MAX, 'number'],
+      manifestacaoAutomaticaHabilitada: [CHAVES.MANIFESTACAO_AUTO, 'boolean']
     };
 
     for (const [campo, valor] of Object.entries(alteracoes)) {

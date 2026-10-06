@@ -35,13 +35,21 @@ class CentralPendenciasService {
       comprasAbertas,
       erros,
       xmlInvalido,
-      alertasResultado
+      alertasResultado,
+      aguardandoXml
     ] = await Promise.all([
       this._documentosRepository.listarPorStatus(DocumentoFiscalStatus.AGUARDANDO_REVISAO, limite),
       this._documentosRepository.listarComprasAbertas(limite),
       this._documentosRepository.listarPorStatus(DocumentoFiscalStatus.ERRO, limite),
       this._documentosRepository.listarXmlInvalido(limite),
-      this._alertasService.listarAlertas()
+      this._alertasService.listarAlertas(),
+      this._documentosRepository.listar({
+        statusIn: [
+          DocumentoFiscalStatus.AGUARDANDO_XML,
+          DocumentoFiscalStatus.ERRO_RECUPERACAO
+        ],
+        limite
+      })
     ]);
 
     const falhasSincronizacao = (alertasResultado.alertas || [])
@@ -52,12 +60,14 @@ class CentralPendenciasService {
       comprasAbertas: comprasAbertas.length,
       erros: erros.length,
       xmlInvalido: xmlInvalido.length,
+      aguardandoXml: aguardandoXml.length,
       falhasSincronizacao: falhasSincronizacao.length,
       alertas: alertasResultado.alertas?.length || 0,
       total: aguardandoRevisao.length
         + comprasAbertas.length
         + erros.length
         + xmlInvalido.length
+        + aguardandoXml.length
         + falhasSincronizacao.length
     };
 
@@ -68,6 +78,7 @@ class CentralPendenciasService {
         comprasAbertas: this._mapearSecao(comprasAbertas),
         erros: this._mapearSecao(erros),
         xmlInvalido: this._mapearSecao(xmlInvalido),
+        aguardandoXml: this._mapearSecao(aguardandoXml),
         falhasSincronizacao,
         alertas: alertasResultado.alertas || []
       }

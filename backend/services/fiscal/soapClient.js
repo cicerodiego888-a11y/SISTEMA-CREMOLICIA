@@ -4,6 +4,7 @@ const axios = require('axios');
 const https = require('https');
 const { carregarCertificadoPfx } = require('./certificateService');
 const { getFiscalSubDir } = require('./paths');
+const { criarErroSefaz } = require('./sefazErroOperacional');
 
 const SEFAZ_TIMEOUT_MS = Number(process.env.FISCAL_SOAP_TIMEOUT_MS) || 90000;
 const SEFAZ_MAX_TENTATIVAS = 2;
@@ -195,12 +196,78 @@ async function enviarLote({
   };
 }
 
+/**
+ * POST SOAP 1.2 genérico (evento, consulta protocolo, status serviço) com o mesmo
+ * agente mTLS da autorização. Envelope e action são montados pelo chamador.
+ */
+async function enviarSoapSefaz({
+  url,
+  envelope,
+  soapAction,
+  certificadoPath,
+  certificadoSenha,
+  timeoutMs = 30000,
+  httpClient = null,
+  httpsAgent = null,
+  debugNome = null
+}) {
+  const started = Date.now();
+  if (!url) {
+    return { success: false, body: null, statusCode: null, code: 'URL_NAO_CONFIGURADA', message: 'URL do WebService não configurada.', tempo: 0 };
+  }
+  if (!envelope) {
+    return { success: false, body: null, statusCode: null, code: 'ENVELOPE_VAZIO', message: 'Envelope SOAP vazio.', tempo: 0 };
+  }
+
+  try {
+    validarXmlAntesDeEnviar(envelope);
+    if (debugNome) {
+      try { salvarDebug(debugNome, envelope); } catch (_) { /* debug opcional */ }
+    }
+
+    const agent = httpsAgent || criarHttpsAgentSefaz({ certificadoPath, certificadoSenha, url });
+    const post = httpClient || axios.post.bind(axios);
+    const response = await post(url, envelope, {
+      httpsAgent: agent,
+      proxy: false,
+      timeout: timeoutMs,
+      responseType: 'text',
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
+      transitional: { forcedJSONParsing: false },
+      headers: {
+        'Content-Type': `application/soap+xml; charset=utf-8${soapAction ? `; action="${soapAction}"` : ''}`,
+        'Accept': 'application/soap+xml, text/xml, */*',
+        'User-Agent': 'CDGESTAO-NFE/1.0'
+      }
+    });
+
+    return {
+      success: true,
+      body: typeof response?.data === 'string' ? response.data : String(response?.data ?? ''),
+      statusCode: response?.status ?? null,
+      tempo: Date.now() - started
+    };
+  } catch (error) {
+    const resposta = error.response?.data;
+    return {
+      success: false,
+      body: typeof resposta === 'string' ? resposta : null,
+      statusCode: error.response?.status ?? null,
+      code: error.code || null,
+      message: mensagemErroSefaz(error),
+      tempo: Date.now() - started
+    };
+  }
+}
+
 module.exports = {
   montarLote,
   montarSoapEnvelop,
   enviarLote,
   montarSoapDFe,
-  enviarSoapDFe
+  enviarSoapDFe,
+  enviarSoapSefaz
 };
 
 function montarSoapDFe(xmlConsulta, cUF = '23', versao = '1.01') {
@@ -243,9 +310,7 @@ async function enviarSoapDFe(envelope, certificadoPath, certificadoSenha, url) {
       url
     });
 
-    console.log('Enviando para SEFAZ DF-e URL:', url);
-    console.log('SOAP COMPLETO');
-    console.log(envelope);
+    console.log('[CE][DISTDFE] SOAP POST', url);
 
     const response = await axios.post(url, envelope, {
       httpsAgent,
@@ -267,7 +332,13 @@ async function enviarSoapDFe(envelope, certificadoPath, certificadoSenha, url) {
     return response.data;
   } catch (error) {
     console.error('ERRO DF-e:', error.message);
-    console.error('ERRO RESPONSE:', error.response?.data || null);
-    throw new Error(error.response?.data || error.message);
+    if (error.response?.status) {
+      console.error('ERRO DF-e HTTP:', error.response.status, error.config?.url || url);
+    }
+    const combinado = `${error.code || ''} ${error.message || ''}`;
+    if (/UNABLE_TO_VERIFY|ERR_SSL|EPROTO|unable to get local issuer|client certificate/i.test(combinado)) {
+      error.codigo = 'TLS_ERROR';
+    }
+    throw criarErroSefaz(error);
   }
 }

@@ -3,6 +3,7 @@ const router = express.Router();
 const db = require('../database');
 const { verificarToken: autenticarToken } = require('../middleware/auth');
 const { gravarAuditoria } = require('../services/auditoria');
+const { validarInscricaoEstadual } = require('../services/fiscal/inscricaoEstadual');
 
 function normalizarTexto(texto) {
   return String(texto || '')
@@ -21,6 +22,20 @@ const SELECT_CLIENTE = `
   FROM clientes c
   LEFT JOIN tipos_comerciais tc ON tc.id = c.tipo_comercial_id
 `;
+
+/** CPF/CNPJ persistido só com dígitos; vazio vira NULL (cpf_cnpj é UNIQUE e aceita vários NULL). */
+function normalizarCpfCnpj(valor) {
+  const digitos = String(valor ?? '').replace(/\D/g, '');
+  return digitos || null;
+}
+
+const SQL_CPF_CNPJ_DUPLICADO = `
+  SELECT id, nome, cpf_cnpj FROM clientes
+  WHERE REPLACE(REPLACE(REPLACE(cpf_cnpj, ".", ""), "-", ""), "/", "") = ?`;
+
+function mensagemCpfCnpjDuplicado(nome) {
+  return `Já existe um cliente cadastrado com este CPF/CNPJ: ${nome}`;
+}
 
 function enriquecerEndereco(row) {
   if (!row) return row;
@@ -157,35 +172,35 @@ router.post('/', (req, res) => {
     return res.status(400).json({ error: 'O campo nome é obrigatório.' });
   }
 
-  const cpfCnpjLimpo = String(req.body.cpf_cnpj || '').replace(/\D/g, '');
+  const ie = validarInscricaoEstadual(req.body.inscricao_estadual);
+  if (!ie.valido) return res.status(400).json({ error: ie.mensagem });
+  req.body.inscricao_estadual = ie.ie;
+
+  const cpfCnpjLimpo = normalizarCpfCnpj(req.body.cpf_cnpj);
+  req.body.cpf_cnpj = cpfCnpjLimpo;
 
   if (cpfCnpjLimpo) {
-    db.get(
-      'SELECT id, nome, cpf_cnpj FROM clientes WHERE REPLACE(REPLACE(REPLACE(cpf_cnpj, ".", ""), "-", ""), "/", "") = ?',
-      [cpfCnpjLimpo],
-      (err, clienteExistente) => {
-        if (err) {
-          return res.status(500).json({ error: 'Erro ao verificar CPF/CNPJ: ' + err.message });
-        }
-
-        if (clienteExistente) {
-          return res.status(409).json({
-            success: false,
-            message: `Já existe um cliente cadastrado com este CPF/CNPJ: ${clienteExistente.nome}`
-          });
-        }
-
-        req.body.cpf_cnpj = cpfCnpjLimpo;
-        inserirCliente(req, res);
+    db.get(SQL_CPF_CNPJ_DUPLICADO, [cpfCnpjLimpo], (err, clienteExistente) => {
+      if (err) {
+        return res.status(500).json({ error: 'Erro ao verificar CPF/CNPJ: ' + err.message });
       }
-    );
+
+      if (clienteExistente) {
+        return res.status(409).json({
+          success: false,
+          message: mensagemCpfCnpjDuplicado(clienteExistente.nome)
+        });
+      }
+
+      inserirCliente(req, res);
+    });
   } else {
     inserirCliente(req, res);
   }
 });
 
 function inserirCliente(req, res) {
-  const { nome, cpf_cnpj, telefone, email, cep, rua, numero, bairro, cidade, uf, limite_credito } = req.body;
+  const { nome, cpf_cnpj, telefone, email, cep, rua, numero, bairro, cidade, uf, limite_credito, inscricao_estadual } = req.body;
 
   let limiteCreditoNum = parseFloat(limite_credito);
   if (isNaN(limiteCreditoNum)) limiteCreditoNum = 0;
@@ -199,9 +214,10 @@ function inserirCliente(req, res) {
     }
 
     db.run(`
-      INSERT INTO clientes (nome, cpf_cnpj, telefone, email, cep, rua, numero, bairro, cidade, uf, limite_credito, credito_atual, tipo_comercial_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
-    `, [nome, cpf_cnpj, telefone, email, cep, rua, numero, bairro, cidade, uf, limiteCreditoNum, tipoId],
+      INSERT INTO clientes (nome, cpf_cnpj, telefone, email, cep, rua, numero, bairro, cidade, uf, limite_credito, credito_atual,
+        tipo_comercial_id, inscricao_estadual)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+    `, [nome, cpf_cnpj, telefone, email, cep, rua, numero, bairro, cidade, uf, limiteCreditoNum, tipoId, inscricao_estadual],
       function onInsert(err) {
         if (err) {
           if (/no such column/i.test(err.message || '')) {
@@ -232,59 +248,141 @@ function inserirCliente(req, res) {
   });
 }
 
+const CAMPOS_TEXTO_CLIENTE = ['nome', 'telefone', 'email', 'cep', 'rua', 'numero', 'bairro', 'cidade', 'uf'];
+
+/** Campo presente no corpo (inclusive '', 0 e null); ausente/undefined preserva o valor atual. */
+function campoInformado(body, campo) {
+  return Object.prototype.hasOwnProperty.call(body, campo) && body[campo] !== undefined;
+}
+
+function tipoComercialInformado(body) {
+  const raw = body.tipo_comercial_id ?? body.tipoComercialId;
+  return raw != null && raw !== '';
+}
+
+/** Une o cadastro atual com os campos realmente enviados no PUT. */
+function mesclarClienteAtualizado(atual, body) {
+  const novo = {};
+  for (const campo of CAMPOS_TEXTO_CLIENTE) {
+    novo[campo] = campoInformado(body, campo) ? body[campo] : atual[campo];
+  }
+  novo.cpf_cnpj = campoInformado(body, 'cpf_cnpj') ? normalizarCpfCnpj(body.cpf_cnpj) : atual.cpf_cnpj;
+  novo.inscricao_estadual = campoInformado(body, 'inscricao_estadual')
+    ? validarInscricaoEstadual(body.inscricao_estadual).ie
+    : (atual.inscricao_estadual ?? null);
+  if (campoInformado(body, 'limite_credito')) {
+    const limite = parseFloat(body.limite_credito);
+    novo.limite_credito = Number.isNaN(limite) ? 0 : limite;
+  } else {
+    novo.limite_credito = atual.limite_credito;
+  }
+  return novo;
+}
+
+/** Tipo Comercial enviado é validado; ausente mantém o atual (ou o padrão, se o cliente ainda não tiver). */
+function resolverTipoComercialAtualizacao(atual, body, cb) {
+  if (!tipoComercialInformado(body) && atual.tipo_comercial_id != null) {
+    return cb(null, atual.tipo_comercial_id);
+  }
+  resolverTipoComercialId(body, cb);
+}
+
+function verificarCpfCnpjDuplicadoNaAtualizacao(id, cpfCnpj, cb) {
+  if (!cpfCnpj) return cb(null, null);
+  db.get(`${SQL_CPF_CNPJ_DUPLICADO} AND id <> ?`, [cpfCnpj, id], cb);
+}
+
+function erroCpfCnpjUnico(err) {
+  return /UNIQUE constraint failed: clientes\.cpf_cnpj/i.test((err && err.message) || '');
+}
+
+function responderCpfCnpjDuplicado(res, nome) {
+  const message = nome ? mensagemCpfCnpjDuplicado(nome) : 'Já existe um cliente cadastrado com este CPF/CNPJ.';
+  return res.status(409).json({ success: false, message, error: message });
+}
+
 // Atualizar cliente
 router.put('/:id', (req, res) => {
   const { id } = req.params;
-  const { nome, cpf_cnpj, telefone, email, cep, rua, numero, bairro, cidade, uf, limite_credito } = req.body;
-  if (!nome) {
+  const body = req.body || {};
+  if (campoInformado(body, 'nome') && !String(body.nome ?? '').trim()) {
     return res.status(400).json({ error: 'O campo nome é obrigatório.' });
   }
-  let limiteCreditoNum = parseFloat(limite_credito);
-  if (isNaN(limiteCreditoNum)) limiteCreditoNum = 0;
+  if (campoInformado(body, 'inscricao_estadual')) {
+    const ie = validarInscricaoEstadual(body.inscricao_estadual);
+    if (!ie.valido) return res.status(400).json({ error: ie.mensagem });
+  }
 
-  resolverTipoComercialId(req.body, (errTipo, tipoId) => {
-    if (errTipo) {
-      return res.status(errTipo.statusCode || 500).json({ error: errTipo.message });
+  db.get('SELECT * FROM clientes WHERE id = ?', [id], (errAtual, atual) => {
+    if (errAtual) {
+      return res.status(500).json({ error: 'Erro ao carregar cliente: ' + errAtual.message });
     }
-    if (!tipoId) {
-      return res.status(400).json({ error: 'Tipo Comercial é obrigatório.' });
+    if (!atual) {
+      return res.status(404).json({ error: 'Cliente não encontrado.' });
     }
 
-    db.run(`
-      UPDATE clientes
-      SET nome = ?, cpf_cnpj = ?, telefone = ?, email = ?, cep = ?, rua = ?, numero = ?,
-          bairro = ?, cidade = ?, uf = ?, limite_credito = ?, tipo_comercial_id = ?
-      WHERE id = ?
-    `, [nome, cpf_cnpj, telefone, email, cep, rua, numero, bairro, cidade, uf, limiteCreditoNum, tipoId, id],
-      function onUpdate(err) {
-        if (err) {
-          if (/no such column/i.test(err.message || '')) {
-            return db.run(`
-              UPDATE clientes
-              SET nome = ?, cpf_cnpj = ?, telefone = ?, email = ?, cep = ?, rua = ?, numero = ?,
-                  bairro = ?, cidade = ?, uf = ?, limite_credito = ?
-              WHERE id = ?
-            `, [nome, cpf_cnpj, telefone, email, cep, rua, numero, bairro, cidade, uf, limiteCreditoNum, id],
-              function onUpdateLegacy(err2) {
-                if (err2) return res.status(500).json({ error: 'Erro ao atualizar cliente: ' + err2.message });
-                res.json({ message: 'Cliente atualizado com sucesso' });
-              });
-          }
-          return res.status(500).json({ error: 'Erro ao atualizar cliente: ' + err.message });
+    const novo = mesclarClienteAtualizado(atual, body);
+    if (!String(novo.nome ?? '').trim()) {
+      return res.status(400).json({ error: 'O campo nome é obrigatório.' });
+    }
+
+    verificarCpfCnpjDuplicadoNaAtualizacao(id, novo.cpf_cnpj, (errDup, duplicado) => {
+      if (errDup) {
+        return res.status(500).json({ error: 'Erro ao verificar CPF/CNPJ: ' + errDup.message });
+      }
+      if (duplicado) return responderCpfCnpjDuplicado(res, duplicado.nome);
+
+      resolverTipoComercialAtualizacao(atual, body, (errTipo, tipoId) => {
+        if (errTipo) {
+          return res.status(errTipo.statusCode || 500).json({ error: errTipo.message });
         }
-        gravarAuditoria({
-          usuario_id: req.user?.id || null,
-          usuario_nome: req.user?.nome || req.user?.username || null,
-          modulo: 'clientes',
-          acao: 'atualizar_cliente',
-          referencia_tipo: 'cliente',
-          referencia_id: id,
-          detalhes: { depois: req.body },
-          ip_requisicao: req.ip || null
-        }).catch((auditErr) => console.error('Erro ao gravar auditoria de atualização de cliente:', auditErr));
+        if (!tipoId) {
+          return res.status(400).json({ error: 'Tipo Comercial é obrigatório.' });
+        }
 
-        res.json({ message: 'Cliente atualizado com sucesso' });
+        const valores = [novo.nome, novo.cpf_cnpj, novo.telefone, novo.email, novo.cep, novo.rua, novo.numero,
+          novo.bairro, novo.cidade, novo.uf, novo.limite_credito];
+        db.run(`
+          UPDATE clientes
+          SET nome = ?, cpf_cnpj = ?, telefone = ?, email = ?, cep = ?, rua = ?, numero = ?,
+              bairro = ?, cidade = ?, uf = ?, limite_credito = ?, tipo_comercial_id = ?, inscricao_estadual = ?
+          WHERE id = ?
+        `, [...valores, tipoId, novo.inscricao_estadual, id],
+          function onUpdate(err) {
+            if (err) {
+              if (erroCpfCnpjUnico(err)) return responderCpfCnpjDuplicado(res);
+              if (/no such column/i.test(err.message || '')) {
+                return db.run(`
+                  UPDATE clientes
+                  SET nome = ?, cpf_cnpj = ?, telefone = ?, email = ?, cep = ?, rua = ?, numero = ?,
+                      bairro = ?, cidade = ?, uf = ?, limite_credito = ?
+                  WHERE id = ?
+                `, [...valores, id],
+                  function onUpdateLegacy(err2) {
+                    if (err2) {
+                      if (erroCpfCnpjUnico(err2)) return responderCpfCnpjDuplicado(res);
+                      return res.status(500).json({ error: 'Erro ao atualizar cliente: ' + err2.message });
+                    }
+                    res.json({ message: 'Cliente atualizado com sucesso' });
+                  });
+              }
+              return res.status(500).json({ error: 'Erro ao atualizar cliente: ' + err.message });
+            }
+            gravarAuditoria({
+              usuario_id: req.user?.id || null,
+              usuario_nome: req.user?.nome || req.user?.username || null,
+              modulo: 'clientes',
+              acao: 'atualizar_cliente',
+              referencia_tipo: 'cliente',
+              referencia_id: id,
+              detalhes: { depois: { ...novo, tipo_comercial_id: tipoId }, campos_enviados: Object.keys(body) },
+              ip_requisicao: req.ip || null
+            }).catch((auditErr) => console.error('Erro ao gravar auditoria de atualização de cliente:', auditErr));
+
+            res.json({ message: 'Cliente atualizado com sucesso' });
+          });
       });
+    });
   });
 });
 

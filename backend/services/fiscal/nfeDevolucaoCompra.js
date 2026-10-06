@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const db = require('../../database');
-const { getFiscalConfig, setConfiguracao } = require('./configService');
+const { getFiscalConfigNfe, setConfiguracao } = require('./configService');
 const { carregarCertificadoPfx, extrairNomeEmpresaDoCertificado } = require('./certificateService');
 const { assinarNFe } = require('./signer');
 const { montarLote, enviarLote } = require('./soapClient');
@@ -330,7 +330,8 @@ async function emitirNFeDevolucaoCompra(compraId) {
     return { reused: true, ...existente };
   }
 
-  const config = await getFiscalConfig();
+  const config = await getFiscalConfigNfe();
+  require('./nfeAmbienteGuard').assertAmbienteNfePermitido(config.ambiente, 'devolucao_compra');
   const { compra, itens } = await carregarCompra(compraId);
   const numero = await proximoNumeroNFeDevolucao();
 

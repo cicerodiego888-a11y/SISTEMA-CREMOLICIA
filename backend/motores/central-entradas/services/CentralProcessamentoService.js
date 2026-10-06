@@ -12,6 +12,7 @@ const { enriquecerParseComMiip } = require('../../../shared/nfe/enriquecerParseC
 const ProcessamentoResultadoDTO = require('../contracts/ProcessamentoResultadoDTO');
 const { DocumentoFiscalStatus } = require('../core/DocumentoFiscalStatus');
 const { validarTransicao } = require('../core/MaquinaEstadosDocumento');
+const { xmlPossuiNfeCompleta } = require('../core/xmlDocumento');
 const { paraDocumentoDetalheDTO } = require('../utils/centralEntradasMapper');
 const CentralDocumentosRepository = require('../repositories/CentralDocumentosRepository');
 const CentralHistoricoService = require('./CentralHistoricoService');
@@ -90,7 +91,7 @@ class CentralProcessamentoService {
         throw erro;
       }
 
-      if (!documento.xml) {
+      if (!documento.xml || !xmlPossuiNfeCompleta(documento.xml)) {
         const erro = new Error('XML não disponível para processamento');
         erro.statusCode = 400;
         throw erro;

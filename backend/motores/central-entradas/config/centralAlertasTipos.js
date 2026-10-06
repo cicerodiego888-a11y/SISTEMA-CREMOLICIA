@@ -68,6 +68,13 @@ const TIPOS_ALERTA = Object.freeze({
     icone: 'fa-satellite-dish',
     cor: '#f59e0b',
     acaoSugerida: 'Execute uma nova sincronização SEFAZ e verifique o certificado.'
+  },
+  AGUARDANDO_XML: {
+    tipo: 'AGUARDANDO_XML',
+    gravidade: 'media',
+    icone: 'fa-hourglass-half',
+    cor: '#64748b',
+    acaoSugerida: 'Aguarde a disponibilização do XML ou recupere pela chave.'
   }
 });
 

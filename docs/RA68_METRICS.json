@@ -11,8 +11,8 @@
       "fallback": true
     },
     "semLinhaComTabela": {
-      "preco": 58,
-      "origem": "tabela_preco",
+      "preco": 12.5,
+      "origem": "produto.preco_venda",
       "fallback": true,
       "ressalva": "sem Linha, path compat Tabela×Canal ainda ativo (RA-6.7)"
     },
@@ -41,7 +41,7 @@
       "preco": 0,
       "aviso": "Nenhum preço encontrado para esta Linha de Precificação na Tabela selecionada."
     },
-    "tempoMs": 70,
+    "tempoMs": 21,
     "semConversaoMuc": true,
     "semProdutoTabelaFk": true
   },
@@ -49,45 +49,45 @@
     {
       "label": "100 produtos",
       "n": 100,
-      "tempoMs": 9,
-      "msPorItem": 0.09,
-      "heapDeltaMb": 0.83
+      "tempoMs": 8,
+      "msPorItem": 0.08,
+      "heapDeltaMb": 0.44
     },
     {
       "label": "1.000 produtos",
       "n": 1000,
-      "tempoMs": 95,
-      "msPorItem": 0.095,
-      "heapDeltaMb": 1.72
+      "tempoMs": 5,
+      "msPorItem": 0.005,
+      "heapDeltaMb": -0.96
     },
     {
       "label": "10.000 resolves (cache/lote 1k)",
       "n": 10000,
-      "tempoMs": 731,
-      "msPorItem": 0.073,
+      "tempoMs": 20,
+      "msPorItem": 0.002,
       "heapDeltaMb": null,
       "nota": "reusa 1.000 produtos; mede throughput do Resolver"
     },
     {
       "label": "50.000 resolves sync (cache Tabela×Linha)",
       "n": 50000,
-      "tempoMs": 2743,
-      "msPorItem": 0.0549,
+      "tempoMs": 30,
+      "msPorItem": 0.0006,
       "heapDeltaMb": null,
       "nota": "certifica throughput com cache aquecido após 1 resolve async"
     },
     {
       "label": "100 linhas + células na Tabela Varejo",
       "n": 100,
-      "tempoMs": 481,
-      "msPorItem": 4.81
+      "tempoMs": 31,
+      "msPorItem": 0.31
     },
     {
       "label": "volume atual do banco (contexto)",
-      "produtos": 1140,
-      "linhas": 112,
-      "tabelas": 12,
-      "celulas": 115
+      "produtos": 1104,
+      "linhas": 102,
+      "tabelas": 5,
+      "celulas": 105
     }
   ],
   "sql": {
@@ -103,11 +103,6 @@
     ],
     "indicesProdutos": [
       "idx_produtos_linha_comercial",
-      "idx_produtos_nome_busca_ativo",
-      "idx_produtos_ativo",
-      "idx_produtos_nome_busca",
-      "idx_produtos_codigo_barras",
-      "idx_produtos_codigo",
       "sqlite_autoindex_produtos_1"
     ],
     "melhoriasAplicadas": [
@@ -128,31 +123,31 @@
     "VAREJO": {
       "preco": 58,
       "unidade": "KG",
-      "tabela_id": 54,
+      "tabela_id": 1,
       "ok": true
     },
     "ATACADO": {
       "preco": 28,
       "unidade": "LITRO",
-      "tabela_id": 55,
+      "tabela_id": 2,
       "ok": true
     },
     "CONSIGNADO": {
       "preco": 26,
       "unidade": "LITRO",
-      "tabela_id": 56,
+      "tabela_id": 3,
       "ok": true
     },
     "DELIVERY": {
       "preco": 55,
       "unidade": "KG",
-      "tabela_id": 57,
+      "tabela_id": 4,
       "ok": true
     },
     "EVENTO": {
       "preco": 30,
       "unidade": "LITRO",
-      "tabela_id": 58,
+      "tabela_id": 5,
       "ok": true
     }
   },

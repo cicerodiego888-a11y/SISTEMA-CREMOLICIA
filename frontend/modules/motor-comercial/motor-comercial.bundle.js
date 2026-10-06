@@ -6818,7 +6818,7 @@ ${lines.join("\n")}
         "module": "motor-comercial",
         "version": "1.0.3",
         "sprint": "UX-10",
-        "buildTime": "2026-09-21 18:37:36",
+        "buildTime": "2026-10-05 01:11:18",
         "hash": null,
         "ambiente": "development"
       };
@@ -102352,6 +102352,8 @@ ${this.itensNovos.length} produto(s) \xB7 ${formatCurrency(totalItensComplementa
           this.dirty = false;
           this.perfisExistentes = [];
           this.capacidadesState = {};
+          this.tipoComercialId = null;
+          this._cadastroCarregado = false;
           this._cepBuscaTimer = null;
           this._ultimoCepConsultado = "";
           this._cepAbort = null;
@@ -102447,6 +102449,7 @@ ${this.itensNovos.length} produto(s) \xB7 ${formatCurrency(totalItensComplementa
             }
             this._ultimoCepConsultado = cep;
             this._setFieldValue("rua", data.logradouro || "");
+            this._setFieldValue("bairro", data.bairro || "");
             this._setFieldValue("cidade", data.localidade || "");
             this._setFieldValue("uf", data.uf || "");
             this._markDirty();
@@ -102493,6 +102496,12 @@ ${this.itensNovos.length} produto(s) \xB7 ${formatCurrency(totalItensComplementa
           wrap.appendChild(this._fieldGrid([
             Input.create({ label: "Nome", name: "nome", required: true, onChange: () => this._markDirty() }),
             Input.create({ label: "CPF/CNPJ", name: "cpf_cnpj", onChange: () => this._markDirty() }),
+            Input.create({
+              label: "Inscri\xE7\xE3o Estadual",
+              name: "inscricao_estadual",
+              placeholder: "N\xFAmero ou ISENTO",
+              onChange: () => this._markDirty()
+            }),
             Input.create({ label: "Telefone", name: "telefone", onChange: () => this._markDirty() }),
             Input.create({ label: "Celular", name: "celular", onChange: () => this._markDirty() }),
             Input.create({ label: "Email", name: "email", type: "email", onChange: () => this._markDirty() }),
@@ -102503,6 +102512,8 @@ ${this.itensNovos.length} produto(s) \xB7 ${formatCurrency(totalItensComplementa
               onChange: (value) => this._onCepChange(value)
             }),
             Input.create({ label: "Endere\xE7o", name: "rua", onChange: () => this._markDirty() }),
+            Input.create({ label: "N\xFAmero", name: "numero", onChange: () => this._markDirty() }),
+            Input.create({ label: "Bairro", name: "bairro", onChange: () => this._markDirty() }),
             Input.create({ label: "Cidade", name: "cidade", onChange: () => this._markDirty() }),
             Input.create({ label: "Estado", name: "uf", onChange: () => this._markDirty() })
           ]));
@@ -102603,6 +102614,7 @@ ${this.itensNovos.length} produto(s) \xB7 ${formatCurrency(totalItensComplementa
             ]);
             this.perfisExistentes = perfisResult.items || [];
             this._preencherDadosCadastrais(cliente);
+            this._cadastroCarregado = true;
             this._preencherCapacidades(this.perfisExistentes);
           } catch (error) {
             const host = document.getElementById("cliente-cadastro-form");
@@ -102612,12 +102624,16 @@ ${this.itensNovos.length} produto(s) \xB7 ${formatCurrency(totalItensComplementa
           }
         }
         _preencherDadosCadastrais(cliente = {}) {
+          this.tipoComercialId = cliente.tipo_comercial_id ?? null;
           this._setFieldValue("nome", cliente.nome);
           this._setFieldValue("cpf_cnpj", cliente.cpf_cnpj);
+          this._setFieldValue("inscricao_estadual", cliente.inscricao_estadual);
           this._setFieldValue("telefone", cliente.telefone);
           this._setFieldValue("email", cliente.email);
           this._setFieldValue("cep", cliente.cep);
           this._setFieldValue("rua", cliente.rua);
+          this._setFieldValue("numero", cliente.numero);
+          this._setFieldValue("bairro", cliente.bairro);
           this._setFieldValue("cidade", cliente.cidade);
           this._setFieldValue("uf", cliente.uf);
         }
@@ -102655,19 +102671,26 @@ ${this.itensNovos.length} produto(s) \xB7 ${formatCurrency(totalItensComplementa
           let limiteCredito = 0;
           const limiteCreditoCap = this._getFieldValue("cap-credito-limite-credito");
           if (limiteCreditoCap) limiteCredito = Number(limiteCreditoCap) || 0;
-          return {
+          const cadastro = {
             nome: this._getFieldValue("nome"),
             cpf_cnpj: this._getFieldValue("cpf_cnpj"),
+            inscricao_estadual: this._getFieldValue("inscricao_estadual"),
             telefone: telefoneFinal,
             email: this._getFieldValue("email"),
             cep: this._getFieldValue("cep"),
             rua: this._getFieldValue("rua"),
-            numero: "",
-            bairro: "",
+            numero: this._getFieldValue("numero"),
+            bairro: this._getFieldValue("bairro"),
             cidade: this._getFieldValue("cidade"),
-            uf: this._getFieldValue("uf"),
-            limite_credito: limiteCredito
+            uf: this._getFieldValue("uf")
           };
+          if (!this.isEdit || this._capacidadeMarcada("credito")) cadastro.limite_credito = limiteCredito;
+          if (this.isEdit && this.tipoComercialId != null) cadastro.tipo_comercial_id = this.tipoComercialId;
+          return cadastro;
+        }
+        _capacidadeMarcada(key) {
+          const input = document.querySelector(`[data-cap-key="${key}"] [data-role="cap-check"] input`);
+          return !!(input && input.checked);
         }
         _coletarCapacidadesHabilitadas() {
           const habilitadas = CAPACIDADES_DEFINICOES.filter((cap) => {
@@ -102759,6 +102782,10 @@ ${this.itensNovos.length} produto(s) \xB7 ${formatCurrency(totalItensComplementa
           this.onCancelar();
         }
         async _salvar() {
+          if (this.isEdit && !this._cadastroCarregado) {
+            notify("Os dados do cliente n\xE3o foram carregados. Recarregue a tela antes de salvar.", "error");
+            return;
+          }
           const cadastro = this._coletarDadosCadastrais();
           if (!cadastro.nome) {
             notify("Informe o nome do cliente.", "warning");
@@ -111469,10 +111496,10 @@ if (typeof MotorComercialBundle !== "undefined") { window.MotorComercial = Motor
 /*__CDS_BUILD_INFO_START__*/
 
 (function (global) {
-  var info = {"module":"motor-comercial","version":"1.0.3","sprint":"UX-10","buildTime":"2026-09-21 18:37:36","hash":"18B9492FBC21D26B4AA08258CD75F86DB023FEBD159D7F7DAE611316F13C5F73","ambiente":"development"};
+  var info = {"module":"motor-comercial","version":"1.0.3","sprint":"UX-10","buildTime":"2026-10-05 01:11:18","hash":"A25B08EC901B41C4602804C7770ECE07B71504DD8593E4EF9CB81120E57BA1AC","ambiente":"development"};
   global.CDS_BUILD = info;
   if (typeof console !== "undefined" && console.info) {
-    console.info("\n================================================\nCDS Sistemas\nMotor Comercial\nSprint\nUX-10\nBuild\n2026-09-21 18:37:36\nHash\n18B9492FBC21D26B4AA08258CD75F86DB023FEBD159D7F7DAE611316F13C5F73\n================================================\n");
+    console.info("\n================================================\nCDS Sistemas\nMotor Comercial\nSprint\nUX-10\nBuild\n2026-10-05 01:11:18\nHash\nA25B08EC901B41C4602804C7770ECE07B71504DD8593E4EF9CB81120E57BA1AC\n================================================\n");
   }
 })(typeof window !== "undefined" ? window : globalThis);
 

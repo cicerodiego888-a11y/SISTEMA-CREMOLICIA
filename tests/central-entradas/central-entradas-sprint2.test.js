@@ -75,7 +75,7 @@ async function main() {
 
   await test('health retorna sprint 8', async () => {
     const health = await service.obterHealth();
-    assert.strictEqual(health.sprint, 8);
+    assert.strictEqual(health.sprint, 'CE-01');
     assert.strictEqual(health.status, 'ok');
   });
 

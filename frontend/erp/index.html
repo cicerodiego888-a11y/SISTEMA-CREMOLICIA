@@ -38,6 +38,7 @@
     <link rel="stylesheet" href="/css/miip-central-revisao.css">
     <link rel="stylesheet" href="/css/central-entradas.css">
     <link rel="stylesheet" href="/css/comercial.css">
+    <link rel="stylesheet" href="/css/comercial-documento.css">
     <link rel="stylesheet" href="/modules/motor-comercial/pages/Dashboard/styles.css">
     <link rel="stylesheet" href="/modules/motor-comercial/pages/Consignacoes/styles.css">
     <link rel="stylesheet" href="/modules/motor-comercial/pages/NovaConsignacao/styles.css">
@@ -53,6 +54,7 @@
     <link rel="stylesheet" href="/modules/motor-comercial/styles/ux-enterprise.css">
     <link rel="stylesheet" href="/modules/motor-comercial/pages/DesignSystem/styles.css">
     <link rel="stylesheet" href="/shared/design-system/index.css">
+    <link rel="stylesheet" href="/css/nfe-manual.css">
     <link rel="stylesheet" href="/shared/design-system/charts/charts.css">
 </head>
 <body>
@@ -257,10 +259,62 @@
                                 <i class="fas fa-coins" aria-hidden="true"></i><span class="sidebar-nav-label">Financeiro</span>
                             </a>
                         </li>
-                        <li class="nav-item" data-recurso="fiscal">
-                            <a class="nav-link text-white" href="#" data-page="fiscal" title="Fiscal">
-                                <i class="fas fa-receipt" aria-hidden="true"></i><span class="sidebar-nav-label">Fiscal</span>
+                        <li class="nav-item">
+                            <a class="nav-link text-white" href="#" data-page="pedidos" title="Orçamentos e Pedidos">
+                                <i class="fas fa-file-signature" aria-hidden="true"></i><span class="sidebar-nav-label">Orçamentos e Pedidos</span>
                             </a>
+                        </li>
+                        <li class="nav-item" data-recurso="fiscal" id="nav-fiscal">
+                            <a class="nav-link text-white sidebar-comercial-toggle" href="#" data-bs-toggle="collapse" data-bs-target="#submenu-fiscal" aria-expanded="false" aria-controls="submenu-fiscal" title="Fiscal">
+                                <i class="fas fa-receipt" aria-hidden="true"></i><span class="sidebar-nav-label">Fiscal</span>
+                                <i class="fas fa-chevron-down sidebar-nav-chevron" aria-hidden="true"></i>
+                            </a>
+                            <div class="collapse sidebar-comercial-submenu" id="submenu-fiscal">
+                                <ul class="nav flex-column sidebar-comercial-nav">
+                                    <li class="nav-item">
+                                        <a class="nav-link text-white-50" href="#" data-page="fiscal" title="NFC-e Emitidas">
+                                            <i class="fas fa-receipt" aria-hidden="true"></i><span class="sidebar-nav-label">NFC-e Emitidas</span>
+                                        </a>
+                                    </li>
+
+                                    <li class="sidebar-comercial-separator" role="presentation" data-recurso="nfe"></li>
+                                    <li class="sidebar-comercial-group" aria-hidden="true" data-recurso="nfe">
+                                        <span class="sidebar-comercial-group__label">NF-e</span>
+                                    </li>
+                                    <li class="nav-item">
+                                        <a class="nav-link text-white-50" href="#" data-page="fiscal-nfe-nova" title="Nova NF-e">
+                                            <i class="fas fa-plus-circle" aria-hidden="true"></i><span class="sidebar-nav-label">Nova NF-e</span>
+                                        </a>
+                                    </li>
+                                    <li class="nav-item">
+                                        <a class="nav-link text-white-50" href="#" data-page="fiscal-nfe" title="NF-e Emitidas">
+                                            <i class="fas fa-file-invoice" aria-hidden="true"></i><span class="sidebar-nav-label">NF-e Emitidas</span>
+                                        </a>
+                                    </li>
+                                    <li class="nav-item">
+                                        <a class="nav-link text-white-50" href="#" data-page="fiscal-nfe-monitor" title="Monitor NF-e">
+                                            <i class="fas fa-desktop" aria-hidden="true"></i><span class="sidebar-nav-label">Monitor NF-e</span>
+                                        </a>
+                                    </li>
+                                    <li class="nav-item">
+                                        <a class="nav-link text-white-50" href="#" data-page="fiscal-nfe-fila" title="Fila NF-e">
+                                            <i class="fas fa-tasks" aria-hidden="true"></i><span class="sidebar-nav-label">Fila NF-e</span>
+                                        </a>
+                                    </li>
+                                    <li class="nav-item">
+                                        <a class="nav-link text-white-50" href="#" data-page="fiscal-nfe-diagnostico" title="Diagnóstico NF-e">
+                                            <i class="fas fa-stethoscope" aria-hidden="true"></i><span class="sidebar-nav-label">Diagnóstico NF-e</span>
+                                        </a>
+                                    </li>
+
+                                    <li class="sidebar-comercial-separator" role="presentation"></li>
+                                    <li class="nav-item">
+                                        <a class="nav-link text-white-50" href="#" data-page="fiscal-contabil" title="Central Contábil">
+                                            <i class="fas fa-file-archive" aria-hidden="true"></i><span class="sidebar-nav-label">Central Contábil</span>
+                                        </a>
+                                    </li>
+                                </ul>
+                            </div>
                         </li>
                         <li class="nav-item">
                             <a class="nav-link text-white" href="#" data-page="vendas" title="Relatórios / Vendas">
@@ -427,7 +481,10 @@
     <script src="/erp/js/miip-central-revisao.js"></script>
     <script src="/erp/js/compras.js"></script>
     <script src="/erp/js/central-entradas-ux.js"></script>
+    <script src="/erp/js/central-entradas-carga.js"></script>
     <script src="/erp/js/central-entradas.js"></script>
+    <script src="/erp/js/nfe.js"></script>
+    <script src="/erp/js/pedidos.js"></script>
     <script src="/erp/js/vendas.js"></script>
     <script src="/erp/js/financeiro-dashboard.js"></script>
     <script src="/erp/js/financeiro-receber.js"></script>

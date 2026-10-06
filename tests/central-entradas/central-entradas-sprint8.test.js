@@ -34,10 +34,10 @@ function test(nome, fn) {
 async function main() {
   console.log('\n=== Testes Central de Entradas — Sprint 8 ===\n');
 
-  await test('health retorna sprint 8 com servicoAtivo', async () => {
+  await test('health retorna sprint CE-01 com servicoAtivo', async () => {
     const health = await service.obterHealth();
-    assert.strictEqual(health.sprint, 8);
-    assert.strictEqual(health.versao, '1.0.0-sprint8');
+    assert.strictEqual(health.sprint, 'CE-01');
+    assert.strictEqual(health.versao, '1.0.0-ce01');
     assert.ok('servicoAtivo' in health);
     assert.ok('ultimaSincronizacao' in health);
     assert.ok('tempoMedioSyncMs' in health);

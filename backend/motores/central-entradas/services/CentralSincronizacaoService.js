@@ -22,14 +22,18 @@ class CentralSincronizacaoService {
   constructor(deps = {}) {
     /** @private */
     this._documentosRepository = deps.documentosRepository ?? new CentralDocumentosRepository();
+    /** @private */
+    this._dfeDeps = deps.dfeDeps ?? {};
   }
 
   /**
+   * @param {Object} [opcoes]
+   * @param {string} [opcoes.origem]
    * @returns {Promise<Object>}
    */
-  async sincronizar() {
+  async sincronizar(opcoes = {}) {
     try {
-      const resultado = await sincronizarDistribuicaoDFe();
+      const resultado = await sincronizarDistribuicaoDFe({ ...this._dfeDeps, origem: opcoes.origem });
       return SincronizacaoResultadoDTO.create({
         sucesso: true,
         notasNovas: resultado.notasNovas,
@@ -39,17 +43,14 @@ class CentralSincronizacaoService {
         maxNsu: resultado.maxNsu,
         iteracoes: resultado.iteracoes,
         cStat: resultado.cStat,
+        xMotivo: resultado.xMotivo,
         mensagem: resultado.mensagem,
         ultimaSincronizacao: resultado.ultimaSincronizacao,
+        proximaConsultaApos: resultado.proximaConsultaApos,
         erros: []
       }).toJSON();
     } catch (error) {
-      return SincronizacaoResultadoDTO.create({
-        sucesso: false,
-        notasNovas: 0,
-        notasDuplicadas: 0,
-        erros: [error.message]
-      }).toJSON();
+      return SincronizacaoResultadoDTO.fromError(error);
     }
   }
 
@@ -59,7 +60,7 @@ class CentralSincronizacaoService {
    */
   async buscarPorChave(chave) {
     const chaveLimpa = String(chave || '').replace(/\D/g, '');
-    const resultado = await consultarNotaPorChave(chaveLimpa);
+    const resultado = await consultarNotaPorChave(chaveLimpa, this._dfeDeps);
     const documento = await this._documentosRepository.buscarPorChave(chaveLimpa);
 
     return {

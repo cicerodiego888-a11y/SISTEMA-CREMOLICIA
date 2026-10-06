@@ -10,12 +10,31 @@ const { DocumentoFiscalStatus, isTerminal } = require('./DocumentoFiscalStatus')
 
 const TRANSICOES_PERMITIDAS = Object.freeze({
   [DocumentoFiscalStatus.RECEBIDA]: [
+    DocumentoFiscalStatus.AGUARDANDO_XML,
     DocumentoFiscalStatus.SINCRONIZADA,
     DocumentoFiscalStatus.DUPLICADA,
     DocumentoFiscalStatus.ERRO
   ],
+  [DocumentoFiscalStatus.AGUARDANDO_XML]: [
+    DocumentoFiscalStatus.XML_RECUPERANDO,
+    DocumentoFiscalStatus.SINCRONIZADA,
+    DocumentoFiscalStatus.ERRO_RECUPERACAO,
+    DocumentoFiscalStatus.DESCARTADA
+  ],
+  [DocumentoFiscalStatus.XML_RECUPERANDO]: [
+    DocumentoFiscalStatus.SINCRONIZADA,
+    DocumentoFiscalStatus.AGUARDANDO_XML,
+    DocumentoFiscalStatus.ERRO_RECUPERACAO
+  ],
+  [DocumentoFiscalStatus.ERRO_RECUPERACAO]: [
+    DocumentoFiscalStatus.AGUARDANDO_XML,
+    DocumentoFiscalStatus.XML_RECUPERANDO,
+    DocumentoFiscalStatus.SINCRONIZADA,
+    DocumentoFiscalStatus.DESCARTADA
+  ],
   [DocumentoFiscalStatus.SINCRONIZADA]: [
     DocumentoFiscalStatus.EM_PROCESSAMENTO,
+    DocumentoFiscalStatus.AGUARDANDO_XML,
     DocumentoFiscalStatus.DESCARTADA,
     DocumentoFiscalStatus.DUPLICADA,
     DocumentoFiscalStatus.ERRO
@@ -28,15 +47,18 @@ const TRANSICOES_PERMITIDAS = Object.freeze({
   ],
   [DocumentoFiscalStatus.AGUARDANDO_REVISAO]: [
     DocumentoFiscalStatus.REVISADA,
+    DocumentoFiscalStatus.SINCRONIZADA,
     DocumentoFiscalStatus.DESCARTADA,
     DocumentoFiscalStatus.ERRO
   ],
   [DocumentoFiscalStatus.REVISADA]: [
     DocumentoFiscalStatus.PRONTA_PARA_COMPRA,
+    DocumentoFiscalStatus.SINCRONIZADA,
     DocumentoFiscalStatus.DESCARTADA
   ],
   [DocumentoFiscalStatus.PRONTA_PARA_COMPRA]: [
     DocumentoFiscalStatus.EM_COMPRA,
+    DocumentoFiscalStatus.SINCRONIZADA,
     DocumentoFiscalStatus.DESCARTADA
   ],
   [DocumentoFiscalStatus.EM_COMPRA]: [
@@ -44,7 +66,8 @@ const TRANSICOES_PERMITIDAS = Object.freeze({
     DocumentoFiscalStatus.PRONTA_PARA_COMPRA
   ],
   [DocumentoFiscalStatus.ERRO]: [
-    DocumentoFiscalStatus.SINCRONIZADA
+    DocumentoFiscalStatus.SINCRONIZADA,
+    DocumentoFiscalStatus.AGUARDANDO_XML
   ],
   [DocumentoFiscalStatus.GRAVADA]: [],
   [DocumentoFiscalStatus.DESCARTADA]: [],

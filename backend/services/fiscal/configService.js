@@ -1,4 +1,9 @@
 const db = require('../../database');
+const { resolverAmbienteNfe, CHAVE_AMBIENTE_NFE } = require('./nfeAmbienteGuard');
+const { urlsNfeDaConfiguracao, CHAVES_WS_NFE } = require('./nfeWebServices');
+
+const CHAVES_WS_NFE_TODAS = Object.values(CHAVES_WS_NFE)
+  .flatMap((chave) => [`${chave}_homologacao`, `${chave}_producao`]);
 
 function getConfiguracoes(chaves) {
   return new Promise((resolve, reject) => {
@@ -21,7 +26,11 @@ function getConfiguracoes(chaves) {
   });
 }
 
-async function getFiscalConfig({ validarUrls = true } = {}) {
+/**
+ * Configuração fiscal. `ambiente`/`urls` são da NFC-e (fiscal_ambiente); `ambienteNfe`/`urlsNfe`
+ * são da NF-e 55 (fiscal_ambiente_nfe). O núcleo NF-e usa getFiscalConfigNfe.
+ */
+async function getFiscalConfig({ validarUrls = true, exigirAmbienteNfce = true } = {}) {
   const cfg = await getConfiguracoes([
     'nome_empresa',
     'cnpj',
@@ -61,12 +70,22 @@ async function getFiscalConfig({ validarUrls = true } = {}) {
     'fiscal_emitente_cep',
     'fiscal_emitente_logradouro',
     'fiscal_emitente_numero',
-    'fiscal_emitente_bairro'
+    'fiscal_emitente_bairro',
+
+    'nome_fantasia',
+    'razao_social',
+    'fiscal_serie_nfe',
+    'fiscal_numero_atual_nfe',
+    CHAVE_AMBIENTE_NFE,
+    ...CHAVES_WS_NFE_TODAS
   ]);
 
-  console.log('[FISCAL CONFIG] Configurações carregadas:', JSON.stringify(cfg, null, 2));
+  const cfgLog = { ...cfg };
+  if (cfgLog.fiscal_certificado_senha) cfgLog.fiscal_certificado_senha = '***';
+  if (cfgLog.fiscal_token_csc) cfgLog.fiscal_token_csc = '***';
+  console.log('[FISCAL CONFIG] Configurações carregadas:', JSON.stringify(cfgLog, null, 2));
 
-  if (!cfg.fiscal_ambiente) {
+  if (exigirAmbienteNfce && !cfg.fiscal_ambiente) {
     throw new Error('Ambiente fiscal não configurado. Selecione Produção ou Homologação.');
   }
 
@@ -74,7 +93,7 @@ async function getFiscalConfig({ validarUrls = true } = {}) {
 
   console.log('[FISCAL CONFIG] Ambiente fiscal:', ambienteFiscal);
 
-  if (![1, 2].includes(ambienteFiscal)) {
+  if (exigirAmbienteNfce && ![1, 2].includes(ambienteFiscal)) {
     throw new Error('Ambiente fiscal inválido. Escolha 1 Produção ou 2 Homologação.');
   }
 
@@ -96,6 +115,9 @@ async function getFiscalConfig({ validarUrls = true } = {}) {
 
   const urlsSelecionadas = ambienteFiscal === 1 ? urlsProducao : urlsHomologacao;
 
+  const ambienteNfe = resolverAmbienteNfe(cfg);
+  const urlsNfe = urlsNfeDaConfiguracao(cfg, ambienteNfe.ambiente);
+
   if (validarUrls && !urlsSelecionadas.autorizacao) {
     throw new Error(
       ambienteFiscal === 1
@@ -110,6 +132,8 @@ async function getFiscalConfig({ validarUrls = true } = {}) {
     codigoUf: String(cfg.fiscal_codigo_uf || '23'),
     serie: Number(cfg.fiscal_serie || 1),
     numeroAtual: Number(cfg.fiscal_numero_atual || 1),
+    serieNfe: Number(cfg.fiscal_serie_nfe || cfg.fiscal_serie || 1),
+    numeroAtualNfe: Number(cfg.fiscal_numero_atual_nfe || 0),
     // CSC sempre da configuração oficial (sem default/hardcode de ID ou token).
     tokenCSC: String(cfg.fiscal_token_csc || '').trim(),
     idCSC: String(cfg.fiscal_id_csc || '').trim(),
@@ -120,6 +144,8 @@ async function getFiscalConfig({ validarUrls = true } = {}) {
     im: cfg.fiscal_im || '',
     cnae: cfg.fiscal_cnae || '',
     nomeEmpresa: cfg.nome_empresa || '',
+    nomeFantasia: cfg.nome_fantasia || cfg.nome_empresa || '',
+    razaoSocial: cfg.razao_social || cfg.nome_empresa || '',
     cnpj: cfg.cnpj || '',
     telefone: cfg.telefone || '',
     email: cfg.email || '',
@@ -134,7 +160,23 @@ async function getFiscalConfig({ validarUrls = true } = {}) {
 
     urls: urlsSelecionadas,
     urlsHomologacao,
-    urlsProducao
+    urlsProducao,
+    ambienteNfe: ambienteNfe.ambiente,
+    ambienteNfeOrigem: ambienteNfe.origem,
+    urlsNfe
+  };
+}
+
+/**
+ * Configuração do núcleo NF-e 55: `ambiente` = fiscal_ambiente_nfe (null se inválido, bloqueado
+ * pelo nfeAmbienteGuard) e `urlsNfe` do mesmo ambiente. `ambienteNfce` = fiscal_ambiente.
+ */
+async function getFiscalConfigNfe() {
+  const config = await getFiscalConfig({ validarUrls: false, exigirAmbienteNfce: false });
+  return {
+    ...config,
+    ambiente: config.ambienteNfe,
+    ambienteNfce: Number.isFinite(config.ambiente) ? config.ambiente : null
   };
 }
 
@@ -211,8 +253,40 @@ async function incrementaNumeroFiscal() {
   });
 }
 
+/**
+ * Chaves NF-e modelo 55. Só cria as ausentes: nunca sobrescreve valor já configurado
+ * (inclusive fiscal_ambiente, que é da NFC-e).
+ */
+const CONFIG_NFE_PADRAO = [
+  ['fiscal_serie_nfe', '1', 'number', 'Série da NF-e modelo 55'],
+  ['fiscal_numero_atual_nfe', '1', 'number', 'Próximo número da NF-e modelo 55'],
+  ['fiscal_ambiente', '2', 'number', 'Ambiente fiscal (1 Produção, 2 Homologação)'],
+  [CHAVE_AMBIENTE_NFE, '2', 'number', 'Ambiente da NF-e modelo 55 (1 Produção, 2 Homologação)'],
+  ...['autorizacao', 'evento', 'consulta', 'status'].flatMap((servico) => [
+    [`fiscal_ws_nfe_${servico}_homologacao`, '', 'string', `URL NF-e ${servico} (homologação)`],
+    [`fiscal_ws_nfe_${servico}_producao`, '', 'string', `URL NF-e ${servico} (produção)`]
+  ])
+];
+
+function prepararConfiguracaoNfe() {
+  return Promise.all(CONFIG_NFE_PADRAO.map(([chave, valor, tipo, descricao]) => new Promise((resolve, reject) => {
+    db.run(
+      `INSERT OR IGNORE INTO configuracoes (chave, valor, tipo, descricao, updated_at)
+       VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+      [chave, valor, tipo, descricao],
+      function onRun(err) {
+        if (err) return reject(err);
+        resolve(this.changes > 0 ? chave : null);
+      }
+    );
+  }))).then((criadas) => criadas.filter(Boolean));
+}
+
 module.exports = {
   getFiscalConfig,
+  getFiscalConfigNfe,
   setConfiguracao,
-  incrementaNumeroFiscal
+  incrementaNumeroFiscal,
+  prepararConfiguracaoNfe,
+  CONFIG_NFE_PADRAO
 };

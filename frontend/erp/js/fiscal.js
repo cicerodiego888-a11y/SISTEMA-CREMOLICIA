@@ -34,11 +34,10 @@ function renderFiscal() {
                 <a href="#" onclick="loadPage('configuracoes-avancadas'); return false;">Configurações Avançadas</a>.
            </div>`
         : '';
-
     const html = `
-        <div class="card shadow-sm">
+        <div class="card shadow-sm" id="fiscal-pagina-nfce">
             <div class="card-header d-flex justify-content-between align-items-center">
-                <div><i class="fas fa-receipt"></i> Módulo Fiscal NFC-e</div>
+                <div><i class="fas fa-receipt"></i> Fiscal › NFC-e Emitidas</div>
             </div>
             <div class="card-body">
                 ${avisoConfigAvancada}
@@ -50,12 +49,7 @@ function renderFiscal() {
                     </li>
                     <li class="nav-item">
                         <button class="nav-link" data-bs-toggle="tab" data-bs-target="#fiscal-emissao-tab" type="button">
-                            Emissão Manual
-                        </button>
-                    </li>
-                    <li class="nav-item">
-                        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#fiscal-contabilidade-tab" type="button">
-                            Contabilidade
+                            Emissão Manual NFC-e
                         </button>
                     </li>
                 </ul>
@@ -123,35 +117,63 @@ function renderFiscal() {
                         </div>
                     </div>
 
-                    <div class="tab-pane fade" id="fiscal-contabilidade-tab">
-                        <p class="text-muted mb-3">
-                            Gera um ZIP com os XML de NFC-e autorizadas, XML de entradas e relatórios do período
-                            para enviar ao contador.
-                        </p>
-                        <div class="row g-2 align-items-end">
-                            <div class="col-md-3">
-                                <label class="form-label small mb-0 text-muted">Data inicial</label>
-                                <input type="date" id="fiscalContabDataInicio" class="form-control">
-                            </div>
-                            <div class="col-md-3">
-                                <label class="form-label small mb-0 text-muted">Data final</label>
-                                <input type="date" id="fiscalContabDataFim" class="form-control">
-                            </div>
-                            <div class="col-md-4">
-                                <button type="button" class="btn btn-success w-100" id="btnExportarContabilidade" onclick="exportarContabilidadeZip()">
-                                    <i class="fas fa-file-archive"></i> Baixar ZIP para o contador
-                                </button>
-                            </div>
-                        </div>
-                        <div id="fiscal-contabilidade-status" class="mt-3"></div>
-                    </div>
                 </div>
             </div>
         </div>
     `;
 
     $('#page-content').html(html);
+}
+
+/** Fiscal › Central Contábil: exportação para o contador (mesmo conteúdo da antiga aba Contabilidade). */
+function loadCentralContabil() {
+    const html = `
+        <div class="card shadow-sm" id="fiscal-pagina-contabil">
+            <div class="card-header"><i class="fas fa-file-archive"></i> Fiscal › Central Contábil</div>
+            <div class="card-body" id="fiscal-contabilidade-tab">
+                <p class="text-muted mb-3">
+                    Gera um ZIP com os XML de NFC-e autorizadas, XML de entradas e relatórios do período
+                    para enviar ao contador.
+                </p>
+                <div class="row g-2 align-items-end">
+                    <div class="col-md-3">
+                        <label class="form-label small mb-0 text-muted">Data inicial</label>
+                        <input type="date" id="fiscalContabDataInicio" class="form-control">
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label small mb-0 text-muted">Data final</label>
+                        <input type="date" id="fiscalContabDataFim" class="form-control">
+                    </div>
+                    <div class="col-md-4">
+                        <button type="button" class="btn btn-success w-100" id="btnExportarContabilidade" onclick="exportarContabilidadeZip()">
+                            <i class="fas fa-file-archive"></i> Baixar ZIP para o contador
+                        </button>
+                    </div>
+                </div>
+                <div id="fiscal-contabilidade-status" class="mt-3"></div>
+            </div>
+        </div>
+    `;
+    $('#page-content').html(html);
     preencherPeriodoContabilidadePadrao();
+}
+
+const FISCAL_PAGINAS_MENU = ['fiscal', 'fiscal-nfe-nova', 'fiscal-nfe', 'fiscal-nfe-monitor', 'fiscal-nfe-fila',
+    'fiscal-nfe-diagnostico', 'fiscal-contabil'];
+
+/** Active state do submenu Fiscal, inclusive em navegação programática (loadPage). */
+function destacarNavFiscal(page) {
+    if (!FISCAL_PAGINAS_MENU.includes(page)) return;
+    const submenu = document.getElementById('submenu-fiscal');
+    if (submenu) {
+        if (window.bootstrap && bootstrap.Collapse) bootstrap.Collapse.getOrCreateInstance(submenu, { toggle: false }).show();
+        else submenu.classList.add('show');
+        const toggle = document.querySelector('[data-bs-target="#submenu-fiscal"]');
+        if (toggle) toggle.setAttribute('aria-expanded', 'true');
+    }
+    document.querySelectorAll('.nav-link[data-page]').forEach((el) => {
+        el.classList.toggle('active', el.getAttribute('data-page') === page);
+    });
 }
 
 function datasPadraoContabilidade() {

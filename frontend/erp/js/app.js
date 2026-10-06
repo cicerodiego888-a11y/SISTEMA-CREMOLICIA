@@ -30,6 +30,9 @@ function loadPage(page) {
     if (typeof destacarNavConfigComercial === 'function') {
         destacarNavConfigComercial(page);
     }
+    if (typeof destacarNavFiscal === 'function') {
+        destacarNavFiscal(page);
+    }
 
     switch (page) {
         case 'dashboard':
@@ -60,6 +63,10 @@ function loadPage(page) {
             return typeof loadVendas === 'function'
                 ? loadVendas()
                 : $('#page-content').html('<div class="alert alert-danger">Erro ao carregar histórico de vendas.</div>');
+        case 'pedidos':
+            return typeof loadPedidos === 'function'
+                ? loadPedidos()
+                : $('#page-content').html('<div class="alert alert-danger">Erro ao carregar orçamentos e pedidos.</div>');
         case 'financeiro':
             return carregarPaginaHtml('financeiro.html', function () {
                 if (typeof initFinanceiro === 'function') initFinanceiro();
@@ -96,6 +103,18 @@ function loadPage(page) {
             return typeof loadFiscal === 'function'
                 ? loadFiscal()
                 : $('#page-content').html('<div class="alert alert-danger">Erro ao carregar o módulo fiscal.</div>');
+        case 'fiscal-nfe-nova':
+        case 'fiscal-nfe':
+        case 'fiscal-nfe-monitor':
+        case 'fiscal-nfe-fila':
+        case 'fiscal-nfe-diagnostico':
+            return typeof loadNfePagina === 'function'
+                ? loadNfePagina(page)
+                : $('#page-content').html('<div class="alert alert-danger">Erro ao carregar o módulo NF-e.</div>');
+        case 'fiscal-contabil':
+            return typeof loadCentralContabil === 'function'
+                ? loadCentralContabil()
+                : $('#page-content').html('<div class="alert alert-danger">Erro ao carregar a Central Contábil.</div>');
         case 'categorias':
             return carregarPaginaHtml('categorias.html', function () {
                 if (typeof loadCategoriasAndSubcategorias === 'function') {

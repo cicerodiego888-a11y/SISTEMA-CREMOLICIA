@@ -150,6 +150,10 @@ function showClienteModal(cliente = null) {
                                     <input type="text" class="form-control" id="cpf_cnpj" value="${isEdit ? (formatarCpfCnpj(cliente.cpf_cnpj) || '') : ''}" oninput="formatCpfCnpjInput(this)" maxlength="18">
                                 </div>
                                 <div class="col-md-6 mb-3">
+                                    <label for="inscricao_estadual" class="form-label">Inscrição Estadual</label>
+                                    <input type="text" class="form-control" id="inscricao_estadual" maxlength="20" placeholder="Número ou ISENTO" value="${isEdit ? (cliente.inscricao_estadual || '') : ''}">
+                                </div>
+                                <div class="col-md-6 mb-3">
                                     <label for="telefone" class="form-label">Telefone</label>
                                     <input type="text" class="form-control" id="telefone" value="${isEdit ? (cliente.telefone || '') : ''}">
                                 </div>
@@ -288,6 +292,7 @@ function saveCliente() {
     const data = {
         nome: $('#nome').val(),
         cpf_cnpj: $('#cpf_cnpj').val(),
+        inscricao_estadual: $('#inscricao_estadual').val(),
         telefone: $('#telefone').val(),
         email: $('#email').val(),
         cep: $('#cep').val(),

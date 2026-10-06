@@ -65,5 +65,19 @@ test('mesmo status é idempotente', () => {
   assert.strictEqual(resultado.valido, true);
 });
 
+test('ERRO_RECUPERACAO → AGUARDANDO_XML permite retry', () => {
+  assert.strictEqual(
+    podeTransicionar(DocumentoFiscalStatus.ERRO_RECUPERACAO, DocumentoFiscalStatus.AGUARDANDO_XML),
+    true
+  );
+});
+
+test('AGUARDANDO_XML → XML_RECUPERANDO é permitida', () => {
+  assert.strictEqual(
+    podeTransicionar(DocumentoFiscalStatus.AGUARDANDO_XML, DocumentoFiscalStatus.XML_RECUPERANDO),
+    true
+  );
+});
+
 console.log(`\nResultado: ${passou} passou, ${falhou} falhou\n`);
 process.exit(falhou > 0 ? 1 : 0);

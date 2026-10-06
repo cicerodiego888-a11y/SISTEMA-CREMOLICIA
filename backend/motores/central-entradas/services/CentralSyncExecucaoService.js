@@ -108,7 +108,7 @@ class CentralSyncExecucaoService {
 
       let resultado;
       if (maxIteracoes < 50) {
-        const bruto = await sincronizarDistribuicaoDFe({ maxIteracoes });
+        const bruto = await sincronizarDistribuicaoDFe({ maxIteracoes, origem });
         resultado = SincronizacaoResultadoDTO.create({
           sucesso: true,
           notasNovas: bruto.notasNovas,
@@ -118,12 +118,14 @@ class CentralSyncExecucaoService {
           maxNsu: bruto.maxNsu,
           iteracoes: bruto.iteracoes,
           cStat: bruto.cStat,
+          xMotivo: bruto.xMotivo,
           mensagem: bruto.mensagem,
           ultimaSincronizacao: bruto.ultimaSincronizacao,
+          proximaConsultaApos: bruto.proximaConsultaApos,
           erros: []
         }).toJSON();
       } else {
-        resultado = await this._sincronizacao.sincronizar();
+        resultado = await this._sincronizacao.sincronizar({ origem });
       }
 
       const duracaoMs = Date.now() - inicio;
@@ -153,26 +155,23 @@ class CentralSyncExecucaoService {
       return { ...resultado, duracaoMs, origem };
     } catch (error) {
       const duracaoMs = Date.now() - inicio;
-      const falha = SincronizacaoResultadoDTO.create({
-        sucesso: false,
-        erros: [error.message]
-      }).toJSON();
+      const falha = SincronizacaoResultadoDTO.fromError(error);
 
       this._ultimoResultado = falha;
 
       await this._eventos.registrar({
         tipo: TIPOS_EVENTO.SYNC_ERRO,
         origem,
-        descricao: error.message,
+        descricao: falha.mensagem,
         resultado: 'erro',
         sucesso: false,
         duracaoMs,
-        detalhe: { erro: error.message }
+        detalhe: falha
       });
 
       await this._notificacoes.notificarSyncConcluida({
         sucesso: false,
-        mensagem: error.message,
+        mensagem: falha.mensagem,
         origem
       });
 
@@ -184,3 +183,4 @@ class CentralSyncExecucaoService {
 }
 
 module.exports = new CentralSyncExecucaoService();
+module.exports.CentralSyncExecucaoService = CentralSyncExecucaoService;

@@ -74,9 +74,9 @@ async function main() {
 
   await documentosRepository._obterSql().whenReady();
 
-  await test('health retorna sprint 8', async () => {
+  await test('health retorna sprint CE-01', async () => {
     const health = await service.obterHealth();
-    assert.strictEqual(health.sprint, 8);
+    assert.strictEqual(health.sprint, 'CE-01');
   });
 
   await test('enriquecerParseComMiip não altera contrato parse-xml', async () => {

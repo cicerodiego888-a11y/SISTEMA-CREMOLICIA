@@ -260,6 +260,7 @@ function showVendaModal(venda) {
                             <i class="fas fa-receipt"></i>
                             NFC-e autorizada${venda.nfce_numero ? ` — nota <strong>#${escapeHtml(String(venda.nfce_numero))}</strong>` : ''}
                         </div>` : ''}
+                        ${typeof nfeHtmlSecaoVenda === 'function' ? nfeHtmlSecaoVenda(venda) : ''}
                         ${mostrarNaoFiscal ? `
                         <div class="alert alert-warning py-2 mb-3">
                             <i class="fas fa-file-invoice"></i>

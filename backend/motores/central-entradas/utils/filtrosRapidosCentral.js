@@ -19,6 +19,9 @@ const PRESETS = Object.freeze({
     label: 'Pendentes',
     statusIn: [
       DocumentoFiscalStatus.SINCRONIZADA,
+      DocumentoFiscalStatus.AGUARDANDO_XML,
+      DocumentoFiscalStatus.XML_RECUPERANDO,
+      DocumentoFiscalStatus.ERRO_RECUPERACAO,
       DocumentoFiscalStatus.EM_PROCESSAMENTO,
       DocumentoFiscalStatus.AGUARDANDO_REVISAO,
       DocumentoFiscalStatus.EM_COMPRA
@@ -29,6 +32,14 @@ const PRESETS = Object.freeze({
     statusIn: [
       DocumentoFiscalStatus.PRONTA_PARA_COMPRA,
       DocumentoFiscalStatus.REVISADA
+    ]
+  },
+  aguardando_xml: {
+    label: 'Aguardando XML',
+    statusIn: [
+      DocumentoFiscalStatus.AGUARDANDO_XML,
+      DocumentoFiscalStatus.XML_RECUPERANDO,
+      DocumentoFiscalStatus.ERRO_RECUPERACAO
     ]
   }
 });

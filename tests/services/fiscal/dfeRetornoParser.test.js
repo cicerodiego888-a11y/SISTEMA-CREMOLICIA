@@ -10,6 +10,7 @@ const {
   nsuMenorQue,
   extrairMetadadosRetorno,
   extrairDocumentosZip,
+  extrairTodosNsus,
   isDocumentoNotaFiscal,
   retornoDistSucesso
 } = require('../../../backend/services/fiscal/dfeRetornoParser');
@@ -95,6 +96,12 @@ async function main() {
     assert.strictEqual(docs.length, 1);
     assert.strictEqual(docs[0].nsu, '000000000000008');
     assert.ok(docs[0].xml.includes('infNFe'));
+  });
+
+  await test('extrairTodosNsus inclui NSUs sem unzip', async () => {
+    const xml = '<lote><docZip NSU="9" schema="resEvento_v1.01.xsd"></docZip></lote>';
+    const nsus = extrairTodosNsus(xml);
+    assert.strictEqual(nsus[0], '000000000000009');
   });
 
   console.log(`\nResultado: ${passou} passou, ${falhou} falhou\n`);

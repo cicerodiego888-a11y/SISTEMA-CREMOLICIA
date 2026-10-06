@@ -9,6 +9,10 @@ function centralUx() {
     return window.CentralEntradasUX || {};
 }
 
+function cargaCentral() {
+    return window.CentralEntradasCarga || {};
+}
+
 const centralEntradasState = {
     pagina: 1,
     limite: 20,
@@ -50,11 +54,27 @@ const centralEntradasState = {
     tickerNotificacoes: null,
     tickerSync: null,
     uploadArquivos: [],
-    uploadEmAndamento: false
+    uploadEmAndamento: false,
+    falhaSync: null,
+    promessaInteligencia: null,
+    erroDocumentos: null,
+    promessaDocumentos: null,
+    requestIdDocumentos: 0,
+    abortDocumentos: null
 };
+
+const guardaDashboardCentral = cargaCentral().criarGuardaCarga
+    ? cargaCentral().criarGuardaCarga()
+    : {
+        ocupado() { return false; },
+        executar(fn) { return Promise.resolve().then(fn); }
+    };
 
 const CENTRAL_STATUS_META = {
     RECEBIDA: { cor: '#94a3b8', bg: 'rgba(148,163,184,.12)', icone: 'fa-envelope', badge: 'central-badge-light', descricao: 'Documento recebido' },
+    AGUARDANDO_XML: { cor: '#64748b', bg: 'rgba(100,116,139,.12)', icone: 'fa-hourglass-half', badge: 'bg-secondary', descricao: 'Documento localizado, aguardando XML' },
+    XML_RECUPERANDO: { cor: '#475569', bg: 'rgba(71,85,105,.12)', icone: 'fa-sync', badge: 'bg-secondary', descricao: 'Recuperando XML na SEFAZ' },
+    ERRO_RECUPERACAO: { cor: '#dc3545', bg: 'rgba(220,53,69,.12)', icone: 'fa-unlink', badge: 'bg-danger', descricao: 'Falha ao recuperar XML — recuperável' },
     SINCRONIZADA: { cor: '#0d6efd', bg: 'rgba(13,110,253,.10)', icone: 'fa-inbox', badge: 'bg-primary', descricao: 'Nova nota encontrada' },
     EM_PROCESSAMENTO: { cor: '#f59e0b', bg: 'rgba(245,158,11,.12)', icone: 'fa-cog', badge: 'bg-warning text-dark', descricao: 'Pipeline em execução' },
     AGUARDANDO_REVISAO: { cor: '#fd7e14', bg: 'rgba(253,126,20,.12)', icone: 'fa-user-check', badge: 'central-badge-orange', descricao: 'Produtos aguardando revisão' },
@@ -148,20 +168,39 @@ function renderBadgeStatusCentral(status, label) {
 
 async function centralEntradasFetch(path, options = {}) {
     const token = localStorage.getItem('token');
-    const response = await fetch(`${API_URL}/central-entradas${path}`, {
-        ...options,
-        headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-            ...(options.headers || {})
-        }
-    });
-
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-        throw new Error(data.error || `Erro HTTP ${response.status}`);
+    const { timeoutMs, ...fetchOptions } = options;
+    let timeoutId = null;
+    const controller = !fetchOptions.signal && timeoutMs ? new AbortController() : null;
+    if (controller && timeoutMs) {
+        timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     }
-    return data;
+
+    try {
+        const response = await fetch(`${API_URL}/central-entradas${path}`, {
+            ...fetchOptions,
+            signal: fetchOptions.signal || controller?.signal,
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${token}`,
+                ...(fetchOptions.headers || {})
+            }
+        });
+
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            throw new Error(data.error || `Erro HTTP ${response.status}`);
+        }
+        return data;
+    } catch (error) {
+        if (error && error.name === 'AbortError') {
+            const abortado = new Error('Tempo esgotado ao comunicar com o servidor.');
+            abortado.code = 'TIMEOUT';
+            throw abortado;
+        }
+        throw error;
+    } finally {
+        if (timeoutId) clearTimeout(timeoutId);
+    }
 }
 
 async function centralEntradasUpload(arquivos) {
@@ -419,6 +458,7 @@ function renderCardsDashboardCentral(contadores = {}) {
 
     const cards = [
         { titulo: 'Novas Notas', valor: contadores.novas ?? 0, status: 'SINCRONIZADA', subtitulo: 'aguardando processamento', trendKey: 'novas' },
+        { titulo: 'Aguardando XML', valor: contadores.aguardandoXml ?? 0, status: 'AGUARDANDO_XML', subtitulo: 'XML ainda indisponível', trendKey: 'aguardandoXml', invertTrend: true },
         { titulo: 'Em Processamento', valor: contadores.emProcessamento ?? 0, status: 'EM_PROCESSAMENTO', subtitulo: 'pipeline em execução', trendKey: 'emProcessamento' },
         { titulo: 'Aguardando Revisão', valor: contadores.aguardandoRevisao ?? 0, status: 'AGUARDANDO_REVISAO', subtitulo: 'pendências MIIP', trendKey: 'aguardandoRevisao', invertTrend: true },
         { titulo: 'Prontas para Compra', valor: contadores.prontasParaCompra ?? 0, status: 'PRONTA_PARA_COMPRA', subtitulo: 'prontas para lançamento', trendKey: 'prontasParaCompra' },
@@ -469,13 +509,16 @@ function renderIndicadoresCentral() {
             <div class="central-entradas-indicador">
                 <i class="fas fa-satellite-dish ${sincronizando ? 'fa-spin text-primary' : 'text-primary'}"></i>
                 <div>
-                    <div class="central-entradas-indicador-label">Monitoramento SEFAZ</div>
+                    <div class="central-entradas-indicador-label">Última DistDFe (NSU)</div>
                     <div class="central-entradas-indicador-valor">
                         ${sincronizando
                             ? 'Sincronizando...'
                             : (ultima ? `${escapeHtmlCentralEntradas(formatarDataHoraCentral(ultima))}` : 'Nunca sincronizado')}
                     </div>
                     ${tempoSync && !sincronizando ? `<div class="central-entradas-indicador-extra">${escapeHtmlCentralEntradas(tempoSync)}</div>` : ''}
+                    ${centralEntradasState.sefazDisponivel === false
+                        ? '<div class="central-entradas-indicador-extra text-danger">SEFAZ indisponível</div>'
+                        : ''}
                 </div>
             </div>
             <div class="central-entradas-indicador">
@@ -545,7 +588,7 @@ function renderCardsOperacionaisCentral() {
     const container = document.getElementById('centralEntradasOperacional');
     if (!container) return;
 
-    if (centralEntradasState.carregandoInteligencia) {
+    if (centralEntradasState.carregandoInteligencia && !centralEntradasState.operacional) {
         container.innerHTML = centralUx().renderSkeletonKpisCentral?.(6) || '';
         return;
     }
@@ -587,7 +630,7 @@ function renderPainelAlertasCentral() {
     const container = document.getElementById('centralEntradasAlertas');
     if (!container) return;
 
-    if (centralEntradasState.carregandoInteligencia) {
+    if (centralEntradasState.carregandoInteligencia && !centralEntradasState.alertas) {
         container.innerHTML = centralUx().renderSkeletonPainelBlocoCentral?.() || '';
         return;
     }
@@ -628,7 +671,7 @@ function renderPainelPendenciasCentral() {
     const container = document.getElementById('centralEntradasPendenciasBody');
     if (!container) return;
 
-    if (centralEntradasState.carregandoInteligencia) {
+    if (centralEntradasState.carregandoInteligencia && !centralEntradasState.pendencias) {
         container.innerHTML = centralUx().renderSkeletonPainelBlocoCentral?.() || '';
         return;
     }
@@ -718,38 +761,127 @@ function renderScoreBadgeCentral(score, cor) {
 }
 
 async function carregarInteligenciaCentral() {
+    if (centralEntradasState.promessaInteligencia) {
+        return centralEntradasState.promessaInteligencia;
+    }
+
+    const jaTemOperacional = Boolean(centralEntradasState.operacional);
     centralEntradasState.carregandoInteligencia = true;
-    renderCardsOperacionaisCentral();
-    renderPainelAlertasCentral();
-    renderPainelPendenciasCentral();
-
-    try {
-        const [operacional, alertas, pendencias, atencao] = await Promise.all([
-            centralEntradasFetch('/operacional'),
-            centralEntradasFetch('/alertas'),
-            centralEntradasFetch('/pendencias?limite=20'),
-            centralEntradasFetch('/atencao')
-        ]);
-
-        centralEntradasState.operacional = operacional;
-        centralEntradasState.alertas = alertas;
-        centralEntradasState.pendencias = pendencias;
-        centralEntradasState.atencao = atencao;
-
-        renderPainelAtencaoCentral();
+    if (!jaTemOperacional) {
         renderCardsOperacionaisCentral();
         renderPainelAlertasCentral();
         renderPainelPendenciasCentral();
-
-        centralUx().salvarSnapshotKpisCentral?.(
-            { contadores: centralEntradasState.ultimoDashboardContadores || {} },
-            operacional
-        );
-    } catch (error) {
-        console.warn('Inteligência operacional:', error.message);
-    } finally {
-        centralEntradasState.carregandoInteligencia = false;
     }
+
+    const execucao = (async () => {
+        try {
+            const [operacional, alertas, pendencias, atencao] = await Promise.all([
+                centralEntradasFetch('/operacional'),
+                centralEntradasFetch('/alertas'),
+                centralEntradasFetch('/pendencias?limite=20'),
+                centralEntradasFetch('/atencao')
+            ]);
+
+            centralEntradasState.operacional = operacional;
+            centralEntradasState.alertas = alertas;
+            centralEntradasState.pendencias = pendencias;
+            centralEntradasState.atencao = atencao;
+
+            renderPainelAtencaoCentral();
+            renderCardsOperacionaisCentral();
+            renderPainelAlertasCentral();
+            renderPainelPendenciasCentral();
+
+            centralUx().salvarSnapshotKpisCentral?.(
+                { contadores: centralEntradasState.ultimoDashboardContadores || {} },
+                operacional
+            );
+        } catch (error) {
+            console.warn('Inteligência operacional:', error.message);
+        } finally {
+            centralEntradasState.carregandoInteligencia = false;
+            centralEntradasState.promessaInteligencia = null;
+        }
+    })();
+
+    centralEntradasState.promessaInteligencia = execucao;
+    return execucao;
+}
+
+function renderBannerSyncCentral() {
+    const container = document.getElementById('centralEntradasBannerSync');
+    if (!container) return;
+
+    const banner = cargaCentral().montarBannerFalhaSync?.(centralEntradasState.falhaSync);
+    if (!banner) {
+        container.classList.add('d-none');
+        container.innerHTML = '';
+        return;
+    }
+
+    container.classList.remove('d-none');
+    container.innerHTML = `
+        <div class="alert alert-warning py-2 px-3 mb-0" role="status">
+            <strong>${escapeHtmlCentralEntradas(banner.titulo)}</strong>
+            ${banner.codigo ? `<span class="badge bg-warning text-dark ms-1">${escapeHtmlCentralEntradas(banner.codigo)}</span>` : ''}
+            <div class="small">${escapeHtmlCentralEntradas(banner.mensagem)}</div>
+        </div>`;
+}
+
+function aplicarPayloadDashboardCentral(dashboard = {}) {
+    const contadores = dashboard.contadores || {};
+    centralEntradasState.ultimoDashboardContadores = contadores;
+
+    const cardsContainer = document.getElementById('centralEntradasCards');
+    if (cardsContainer) {
+        cardsContainer.innerHTML = renderCardsDashboardCentral(contadores);
+    }
+
+    centralEntradasState.indicadores = dashboard.indicadores || centralEntradasState.indicadores;
+    centralEntradasState.ultimaSincronizacao = dashboard.ultimaSincronizacao
+        || dashboard.sincronizacao?.dataSincronizacao
+        || centralEntradasState.ultimaSincronizacao;
+    centralEntradasState.sincronizacaoNsu = dashboard.sincronizacao || centralEntradasState.sincronizacaoNsu;
+    renderIndicadoresCentral();
+}
+
+function aplicarAberturaCentral(abertura = {}) {
+    if (abertura.health) {
+        centralEntradasState.health = abertura.health;
+    }
+    if (abertura.sefazDisponivel !== undefined) {
+        centralEntradasState.sefazDisponivel = abertura.sefazDisponivel;
+    }
+    if (abertura.ultimaSincronizacaoNsu) {
+        centralEntradasState.ultimaSincronizacao = abertura.ultimaSincronizacaoNsu;
+    }
+    if (abertura.dashboard) {
+        aplicarPayloadDashboardCentral(abertura.dashboard);
+    }
+    if (abertura.sefazDisponivel === false) {
+        showNotification(abertura.mensagem || 'SEFAZ indisponível', 'warning');
+    }
+    renderPainelServicoCentral();
+}
+
+function tratarResultadoSyncAberturaCentral(sync) {
+    carregarStatusServicoCentral();
+    if (sync && sync.sucesso === false && !sync.ignorado) {
+        centralEntradasState.sefazDisponivel = false;
+        centralEntradasState.falhaSync = sync;
+        const msg = sync.erro?.mensagem || sync.mensagem || 'Falha na última sincronização.';
+        showNotification((sync.erro?.codigo ? `[${sync.erro.codigo}] ` : '') + msg, 'warning');
+    } else if (sync && sync.sucesso !== false) {
+        centralEntradasState.falhaSync = null;
+        if (sync.notasNovas) {
+            centralEntradasState.notasNovasUltimaSync = sync.notasNovas;
+        }
+        if (sync.ultimaSincronizacao) {
+            centralEntradasState.ultimaSincronizacao = sync.ultimaSincronizacao;
+        }
+    }
+    renderBannerSyncCentral();
+    renderIndicadoresCentral();
 }
 
 async function carregarStatsFornecedorCentral(cnpj) {
@@ -829,7 +961,7 @@ function renderPainelServicoCentral() {
     };
 
     const s = centralEntradasState.servicoStatus || {};
-    const ultima = s.ultimaExecucao || centralEntradasState.ultimaSincronizacao;
+    const ultima = s.ultimaExecucao;
     const proxima = s.proximaExecucao;
     const ultimo = s.ultimoResultado || {};
     const duracao = ultimo.duracaoMs != null ? `${Math.round(ultimo.duracaoMs / 1000)}s` : '—';
@@ -850,10 +982,14 @@ function renderPainelServicoCentral() {
                 ${executando ? '<span class="badge bg-primary ms-2 central-ux-badge-pulse">Em execução</span>' : ''}
             </div>
             <div class="central-entradas-servico-metricas">
-                <div title="Data e hora da última sincronização"><span class="label">Última execução</span><span>${escapeHtmlCentralEntradas(ultima ? formatarDataHoraCentral(ultima) : '—')}</span></div>
+                <div title="Data e hora da última tentativa de sincronização"><span class="label">Última tentativa</span><span>${escapeHtmlCentralEntradas(ultima ? formatarDataHoraCentral(ultima) : '—')}</span></div>
+                <div title="Última DistDFe que atualizou o NSU"><span class="label">Última DistDFe (NSU)</span><span>${escapeHtmlCentralEntradas(formatarDataHoraCentral(centralEntradasState.ultimaSincronizacao) || '—')}</span></div>
                 <div title="Próxima execução agendada"><span class="label">Próxima execução</span><span>${escapeHtmlCentralEntradas(proxima ? formatarDataHoraCentral(proxima) : '—')}</span></div>
                 <div title="Duração da última sincronização"><span class="label">Duração última sync</span><span>${escapeHtmlCentralEntradas(duracao)}</span></div>
                 <div title="Notas recebidas na última sincronização"><span class="label">Notas na última sync</span><span>${escapeHtmlCentralEntradas(qtd)}</span></div>
+                <div title="Disponibilidade operacional da SEFAZ"><span class="label">SEFAZ</span><span>${escapeHtmlCentralEntradas(s.sefaz?.disponivel === false ? 'Indisponível' : 'Disponível')}</span></div>
+                <div title="Último NSU conhecido"><span class="label">Último NSU</span><span>${escapeHtmlCentralEntradas(centralEntradasState.health?.ultimoNsu || dashboardNsu() || '—')}</span></div>
+                <div title="Documentos aguardando XML"><span class="label">Aguardando XML</span><span>${escapeHtmlCentralEntradas(String(centralEntradasState.health?.filas?.aguardandoXml ?? centralEntradasState.ultimoDashboardContadores?.aguardandoXml ?? '—'))}</span></div>
             </div>
         </div>`;
 }
@@ -1085,9 +1221,37 @@ function renderGridCentralEntradas() {
     const contador = document.getElementById('centralEntradasContador');
     if (!tbody) return;
 
-    if (centralEntradasState.carregando) {
+    const Carga = cargaCentral();
+    const mostrarSkeleton = Carga.deveMostrarSkeletonDocumentos
+        ? Carga.deveMostrarSkeletonDocumentos({
+            carregando: centralEntradasState.carregando,
+            quantidadeDocumentos: (centralEntradasState.documentos || []).length,
+            erro: centralEntradasState.erroDocumentos
+        })
+        : (centralEntradasState.carregando && !(centralEntradasState.documentos || []).length);
+
+    if (mostrarSkeleton) {
         tbody.innerHTML = centralUx().renderSkeletonGridCentral?.(8) || '';
         if (contador) contador.textContent = 'Carregando...';
+        return;
+    }
+
+    if (centralEntradasState.erroDocumentos && !(centralEntradasState.documentos || []).length) {
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="7" class="p-4 border-0">
+                    <div class="text-center py-4" role="alert">
+                        <div class="text-danger mb-2">
+                            ${escapeHtmlCentralEntradas(centralEntradasState.erroDocumentos.mensagem)}
+                        </div>
+                        <button type="button" class="btn btn-sm btn-outline-primary" id="centralBtnRetryDocumentos">
+                            Tentar novamente
+                        </button>
+                    </div>
+                </td>
+            </tr>
+        `;
+        if (contador) contador.textContent = 'Erro ao carregar';
         return;
     }
 
@@ -1185,6 +1349,10 @@ function renderPaginacaoCentral() {
  * Painel lateral — abas
  * ============================================================ */
 
+function dashboardNsu() {
+    return centralEntradasState.sincronizacaoNsu?.ultNsu || '';
+}
+
 function renderPainelLateralPlaceholder() {
     const painel = document.getElementById('centralEntradasPainelLateral');
     if (!painel) return;
@@ -1202,6 +1370,10 @@ function renderPainelLateralPlaceholder() {
 }
 
 const CENTRAL_TIMELINE_ICONES = {
+    RECEBIDA: { icone: 'fa-envelope', cor: '#94a3b8' },
+    AGUARDANDO_XML: { icone: 'fa-hourglass-half', cor: '#64748b' },
+    XML_RECUPERANDO: { icone: 'fa-sync', cor: '#475569' },
+    ERRO_RECUPERACAO: { icone: 'fa-unlink', cor: '#dc3545' },
     SINCRONIZADA: { icone: 'fa-cloud-download-alt', cor: '#0d6efd' },
     EM_PROCESSAMENTO: { icone: 'fa-cog', cor: '#f59e0b' },
     AGUARDANDO_REVISAO: { icone: 'fa-user-check', cor: '#fd7e14' },
@@ -1293,6 +1465,8 @@ function renderAcoesPipelineCentral(doc) {
         : '';
 
     const podeProcessar = doc.status === 'SINCRONIZADA' && !processando;
+    const podeRecuperarXml = ['AGUARDANDO_XML', 'ERRO_RECUPERACAO'].includes(doc.status) && !processando;
+    const podeReprocessar = ['ERRO', 'AGUARDANDO_REVISAO', 'REVISADA', 'PRONTA_PARA_COMPRA'].includes(doc.status) && !processando;
     const podeAbrirCompra = ['PRONTA_PARA_COMPRA', 'EM_COMPRA', 'REVISADA'].includes(doc.status) && doc.parseDisponivel;
     const aguardandoRevisao = doc.status === 'AGUARDANDO_REVISAO';
 
@@ -1300,6 +1474,16 @@ function renderAcoesPipelineCentral(doc) {
     if (podeProcessar) {
         acoesHtml += `<button type="button" class="btn btn-primary btn-sm w-100 mb-2" id="centralBtnProcessar" data-doc-id="${doc.id}">
             <i class="fas fa-cogs me-1"></i> Processar documento
+        </button>`;
+    }
+    if (podeRecuperarXml) {
+        acoesHtml += `<button type="button" class="btn btn-outline-secondary btn-sm w-100 mb-2" id="centralBtnRecuperarXml" data-doc-id="${doc.id}">
+            <i class="fas fa-download me-1"></i> Recuperar XML
+        </button>`;
+    }
+    if (podeReprocessar) {
+        acoesHtml += `<button type="button" class="btn btn-outline-primary btn-sm w-100 mb-2" id="centralBtnReprocessar" data-doc-id="${doc.id}">
+            <i class="fas fa-redo me-1"></i> Reprocessar
         </button>`;
     }
     if (aguardandoRevisao && typeof MiipCentralRevisao !== 'undefined') {
@@ -1651,39 +1835,70 @@ function renderPainelLateralCentral(detalhe) {
  * Ações — sincronização, processamento, revisão, compra
  * ============================================================ */
 
-async function carregarDashboardCentral() {
+async function carregarDashboardCentral(opcoes = {}) {
+    return guardaDashboardCentral.executar(() => carregarDashboardCentralInterno(opcoes));
+}
+
+async function carregarDashboardCentralInterno(opcoes = {}) {
+    const {
+        dashboardPronto = null,
+        buscarHealth = true,
+        buscarInteligencia = true
+    } = opcoes;
+
+    const jaTemDados = Boolean(centralEntradasState.ultimoDashboardContadores);
+    const mostrarSkeleton = cargaCentral().deveMostrarSkeletonKpis
+        ? cargaCentral().deveMostrarSkeletonKpis({ jaTemDados, forcarSkeleton: opcoes.forcarSkeleton })
+        : !jaTemDados;
+
     const cardsContainer = document.getElementById('centralEntradasCards');
     const indicadoresContainer = document.getElementById('centralEntradasIndicadores');
 
     centralEntradasState.carregandoDashboard = true;
-    if (cardsContainer) {
-        cardsContainer.innerHTML = centralUx().renderSkeletonKpisCentral?.(6) || '';
-    }
-    if (indicadoresContainer) {
-        indicadoresContainer.innerHTML = centralUx().renderSkeletonIndicadoresCentral?.() || '';
+    if (mostrarSkeleton) {
+        if (cardsContainer) {
+            cardsContainer.innerHTML = centralUx().renderSkeletonKpisCentral?.(7) || '';
+        }
+        if (indicadoresContainer && !centralEntradasState.indicadores) {
+            indicadoresContainer.innerHTML = centralUx().renderSkeletonIndicadoresCentral?.() || '';
+        }
     }
 
     try {
-        const dashboard = await centralEntradasFetch('/dashboard');
-        centralEntradasState.ultimoDashboardContadores = dashboard.contadores || {};
+        const dashboard = dashboardPronto || await centralEntradasFetch('/dashboard');
+        aplicarPayloadDashboardCentral(dashboard);
 
-        if (cardsContainer) {
-            cardsContainer.innerHTML = renderCardsDashboardCentral(dashboard.contadores || {});
+        if (buscarHealth) {
+            centralEntradasFetch('/health')
+                .then((health) => {
+                    centralEntradasState.health = health;
+                    renderPainelServicoCentral();
+                    renderIndicadoresCentral();
+                })
+                .catch(() => null);
         }
 
-        centralEntradasState.indicadores = dashboard.indicadores || null;
-        centralEntradasState.ultimaSincronizacao = dashboard.ultimaSincronizacao || dashboard.sincronizacao?.dataSincronizacao || null;
-        centralEntradasState.sincronizacaoNsu = dashboard.sincronizacao || null;
-        renderIndicadoresCentral();
-        await carregarInteligenciaCentral();
+        if (buscarInteligencia) {
+            carregarInteligenciaCentral();
+        }
+        return dashboard;
     } catch (error) {
-        if (cardsContainer) {
+        if (cardsContainer && !jaTemDados) {
             cardsContainer.innerHTML = '<div class="col-12 text-danger small">Erro ao carregar dashboard.</div>';
         }
         throw error;
     } finally {
         centralEntradasState.carregandoDashboard = false;
     }
+}
+
+async function atualizarDashboardAposSyncCentral(sync) {
+    if (cargaCentral().temContadoresValidos?.(sync?.dashboard?.contadores)) {
+        aplicarPayloadDashboardCentral(sync.dashboard);
+        carregarInteligenciaCentral();
+        return;
+    }
+    await carregarDashboardCentral({ buscarInteligencia: true, buscarHealth: true });
 }
 
 function atualizarIndicadorSyncBotao() {
@@ -1716,10 +1931,24 @@ async function sincronizarCentralEntradas() {
             const msg = resultado.notasNovas > 0
                 ? `${resultado.notasNovas} nova${resultado.notasNovas === 1 ? '' : 's'} nota${resultado.notasNovas === 1 ? '' : 's'} encontrada${resultado.notasNovas === 1 ? '' : 's'}.`
                 : 'Sincronização concluída. Nenhuma nota nova.';
-            showNotification(msg, 'success');
+            const tecnico = [
+                resultado.cStat ? `cStat ${resultado.cStat}` : null,
+                resultado.xMotivo || null,
+                resultado.ultNsu ? `NSU ${resultado.ultNsu}` : null
+            ].filter(Boolean).join(' — ');
+            showNotification(tecnico ? `${msg} ${tecnico}` : msg, 'success');
+            if (resultado.ultimaSincronizacao) {
+                centralEntradasState.ultimaSincronizacao = resultado.ultimaSincronizacao;
+            }
         } else {
-            const erros = (resultado.erros || []).join('; ') || resultado.mensagem || 'Falha na sincronização';
-            showNotification('Sincronização: ' + erros, 'warning');
+            const erros = resultado.erro?.mensagem
+                || (resultado.erros || []).join('; ')
+                || resultado.mensagem
+                || 'Falha na sincronização';
+            showNotification((resultado.erro?.codigo ? `[${resultado.erro.codigo}] ` : '') + erros, 'warning');
+            if (resultado.erro?.codigo === 'SEFAZ_INDISPONIVEL' || resultado.erro?.codigo === 'SEFAZ_ENDPOINT' || resultado.erro?.codigo === 'TIMEOUT') {
+                centralEntradasState.sefazDisponivel = false;
+            }
         }
 
         await Promise.all([
@@ -1856,6 +2085,50 @@ async function processarDocumentoCentral(documentoId) {
     }
 }
 
+async function recuperarXmlDocumentoCentral(documentoId) {
+    try {
+        const resultado = await centralEntradasFetch(`/${documentoId}/recuperar-xml`, {
+            method: 'POST',
+            body: JSON.stringify({ usuario_id: obterUsuarioLogadoCentral()?.id })
+        });
+        if (resultado.recuperado) {
+            showNotification('XML recuperado. O documento permanece o mesmo, sem duplicidade.', 'success');
+        } else {
+            showNotification(resultado.mensagem || 'XML ainda indisponível. O documento continua em espera.', 'info');
+        }
+        await Promise.all([
+            carregarDashboardCentral(),
+            carregarDocumentosCentral()
+        ]);
+        await selecionarDocumentoCentral(documentoId);
+    } catch (error) {
+        showNotification('Erro ao recuperar XML: ' + error.message, 'danger');
+    }
+}
+
+async function reprocessarDocumentoCentral(documentoId) {
+    try {
+        const resultado = await centralEntradasFetch(`/${documentoId}/reprocessar`, {
+            method: 'POST',
+            body: JSON.stringify({ usuario_id: obterUsuarioLogadoCentral()?.id })
+        });
+        if (resultado.idempotente && !resultado.reprocessado) {
+            showNotification(resultado.motivo || 'Reprocessamento bloqueado para não duplicar efeitos.', 'info');
+        } else if (resultado.sucesso) {
+            showNotification(resultado.mensagem || 'Reprocessamento concluído.', 'success');
+        } else {
+            showNotification(resultado.mensagem || 'Falha no reprocessamento.', 'danger');
+        }
+        await Promise.all([
+            carregarDashboardCentral(),
+            carregarDocumentosCentral()
+        ]);
+        await selecionarDocumentoCentral(documentoId);
+    } catch (error) {
+        showNotification('Erro ao reprocessar: ' + error.message, 'danger');
+    }
+}
+
 async function abrirRevisaoMiipCentral(documentoId) {
     try {
         const payload = await centralEntradasFetch(`/${documentoId}/payload-compra`);
@@ -1963,9 +2236,42 @@ async function exportarXmlCentral(documentoId) {
  * ============================================================ */
 
 async function carregarDocumentosCentral(opcoes = {}) {
-    if (centralEntradasState.carregando) return;
+    if (centralEntradasState.abortDocumentos) {
+        try { centralEntradasState.abortDocumentos.abort(); } catch { /* ignore */ }
+    }
+
+    const requestId = (centralEntradasState.requestIdDocumentos || 0) + 1;
+    centralEntradasState.requestIdDocumentos = requestId;
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    centralEntradasState.abortDocumentos = controller;
+
+    const execucao = carregarDocumentosCentralInterno(opcoes, requestId, controller);
+    centralEntradasState.promessaDocumentos = execucao;
+    try {
+        return await execucao;
+    } finally {
+        if (centralEntradasState.promessaDocumentos === execucao) {
+            centralEntradasState.promessaDocumentos = null;
+        }
+        if (centralEntradasState.abortDocumentos === controller) {
+            centralEntradasState.abortDocumentos = null;
+        }
+    }
+}
+
+async function carregarDocumentosCentralInterno(opcoes, requestId, controller) {
+    const Carga = cargaCentral();
+    const jaTemDocumentos = (centralEntradasState.documentos || []).length > 0;
     centralEntradasState.carregando = true;
+    centralEntradasState.erroDocumentos = jaTemDocumentos ? centralEntradasState.erroDocumentos : null;
     renderGridCentralEntradas();
+
+    const timeoutMs = Carga.TIMEOUT_LISTAGEM_MS || 20000;
+    const timeoutId = controller
+        ? setTimeout(() => {
+            try { controller.abort(); } catch { /* ignore */ }
+        }, timeoutMs)
+        : null;
 
     try {
         if (opcoes.pagina) centralEntradasState.pagina = opcoes.pagina;
@@ -1988,17 +2294,40 @@ async function carregarDocumentosCentral(opcoes = {}) {
             }
         });
 
-        const resultado = await centralEntradasFetch(`/?${params.toString()}`);
+        const resultado = await centralEntradasFetch(`/?${params.toString()}`, {
+            signal: controller?.signal
+        });
+
+        if (Carga.deveAplicarRespostaListagem
+            && !Carga.deveAplicarRespostaListagem(centralEntradasState.requestIdDocumentos, requestId)) {
+            return null;
+        }
+
         centralEntradasState.documentos = resultado.documentos || [];
         centralEntradasState.total = resultado.paginacao?.total || 0;
         centralEntradasState.totalPaginas = resultado.paginacao?.totalPaginas || 1;
         centralEntradasState.pagina = resultado.paginacao?.pagina || 1;
-
-        renderGridCentralEntradas();
+        centralEntradasState.erroDocumentos = null;
     } catch (error) {
-        showNotification('Erro ao carregar documentos: ' + error.message, 'danger');
+        if (error && error.name === 'AbortError') {
+            return null;
+        }
+        if (Carga.deveAplicarRespostaListagem
+            && !Carga.deveAplicarRespostaListagem(centralEntradasState.requestIdDocumentos, requestId)) {
+            return null;
+        }
+        centralEntradasState.erroDocumentos = Carga.montarEstadoErroListagem
+            ? Carga.montarEstadoErroListagem(error)
+            : { mensagem: 'Não foi possível carregar os documentos da Central.', detalhe: error.message };
+        console.error('[Central Entradas] Falha ao listar documentos:', error);
+        showNotification(centralEntradasState.erroDocumentos.mensagem, 'danger');
     } finally {
-        centralEntradasState.carregando = false;
+        if (timeoutId) clearTimeout(timeoutId);
+        if (!Carga.deveAplicarRespostaListagem
+            || Carga.deveAplicarRespostaListagem(centralEntradasState.requestIdDocumentos, requestId)) {
+            centralEntradasState.carregando = false;
+            renderGridCentralEntradas();
+        }
     }
 }
 
@@ -2102,6 +2431,16 @@ function bindEventosCentralEntradas() {
     $(document).on('click.centralEntradas', '#centralBtnProcessar', function () {
         const id = Number($(this).data('doc-id'));
         if (id) processarDocumentoCentral(id);
+    });
+
+    $(document).on('click.centralEntradas', '#centralBtnRecuperarXml', function () {
+        const id = Number($(this).data('doc-id'));
+        if (id) recuperarXmlDocumentoCentral(id);
+    });
+
+    $(document).on('click.centralEntradas', '#centralBtnReprocessar', function () {
+        const id = Number($(this).data('doc-id'));
+        if (id) reprocessarDocumentoCentral(id);
     });
 
     $(document).on('click.centralEntradas', '#centralBtnRevisarMiip', function () {
@@ -2219,6 +2558,10 @@ function bindEventosCentralEntradas() {
         if (event.which === 13) buscarChaveCentralEntradas();
     });
 
+    $(document).on('click.centralEntradas', '#centralBtnRetryDocumentos', function () {
+        carregarDocumentosCentral({ pagina: 1 });
+    });
+
     $(document).on('click.centralEntradas', '#centralBtnFiltrar', function () {
         centralEntradasState.pagina = 1;
         carregarDocumentosCentral();
@@ -2316,6 +2659,13 @@ function loadCentralEntradas() {
     centralEntradasState.xmlAtual = null;
     centralEntradasState.parseAtual = null;
     centralEntradasState.abaAtiva = 'resumo';
+    centralEntradasState.carregando = false;
+    centralEntradasState.erroDocumentos = null;
+    centralEntradasState.promessaDocumentos = null;
+    if (centralEntradasState.abortDocumentos) {
+        try { centralEntradasState.abortDocumentos.abort(); } catch { /* ignore */ }
+        centralEntradasState.abortDocumentos = null;
+    }
 
     const html = `
         <div class="central-entradas-page">
@@ -2403,6 +2753,8 @@ function loadCentralEntradas() {
             <div id="centralEntradasViewInbox">
 
             <div id="centralEntradasAtencao" class="mb-3"></div>
+
+            <div id="centralEntradasBannerSync" class="mb-3 d-none"></div>
 
             <div id="centralEntradasIndicadores" class="mb-3"></div>
 
@@ -2593,30 +2945,66 @@ function loadCentralEntradas() {
     iniciarAutomacaoCentral();
 
     const posGravacao = sessionStorage.getItem('central_pos_gravacao');
+    iniciarAberturaCentralEntradas({ posGravacao });
+}
 
-    centralEntradasFetch('/metadados')
-        .then((metadados) => {
-            centralEntradasState.metadados = metadados;
-            const select = document.getElementById('centralFiltroStatus');
-            if (select) select.innerHTML = montarOptionsStatusCentral('');
-            renderFiltrosRapidosCentral();
-            return Promise.all([
-                centralEntradasFetch('/sincronizar-ao-abrir', { method: 'POST' }).catch(() => null),
-                carregarDashboardCentral(),
-                carregarDocumentosCentral()
-            ]);
-        })
-        .then(() => {
-            if (posGravacao) {
-                sessionStorage.removeItem('central_pos_gravacao');
-                const docId = Number(posGravacao);
-                if (docId) {
-                    showNotification('Compra lançada com sucesso.', 'success');
-                    selecionarDocumentoCentral(docId);
-                }
+async function iniciarAberturaCentralEntradas({ posGravacao } = {}) {
+    const Carga = cargaCentral();
+    if (typeof Carga.orquestrarAberturaCentral !== 'function') {
+        showNotification('Erro ao inicializar Central: orquestração indisponível.', 'danger');
+        return;
+    }
+
+    try {
+        await Carga.orquestrarAberturaCentral({
+            buscarAoAbrir: () => centralEntradasFetch('/ao-abrir'),
+            buscarMetadados: () => centralEntradasFetch('/metadados'),
+            buscarDocumentos: () => carregarDocumentosCentral(),
+            buscarInteligencia: () => carregarInteligenciaCentral(),
+            sincronizarAoAbrir: () => centralEntradasFetch('/sincronizar-ao-abrir', { method: 'POST' }),
+            atualizarDashboard: () => carregarDashboardCentral({
+                buscarHealth: true,
+                buscarInteligencia: false
+            }),
+            pintarKpis: (contadores) => aplicarPayloadDashboardCentral({
+                contadores,
+                indicadores: centralEntradasState.indicadores,
+                sincronizacao: centralEntradasState.sincronizacaoNsu,
+                ultimaSincronizacao: centralEntradasState.ultimaSincronizacao
+            }),
+            aplicarDashboard: (dashboard) => aplicarPayloadDashboardCentral(dashboard || {}),
+            aplicarAbertura: (abertura) => aplicarAberturaCentral(abertura || {}),
+            aplicarHealth: (health) => {
+                centralEntradasState.health = health;
+                renderPainelServicoCentral();
+            },
+            aplicarInteligencia: () => {},
+            aplicarMetadados: (metadados) => {
+                centralEntradasState.metadados = metadados;
+                const select = document.getElementById('centralFiltroStatus');
+                if (select) select.innerHTML = montarOptionsStatusCentral('');
+                renderFiltrosRapidosCentral();
+            },
+            tratarSync: (sync) => {
+                tratarResultadoSyncAberturaCentral(sync);
+            },
+            registrarErro: (error) => {
+                console.warn('Central de Entradas:', error?.message || error);
             }
-        })
-        .catch((error) => {
-            showNotification('Erro ao inicializar Central: ' + error.message, 'danger');
         });
+
+        if (posGravacao) {
+            sessionStorage.removeItem('central_pos_gravacao');
+            const docId = Number(posGravacao);
+            if (docId) {
+                showNotification('Compra lançada com sucesso.', 'success');
+                selecionarDocumentoCentral(docId);
+            }
+        }
+    } catch (error) {
+        showNotification('Erro ao inicializar Central: ' + error.message, 'danger');
+        if (!centralEntradasState.ultimoDashboardContadores) {
+            carregarDashboardCentral().catch(() => null);
+        }
+    }
 }

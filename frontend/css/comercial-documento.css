@@ -1,0 +1,422 @@
+/**
+ * Documento comercial — Novo orçamento e Novo pedido direto.
+ * Não altera a Nova NF-e nem o footer global do ERP.
+ */
+
+.ped-doc {
+  --ped-doc-line: var(--color-border, #e2e8f0);
+  max-width: 100%;
+  overflow-x: clip;
+  padding-bottom: 30px;
+  color: var(--color-text, #1f2937);
+}
+
+.ped-doc [hidden] {
+  display: none !important;
+}
+
+.ped-doc-breadcrumb {
+  margin-bottom: 0.75rem;
+}
+
+.ped-doc-header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem 1rem;
+  margin-bottom: 1rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--ped-doc-line);
+}
+
+.ped-doc-header .cds-page-title {
+  margin: 0;
+  font-size: 1.35rem;
+  line-height: 1.2;
+}
+
+.ped-doc-header .cds-subtitle {
+  margin: 0.15rem 0 0;
+}
+
+.ped-doc-corpo {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 17.5rem;
+  gap: 1rem;
+  align-items: start;
+}
+
+.ped-doc-secao {
+  margin-bottom: 1rem;
+}
+
+.ped-doc-secao__topo,
+.ped-doc-secao__acoes {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+}
+
+.ped-doc-contador {
+  font-size: 0.8125rem;
+  color: var(--color-text-secondary, #64748b);
+}
+
+.ped-doc .cds-label {
+  display: block;
+  margin-bottom: 0.25rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.ped-doc-ajuda {
+  margin: 0.35rem 0 0.75rem;
+  font-size: 0.8125rem;
+  color: var(--color-text-secondary, #64748b);
+}
+
+.ped-doc-ajuda:empty {
+  display: none;
+}
+
+#pedNovoCliente[size]:not([size="1"]) {
+  height: auto;
+  background-image: none;
+  padding-right: 0.75rem;
+}
+
+.ped-doc-ficha {
+  margin-top: 0.85rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--ped-doc-line);
+  border-radius: 0.75rem;
+  background: var(--color-surface, #fff);
+}
+
+.ped-doc-ficha h3 {
+  margin: 0 0 0.35rem;
+  font-size: 1rem;
+}
+
+.ped-doc-ficha p {
+  margin: 0.15rem 0;
+  font-size: 0.875rem;
+}
+
+.ped-doc-vazio {
+  padding: 1rem 0 0.25rem;
+  color: var(--color-text-secondary, #64748b);
+}
+
+.ped-doc-grade {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.ped-doc-grade table {
+  min-width: 52rem;
+  margin-bottom: 0;
+}
+
+.ped-doc-num,
+.ped-doc-subtotal {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ped-doc-qtd,
+.ped-doc-preco {
+  width: 7.5rem;
+}
+
+.ped-doc-produto {
+  min-width: 10rem;
+}
+
+.ped-doc-condicoes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.ped-doc-resumo {
+  align-self: stretch;
+}
+
+.ped-doc-resumo > .cds-card {
+  position: sticky;
+  top: 0.75rem;
+}
+
+.ped-doc-resumo__linha,
+.ped-doc-resumo__total {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.75rem;
+}
+
+.ped-doc-resumo__linha {
+  margin-bottom: 0.45rem;
+  font-size: 0.875rem;
+}
+
+.ped-doc-resumo__divisor {
+  margin: 0.75rem 0;
+  border: 0;
+  border-top: 1px solid var(--ped-doc-line);
+}
+
+.ped-doc-resumo__total span {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--color-text-secondary, #64748b);
+}
+
+.ped-doc-resumo__total strong {
+  font-size: 1.45rem;
+  line-height: 1.1;
+  color: var(--color-primary-800, #1a73e8);
+  font-variant-numeric: tabular-nums;
+}
+
+.ped-doc-rodape {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--ped-doc-line);
+}
+
+@media (max-width: 991.98px) {
+  .ped-doc-corpo,
+  .ped-doc-condicoes {
+    grid-template-columns: 1fr;
+  }
+
+  .ped-doc-resumo > .cds-card {
+    position: static;
+  }
+}
+
+#ped-impressao {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  overflow: auto;
+  background: #e8edf3;
+  padding: 1rem 1rem 2.5rem;
+}
+
+.ped-impressao-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  max-width: 210mm;
+  margin: 0 auto 0.75rem;
+}
+
+.ped-impressao-folha {
+  width: 210mm;
+  max-width: 100%;
+  margin: 0 auto;
+  padding: 14mm;
+  background: #fff;
+  color: #111827;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+  font-family: "Segoe UI", Arial, sans-serif;
+}
+
+.ped-impressao-marca {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.ped-impressao-tipo {
+  margin: 0.15rem 0 0;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  color: #64748b;
+}
+
+.ped-impressao-folha h1 {
+  margin: 0.35rem 0 0;
+  font-size: 1.55rem;
+  letter-spacing: 0.06em;
+}
+
+.ped-impressao-topo {
+  padding-bottom: 0.75rem;
+  border-bottom: 2px solid #111827;
+}
+
+.ped-impressao-meta,
+.ped-impressao-bloco p,
+.ped-impressao-resumo p {
+  margin: 0.2rem 0;
+}
+
+.ped-impressao-meta span,
+.ped-impressao-bloco p span {
+  display: inline-block;
+  min-width: 9.5rem;
+  color: #475569;
+}
+
+.ped-impressao-bloco {
+  margin-top: 1rem;
+}
+
+.ped-impressao-bloco h2,
+.ped-impressao-folha h2 {
+  margin: 0 0 0.35rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+}
+
+.ped-impressao-tabela {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.ped-impressao-tabela th,
+.ped-impressao-tabela td {
+  padding: 0.35rem 0.4rem;
+  border-bottom: 1px solid #e2e8f0;
+  text-align: left;
+  vertical-align: top;
+}
+
+.ped-impressao-tabela th {
+  font-size: 0.72rem;
+  letter-spacing: 0.03em;
+  color: #475569;
+}
+
+.ped-impressao-tabela .num,
+.ped-impressao-resumo {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.ped-impressao-resumo {
+  margin-top: 0.85rem;
+  margin-left: auto;
+  width: min(16rem, 100%);
+}
+
+.ped-impressao-resumo p {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.ped-impressao-total {
+  margin-top: 0.35rem;
+  padding-top: 0.35rem;
+  border-top: 2px solid #111827;
+  font-size: 1.05rem;
+}
+
+.ped-impressao-obs {
+  white-space: pre-wrap;
+}
+
+.ped-impressao-rodape {
+  margin-top: 1.5rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid #e2e8f0;
+  font-size: 0.75rem;
+  color: #64748b;
+}
+
+.ped-impressao-rodape p {
+  margin: 0;
+}
+
+@page {
+  size: A4;
+  margin: 12mm;
+}
+
+@media print {
+  html, body {
+    overflow: visible !important;
+    height: auto !important;
+    background: #fff !important;
+  }
+
+  body > *:not(#ped-impressao) {
+    display: none !important;
+  }
+
+  #ped-impressao {
+    position: static;
+    overflow: visible;
+    background: #fff;
+    padding: 0;
+  }
+
+  .ped-impressao-toolbar {
+    display: none !important;
+  }
+
+  .ped-impressao-folha {
+    width: auto;
+    max-width: none;
+    margin: 0;
+    padding: 0;
+    box-shadow: none;
+  }
+
+  .ped-impressao-tabela thead {
+    display: table-header-group;
+  }
+
+  .ped-impressao-tabela tr,
+  .ped-impressao-bloco,
+  .ped-impressao-resumo {
+    break-inside: avoid;
+  }
+}
+
+.modal-footer.ped-pedido-rodape {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 0.5rem;
+}
+
+.ped-pedido-acoes {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.5rem;
+  width: 100%;
+}
+
+.ped-pedido-acoes .btn {
+  margin: 0;
+  white-space: nowrap;
+}
+
+.ped-pedido-motivo {
+  width: 100%;
+  margin: 0;
+  text-align: left;
+  font-size: 0.8125rem;
+  line-height: 1.35;
+  color: #b45309;
+}

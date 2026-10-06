@@ -150,20 +150,15 @@ export async function renderHub(root) {
     root.querySelector('#ce-sync')?.addEventListener('click', async () => {
       try {
         showToast('Sincronizando…', 'info');
-        await ceFetch('/sincronizar', { method: 'POST', body: JSON.stringify({ usuario_id: currentUserId() }) });
+        const resultado = await ceFetch('/sincronizar', { method: 'POST', body: JSON.stringify({ usuario_id: currentUserId() }) });
+        if (resultado?.sucesso === false) {
+          showToast(resultado.erro?.mensagem || resultado.mensagem || 'SEFAZ indisponível', 'error');
+          return;
+        }
         showToast('Sincronização concluída.', 'success');
         renderHub(root);
       } catch (err) {
-        try {
-          await ceFetch('/sincronizar-ao-abrir', {
-            method: 'POST',
-            body: JSON.stringify({ usuario_id: currentUserId() })
-          });
-          showToast('Sincronização ao abrir OK.', 'success');
-          renderHub(root);
-        } catch (err2) {
-          showToast(err2.message || err.message || 'Falha ao sincronizar', 'error');
-        }
+        showToast(err.message || 'Falha ao sincronizar', 'error');
       }
     });
   } catch (err) {

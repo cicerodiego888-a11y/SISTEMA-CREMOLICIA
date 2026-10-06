@@ -43,9 +43,7 @@ router.post("/selecionar-pasta", (req, res) => {
 });
 
 router.post("/manual", (req, res) => {
-  const dbPath =
-    process.env.DB_PATH ||
-    path.join("C:", "projetos", "MercantilFiscal", "dados", "mercadao.db");
+  const dbPath = process.env.DB_PATH || db.dbPath;
 
   db.get(
     "SELECT valor FROM configuracoes WHERE chave = 'backup_path'",
@@ -77,7 +75,7 @@ router.post("/manual", (req, res) => {
 });
 
 router.get('/history', (req, res) => {
-  const dbPath = process.env.DB_PATH || path.join('C:', 'projetos', 'MercantilFiscal', 'dados', 'mercadao.db');
+  const dbPath = process.env.DB_PATH || db.dbPath;
   const pastaBackup = req.query.pasta || null;
   try {
     const historico = listarHistoricoBackups(pastaBackup, Number(req.query.limite) || 50);

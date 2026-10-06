@@ -55,6 +55,8 @@ class CentralOperacionalDashboardService {
       pendenciasCriticas,
       filas: {
         novas: contadoresPorStatus[DocumentoFiscalStatus.SINCRONIZADA] || 0,
+        aguardandoXml: (contadoresPorStatus[DocumentoFiscalStatus.AGUARDANDO_XML] || 0)
+          + (contadoresPorStatus[DocumentoFiscalStatus.XML_RECUPERANDO] || 0),
         emProcessamento: contadoresPorStatus[DocumentoFiscalStatus.EM_PROCESSAMENTO] || 0,
         aguardandoRevisao: contadoresPorStatus[DocumentoFiscalStatus.AGUARDANDO_REVISAO] || 0,
         prontasParaCompra: contadoresPorStatus[DocumentoFiscalStatus.PRONTA_PARA_COMPRA] || 0,
@@ -63,6 +65,7 @@ class CentralOperacionalDashboardService {
         erros: contadoresPorStatus[DocumentoFiscalStatus.ERRO] || 0
       },
       ultimaSincronizacao: ultimoNsu?.dataSincronizacao || ultimoNsu?.updatedAt || null,
+      ultimoNsu: ultimoNsu?.ultNsu || null,
       alertasResumo: {
         total: alertas.total,
         tipos: (alertas.alertas || []).length

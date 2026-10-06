@@ -44,6 +44,8 @@ class ClienteCadastroView {
     this.dirty = false;
     this.perfisExistentes = [];
     this.capacidadesState = {};
+    this.tipoComercialId = null;
+    this._cadastroCarregado = false;
     this._cepBuscaTimer = null;
     this._ultimoCepConsultado = '';
     this._cepAbort = null;
@@ -155,6 +157,7 @@ class ClienteCadastroView {
       }
       this._ultimoCepConsultado = cep;
       this._setFieldValue('rua', data.logradouro || '');
+      this._setFieldValue('bairro', data.bairro || '');
       this._setFieldValue('cidade', data.localidade || '');
       this._setFieldValue('uf', data.uf || '');
       this._markDirty();
@@ -211,6 +214,12 @@ class ClienteCadastroView {
     wrap.appendChild(this._fieldGrid([
       Input.create({ label: 'Nome', name: 'nome', required: true, onChange: () => this._markDirty() }),
       Input.create({ label: 'CPF/CNPJ', name: 'cpf_cnpj', onChange: () => this._markDirty() }),
+      Input.create({
+        label: 'Inscrição Estadual',
+        name: 'inscricao_estadual',
+        placeholder: 'Número ou ISENTO',
+        onChange: () => this._markDirty()
+      }),
       Input.create({ label: 'Telefone', name: 'telefone', onChange: () => this._markDirty() }),
       Input.create({ label: 'Celular', name: 'celular', onChange: () => this._markDirty() }),
       Input.create({ label: 'Email', name: 'email', type: 'email', onChange: () => this._markDirty() }),
@@ -221,6 +230,8 @@ class ClienteCadastroView {
         onChange: (value) => this._onCepChange(value)
       }),
       Input.create({ label: 'Endereço', name: 'rua', onChange: () => this._markDirty() }),
+      Input.create({ label: 'Número', name: 'numero', onChange: () => this._markDirty() }),
+      Input.create({ label: 'Bairro', name: 'bairro', onChange: () => this._markDirty() }),
       Input.create({ label: 'Cidade', name: 'cidade', onChange: () => this._markDirty() }),
       Input.create({ label: 'Estado', name: 'uf', onChange: () => this._markDirty() })
     ]));
@@ -335,6 +346,7 @@ class ClienteCadastroView {
 
       this.perfisExistentes = perfisResult.items || [];
       this._preencherDadosCadastrais(cliente);
+      this._cadastroCarregado = true;
       this._preencherCapacidades(this.perfisExistentes);
     } catch (error) {
       const host = document.getElementById('cliente-cadastro-form');
@@ -345,12 +357,16 @@ class ClienteCadastroView {
   }
 
   _preencherDadosCadastrais(cliente = {}) {
+    this.tipoComercialId = cliente.tipo_comercial_id ?? null;
     this._setFieldValue('nome', cliente.nome);
     this._setFieldValue('cpf_cnpj', cliente.cpf_cnpj);
+    this._setFieldValue('inscricao_estadual', cliente.inscricao_estadual);
     this._setFieldValue('telefone', cliente.telefone);
     this._setFieldValue('email', cliente.email);
     this._setFieldValue('cep', cliente.cep);
     this._setFieldValue('rua', cliente.rua);
+    this._setFieldValue('numero', cliente.numero);
+    this._setFieldValue('bairro', cliente.bairro);
     this._setFieldValue('cidade', cliente.cidade);
     this._setFieldValue('uf', cliente.uf);
   }
@@ -398,19 +414,29 @@ class ClienteCadastroView {
     const limiteCreditoCap = this._getFieldValue('cap-credito-limite-credito');
     if (limiteCreditoCap) limiteCredito = Number(limiteCreditoCap) || 0;
 
-    return {
+    const cadastro = {
       nome: this._getFieldValue('nome'),
       cpf_cnpj: this._getFieldValue('cpf_cnpj'),
+      inscricao_estadual: this._getFieldValue('inscricao_estadual'),
       telefone: telefoneFinal,
       email: this._getFieldValue('email'),
       cep: this._getFieldValue('cep'),
       rua: this._getFieldValue('rua'),
-      numero: '',
-      bairro: '',
+      numero: this._getFieldValue('numero'),
+      bairro: this._getFieldValue('bairro'),
       cidade: this._getFieldValue('cidade'),
-      uf: this._getFieldValue('uf'),
-      limite_credito: limiteCredito
+      uf: this._getFieldValue('uf')
     };
+    // Na edição, o limite de crédito só é enviado quando a capacidade Crédito está marcada;
+    // fora dela o PUT preserva o limite atual do cliente.
+    if (!this.isEdit || this._capacidadeMarcada('credito')) cadastro.limite_credito = limiteCredito;
+    if (this.isEdit && this.tipoComercialId != null) cadastro.tipo_comercial_id = this.tipoComercialId;
+    return cadastro;
+  }
+
+  _capacidadeMarcada(key) {
+    const input = document.querySelector(`[data-cap-key="${key}"] [data-role="cap-check"] input`);
+    return !!(input && input.checked);
   }
 
   _coletarCapacidadesHabilitadas() {
@@ -517,6 +543,10 @@ class ClienteCadastroView {
   }
 
   async _salvar() {
+    if (this.isEdit && !this._cadastroCarregado) {
+      notify('Os dados do cliente não foram carregados. Recarregue a tela antes de salvar.', 'error');
+      return;
+    }
     const cadastro = this._coletarDadosCadastrais();
     if (!cadastro.nome) {
       notify('Informe o nome do cliente.', 'warning');
