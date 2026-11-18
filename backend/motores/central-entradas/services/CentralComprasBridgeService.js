@@ -13,6 +13,12 @@ const { validarTransicao } = require('../core/MaquinaEstadosDocumento');
 const { paraDocumentoDetalheDTO } = require('../utils/centralEntradasMapper');
 const CentralDocumentosRepository = require('../repositories/CentralDocumentosRepository');
 const CentralHistoricoService = require('./CentralHistoricoService');
+const { resolverDb } = require('../repositories/dbHelpers');
+const {
+  validarProdutosIdentificadosCompra,
+  CODIGO_VINCULO_INVALIDO,
+  MENSAGEM_VINCULO_INVALIDO_REVISAO
+} = require('../../../modules/compras/resolverProdutoItem');
 
 class CentralComprasBridgeService {
   /**
@@ -27,6 +33,9 @@ class CentralComprasBridgeService {
     /** @private */
     this._historicoService = deps.historicoService
       ?? new CentralHistoricoService();
+    /** @private */
+    this._validarProdutos = deps.validarProdutos
+      ?? ((itens) => validarProdutosIdentificadosCompra(resolverDb(deps.db ?? null), itens));
   }
 
   /**
@@ -135,6 +144,28 @@ class CentralComprasBridgeService {
       throw erro;
     }
 
+    const parse = await this._obterOuGerarPayloadParse(documento);
+    const problemas = await this._validarProdutos(Array.isArray(parse.itens) ? parse.itens : []);
+    if (problemas.length) {
+      if (documento.status !== DocumentoFiscalStatus.AGUARDANDO_REVISAO) {
+        await this._transicionar(
+          documentoId,
+          documento.status,
+          DocumentoFiscalStatus.AGUARDANDO_REVISAO,
+          {
+            detalhe: MENSAGEM_VINCULO_INVALIDO_REVISAO,
+            usuarioId: opcoes.usuarioId
+          }
+        );
+      }
+
+      const erro = new Error(MENSAGEM_VINCULO_INVALIDO_REVISAO);
+      erro.statusCode = 409;
+      erro.codigo = CODIGO_VINCULO_INVALIDO;
+      erro.itens = problemas;
+      throw erro;
+    }
+
     if (documento.status !== DocumentoFiscalStatus.EM_COMPRA) {
       await this._transicionar(
         documentoId,
@@ -179,6 +210,15 @@ class CentralComprasBridgeService {
 
     const parseAtual = documento.parseJson || {};
     const itensAtualizados = Array.isArray(dados.itens) ? dados.itens : parseAtual.itens;
+
+    const problemas = await this._validarProdutos(Array.isArray(itensAtualizados) ? itensAtualizados : []);
+    if (problemas.length) {
+      const erro = new Error(MENSAGEM_VINCULO_INVALIDO_REVISAO);
+      erro.statusCode = 409;
+      erro.codigo = CODIGO_VINCULO_INVALIDO;
+      erro.itens = problemas;
+      throw erro;
+    }
 
     const parseAtualizado = {
       ...parseAtual,

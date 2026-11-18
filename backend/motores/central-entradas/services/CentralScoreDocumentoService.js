@@ -7,7 +7,10 @@
  * @class CentralScoreDocumentoService
  */
 
-const { DocumentoFiscalStatus } = require('../core/DocumentoFiscalStatus');
+const {
+  DocumentoFiscalStatus,
+  STATUS_XML_COMPLETO_LEGADO
+} = require('../core/DocumentoFiscalStatus');
 const { calcularPrecisaoImportacao } = require('../../miip/utils/miipCentralRevisaoUtils');
 
 const PESOS = Object.freeze({
@@ -29,6 +32,7 @@ const SCORE_POR_STATUS = Object.freeze({
   [DocumentoFiscalStatus.AGUARDANDO_XML]: 40,
   [DocumentoFiscalStatus.XML_RECUPERANDO]: 42,
   [DocumentoFiscalStatus.ERRO_RECUPERACAO]: 20,
+  [STATUS_XML_COMPLETO_LEGADO]: 50,
   [DocumentoFiscalStatus.RECEBIDA]: 55,
   [DocumentoFiscalStatus.ERRO]: 15,
   [DocumentoFiscalStatus.DUPLICADA]: 25,

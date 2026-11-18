@@ -13,6 +13,7 @@ const { inspecionarCertificadoPfx } = require('./certificateService');
 const sefazGate = require('../../motores/central-entradas/services/CentralSefazOperationalGate');
 const { TIPOS_CONSULTA } = sefazGate;
 const CentralDfePersistenciaService = require('../../motores/central-entradas/services/CentralDfePersistenciaService');
+const CentralProcessamentoService = require('../../motores/central-entradas/services/CentralProcessamentoService');
 const CentralDocumentosRepository = require('../../motores/central-entradas/repositories/CentralDocumentosRepository');
 const CentralNsuRepository = require('../../motores/central-entradas/repositories/CentralNsuRepository');
 const CentralNsuControleService = require('../../motores/central-entradas/services/CentralNsuControleService');
@@ -28,6 +29,11 @@ const {
 const { emitirEvento } = require('../../motores/central-entradas/utils/centralEventosEmitter');
 const { TIPOS_EVENTO, ORIGENS } = require('../../motores/central-entradas/config/centralEventosTipos');
 const { criarErroSefaz } = require('./sefazErroOperacional');
+const {
+  STATUS_XML_COMPLETO_LEGADO,
+  DocumentoFiscalStatus
+} = require('../../motores/central-entradas/core/DocumentoFiscalStatus');
+const { xmlPossuiNfeCompleta } = require('../../motores/central-entradas/core/xmlDocumento');
 
 const MAX_ITERACOES_SYNC = 50;
 
@@ -177,7 +183,7 @@ function criarErroConsumoIndevido(retorno, janela) {
  * @param {string} origem
  * @returns {Promise<{ notasNovas: number, notasDuplicadas: number, ignorados: number }>}
  */
-async function persistirDocumentosRetorno(xmlRetorno, persistencia, origem) {
+async function persistirDocumentosRetorno(xmlRetorno, persistencia, origem, processamentoService = null) {
   const documentos = extrairDocumentosZip(xmlRetorno);
   let notasNovas = 0;
   let notasDuplicadas = 0;
@@ -199,6 +205,36 @@ async function persistirDocumentosRetorno(xmlRetorno, persistencia, origem) {
     if (resultado.recuperado) recuperados += 1;
     if (resultado.aguardandoXml) xmlAguardando += 1;
     else if (resultado.novo || resultado.recuperado) xmlCompleto += 1;
+
+    const documentoPersistido = resultado.documento;
+    const statusAguardandoProcessamento = [
+      DocumentoFiscalStatus.SINCRONIZADA,
+      STATUS_XML_COMPLETO_LEGADO
+    ].includes(documentoPersistido?.status);
+    const precisaProcessamento = (resultado.novo || resultado.recuperado || resultado.duplicado)
+      && statusAguardandoProcessamento
+      && !documentoPersistido.parseJson
+      && xmlPossuiNfeCompleta(documentoPersistido.xml);
+
+    if (precisaProcessamento) {
+      processamentoService ??= new CentralProcessamentoService();
+      try {
+        const processamento = await processamentoService.processar(documentoPersistido.id, { origem });
+        if (!processamento.sucesso) {
+          console.error('[CE][PROCESSAMENTO] Falha no processamento automático', {
+            documentoId: documentoPersistido.id,
+            etapa: processamento.etapaAtual,
+            mensagem: processamento.mensagem
+          });
+        }
+      } catch (error) {
+        if (error.statusCode !== 409) throw error;
+        console.info('[CE][PROCESSAMENTO] Execução concorrente ou documento já processado', {
+          documentoId: documentoPersistido.id,
+          mensagem: error.message
+        });
+      }
+    }
 
     const chave = resultado.documento?.chave || null;
     console.log('[CE][XML]', {
@@ -333,7 +369,12 @@ async function sincronizarDistribuicaoDFe(deps = {}) {
       });
     }
 
-    const persistidos = await persistirDocumentosRetorno(xmlRetorno, persistencia, 'dfe');
+    const persistidos = await persistirDocumentosRetorno(
+      xmlRetorno,
+      persistencia,
+      'dfe',
+      deps.processamentoService
+    );
     console.log('[CE][XML] persistidos', persistidos);
     notasNovasTotal += persistidos.notasNovas;
     notasDuplicadasTotal += persistidos.notasDuplicadas;
@@ -465,7 +506,12 @@ async function consultarNotaPorChave(chave, deps = {}) {
     throw new Error(metadados.xMotivo || `SEFAZ retornou cStat ${metadados.cStat}`);
   }
 
-  const persistidos = await persistirDocumentosRetorno(xmlRetorno, persistencia, 'consulta_chave');
+  const persistidos = await persistirDocumentosRetorno(
+    xmlRetorno,
+    persistencia,
+    'consulta_chave',
+    deps.processamentoService
+  );
 
   await emitirEvento({
     tipo: TIPOS_EVENTO.CONSULTA,

@@ -92,7 +92,8 @@ function criarDbFake(produtoInicial) {
           operacao: params[4],
           origem: params[5],
           lote_id: params[6],
-          motor: params[13]
+          motor: params[13],
+          local: params[14] ?? null
         });
         return cb && cb.call({ lastID: id, changes: 1 }, null);
       }
@@ -142,6 +143,7 @@ async function main() {
     assert.strictEqual(r.motor, 'MotorEstoque');
     assert.ok(r.movimentacao);
     assert.strictEqual(r.movimentacao.quantidade_base, 10);
+    assert.strictEqual(r.movimentacao.local, null);
     assert.ok(!('quantidade_comercial' in r.movimentacao));
   });
 

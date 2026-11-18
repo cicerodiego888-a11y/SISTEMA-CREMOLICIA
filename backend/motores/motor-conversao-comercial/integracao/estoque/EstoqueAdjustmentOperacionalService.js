@@ -12,6 +12,7 @@ const ConversaoFisicaLoteRepository = require('../../repositories/ConversaoFisic
 const { MOTOR_NOME, ContextoConversao } = require('../../domain/enums');
 const UcRepository = require('../../../unidades-comercializacao/repositories/ProdutoUnidadeComercialRepository');
 const ConversaoRepository = require('../../../muc/repositories/ProdutoConversaoRepository');
+const MotorEstoque = require('../../../motor-estoque');
 
 function flagOn(v) {
   return v === true || v === 1 || v === '1';
@@ -229,9 +230,16 @@ class EstoqueAdjustmentOperacionalService {
 
     const deltaFiscalBase = convFiscal ? Number(convFiscal.quantidadeConvertida) : 0;
     const deltaNaoFiscalBase = convNaoFiscal ? Number(convNaoFiscal.quantidadeConvertida) : 0;
-    const saldoFiscal = Number(produto.saldo_fiscal || 0);
-    const saldoNaoFiscal = Number(produto.saldo_nao_fiscal || 0);
-    const estoqueAtual = Number(produto.estoque_atual || (saldoFiscal + saldoNaoFiscal));
+    const local = String(body.local || 'LOJA').trim().toUpperCase();
+    if (local !== MotorEstoque.LOCAL_FABRICA && local !== MotorEstoque.LOCAL_LOJA) {
+      const err = new Error('Local de estoque inválido.');
+      err.status = 400;
+      throw err;
+    }
+    const saldoLocal = await MotorEstoque.consultarSaldoLocal(db, produtoId, local);
+    const saldoFiscal = Number(saldoLocal.saldoFiscal || 0);
+    const saldoNaoFiscal = Number(saldoLocal.saldoNaoFiscal || 0);
+    const estoqueAtual = Number(saldoLocal.estoqueAtual || (saldoFiscal + saldoNaoFiscal));
     const unidadeBase = String(produto.unidade_base || produto.unidade || 'UN').toUpperCase();
 
     const qtdInformadaTotal = round3(qtdFiscal + qtdNaoFiscal);
@@ -240,6 +248,7 @@ class EstoqueAdjustmentOperacionalService {
     return {
       ok: true,
       produto_id: Number(produtoId),
+      local,
       unidade_origem: unidadeOrigem,
       unidade_base: unidadeBase,
       quantidade_informada: qtdInformadaTotal,

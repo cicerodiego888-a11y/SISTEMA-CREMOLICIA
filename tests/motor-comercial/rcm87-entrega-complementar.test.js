@@ -6,6 +6,7 @@
  */
 
 const assert = require('assert');
+const fs = require('fs');
 const path = require('path');
 
 process.chdir(path.resolve(__dirname, '../..'));
@@ -28,6 +29,8 @@ const {
 } = require('../../frontend/modules/motor-comercial/pages/EntregaComplementar/entregaComplementarMappers');
 const { criarMockOutboxService, adaptarUowParaOutbox } = require('./outbox-test-helpers');
 const { OUTBOX_EVENT_TYPES } = require('../../backend/motores/motor-comercial/integrations/outbox/OutboxEventTypes');
+const LipSearchService = require('../../frontend/shared/components/LIP/LipSearchService');
+const { MENSAGEM_PRODUTO_LINHA_CONVERTIDO } = require('../../backend/modules/fabrica-loja/produtoLinhaConvertido');
 
 let passou = 0;
 let falhou = 0;
@@ -237,6 +240,34 @@ function criarDeps(consignacaoRepo, itemRepo, extras = {}) {
 async function main() {
   console.log('\nRCM-8.7 — Entrega Complementar\n');
 
+  await test('seletor da entrega usa busca comercial sem sugestões históricas antigas', async () => {
+    const pageSource = fs.readFileSync(
+      path.join(__dirname, '../../frontend/modules/motor-comercial/pages/EntregaComplementar/index.js'),
+      'utf8'
+    );
+    assert.match(pageSource, /showHistory:\s*false/);
+    assert.match(pageSource, /searchServiceOptions:\s*\{\s*contexto:\s*'pdv'\s*\}/);
+
+    const fetchOriginal = global.fetch;
+    let urlConsultada;
+    global.fetch = async (url) => {
+      urlConsultada = String(url);
+      return { ok: true, json: async () => ({ items: [{ id: 201, ativo: 1 }] }) };
+    };
+    try {
+      const search = new LipSearchService({
+        getApiUrl: () => 'http://isolado.test/api',
+        getToken: () => null,
+        contexto: 'pdv'
+      });
+      const resultado = await search.search('picolé');
+      assert.strictEqual(new URL(urlConsultada).searchParams.get('contexto'), 'pdv');
+      assert.deepStrictEqual(resultado.items.map((item) => item.id), [201]);
+    } finally {
+      global.fetch = fetchOriginal;
+    }
+  });
+
   await test('1. adicionar produto em consignação ENTREGUE', async () => {
     const deps = criarDeps(
       criarMockConsignacaoRepo(criarConsignacao()),
@@ -272,6 +303,94 @@ async function main() {
     assert.strictEqual(result.itensNovos.length, 1);
     assert.strictEqual(Number(result.itensNovos[0].produtoId), 200);
     assert.strictEqual(deps.consignacaoRepository.store.status, 'ENTREGUE');
+  });
+
+  await test('bloqueia produto-linha convertido sem gravar itens, movimentações ou outbox', async () => {
+    const itemOriginal = criarItemOriginal({
+      consignacaoId: 158,
+      produtoId: 50,
+      quantidadeEntregue: 30
+    });
+    const itemRepo = criarMockItemRepo([itemOriginal]);
+    const deps = criarDeps(
+      criarMockConsignacaoRepo(criarConsignacao({ id: 158 })),
+      itemRepo,
+      {
+        produtoBridge: {
+          buscarPorId: async (id, opts) => {
+            assert.strictEqual(opts.canal, 'CONSIGNADO');
+            return { id: Number(id), nome: `Produto ${id}`, precoVenda: 40, unidadeComercial: 'UN' };
+          },
+          estaAtivo: async () => true,
+          motivoBloqueioComercial: async (id) => Number(id) === 50
+            ? MENSAGEM_PRODUTO_LINHA_CONVERTIDO
+            : null
+        }
+      }
+    );
+
+    await assert.rejects(
+      async () => unwrap(await new RegistrarEntregaComplementarUseCase(deps).executar({
+        consignacaoId: 158,
+        itens: [{ produtoId: 50, quantidade: 3 }],
+        correlationId: 'linha-convertida-bloqueada'
+      })),
+      (error) => error.message.includes(MENSAGEM_PRODUTO_LINHA_CONVERTIDO)
+    );
+    assert.deepStrictEqual(itemRepo.itens.map((item) => [item.produtoId, item.quantidadeEntregue]), [[50, 30]]);
+    assert.strictEqual(deps.movRepo.movimentacoes.length, 0);
+    assert.strictEqual(deps.outboxService._repository.store.size, 0);
+    assert.strictEqual(deps.eventPublisher.publicados.length, 0);
+  });
+
+  await test('entrega os produtos individuais selecionados com suas quantidades sem alterar o item legado', async () => {
+    const itemOriginal = criarItemOriginal({
+      consignacaoId: 158,
+      produtoId: 50,
+      quantidadeEntregue: 30
+    });
+    const itemRepo = criarMockItemRepo([itemOriginal]);
+    const deps = criarDeps(
+      criarMockConsignacaoRepo(criarConsignacao({ id: 158 })),
+      itemRepo,
+      {
+        produtoBridge: {
+          buscarPorId: async (id, opts) => {
+            assert.strictEqual(opts.canal, 'CONSIGNADO');
+            return { id: Number(id), nome: `Produto ${id}`, precoVenda: 40, unidadeComercial: 'UN' };
+          },
+          estaAtivo: async () => true,
+          motivoBloqueioComercial: async (id) => Number(id) === 50
+            ? MENSAGEM_PRODUTO_LINHA_CONVERTIDO
+            : null
+        }
+      }
+    );
+
+    const resultado = unwrap(await new RegistrarEntregaComplementarUseCase(deps).executar({
+      consignacaoId: 158,
+      itens: [
+        { produtoId: 201, quantidade: 7 },
+        { produtoId: 202, quantidade: 4 }
+      ],
+      correlationId: 'itens-individuais-complementar'
+    }));
+
+    assert.deepStrictEqual(
+      itemRepo.itens.map((item) => [Number(item.produtoId), Number(item.quantidadeEntregue)]),
+      [[50, 30], [201, 7], [202, 4]]
+    );
+    assert.deepStrictEqual(
+      resultado.itensNovos.map((item) => [Number(item.produtoId), Number(item.quantidadeIncremental)]),
+      [[201, 7], [202, 4]]
+    );
+    const eventoEstoque = [...deps.outboxService._repository.store.values()]
+      .find((evento) => evento.eventType === OUTBOX_EVENT_TYPES.ESTOQUE_BAIXAR_PRODUTO);
+    assert.deepStrictEqual(
+      eventoEstoque.payload.itens.map((item) => [Number(item.produtoId), Number(item.quantidadeIncremental)]),
+      [[201, 7], [202, 4]]
+    );
+    assert.strictEqual(deps.movRepo.movimentacoes.length, 2);
   });
 
   await test('2. criar Entrega Complementar vinculada à consignação', async () => {

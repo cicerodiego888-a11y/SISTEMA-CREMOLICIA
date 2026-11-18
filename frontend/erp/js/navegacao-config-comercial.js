@@ -11,14 +11,14 @@ Object.assign(window.ERP_NAV_CATALOG, {
     page: 'venda-no-atacado',
     titulo: 'Configuração Comercial',
     aliases: ['configuracao-comercial', 'venda-no-atacado', 'venda no atacado'],
-    caminho: ['Configurações', 'Comercial', 'Configuração Comercial'],
+    caminho: ['Administração e Configurações', 'Configuração Comercial'],
     grupo: 'configuracoes-comercial'
   },
   'configuracao-comercial': {
     page: 'venda-no-atacado',
     titulo: 'Configuração Comercial',
     aliases: ['configuracao-comercial', 'venda-no-atacado'],
-    caminho: ['Configurações', 'Comercial', 'Configuração Comercial'],
+    caminho: ['Administração e Configurações', 'Configuração Comercial'],
     grupo: 'configuracoes-comercial',
     redirectTo: 'venda-no-atacado'
   },
@@ -26,7 +26,7 @@ Object.assign(window.ERP_NAV_CATALOG, {
     page: 'canais-venda',
     titulo: 'Canais de Venda',
     aliases: ['canais-venda', 'canais de venda', 'canal de venda'],
-    caminho: ['Configurações', 'Comercial', 'Canais de Venda'],
+    caminho: ['Administração e Configurações', 'Canais de Venda'],
     grupo: 'configuracoes-comercial'
   },
   'tipos-comerciais': {
@@ -39,7 +39,7 @@ Object.assign(window.ERP_NAV_CATALOG, {
       'tipo de cliente',
       'tipos de cliente'
     ],
-    caminho: ['Configurações', 'Comercial', 'Tipos Comerciais'],
+    caminho: ['Administração e Configurações', 'Tipos Comerciais'],
     grupo: 'configuracoes-comercial'
   },
   'tabelas-preco': {
@@ -58,7 +58,7 @@ Object.assign(window.ERP_NAV_CATALOG, {
       'central de precificação',
       'central de precificacao'
     ],
-    caminho: ['Configurações', 'Comercial', 'Central de Precificação'],
+    caminho: ['Administração e Configurações', 'Central de Precificação'],
     grupo: 'configuracoes-comercial'
   },
   'linhas-comerciais': {
@@ -77,28 +77,28 @@ Object.assign(window.ERP_NAV_CATALOG, {
       'politica comercial',
       'política comercial'
     ],
-    caminho: ['Configurações', 'Comercial', 'Linhas de Precificação'],
+    caminho: ['Administração e Configurações', 'Linhas de Precificação'],
     grupo: 'configuracoes-comercial'
   },
   'casquinha-sabores': {
     page: 'casquinha-sabores',
     titulo: 'Sabores de Casquinha',
     aliases: ['casquinha-sabores', 'sabores', 'sabores casquinha'],
-    caminho: ['Configurações', 'Comercial', 'Sabores'],
+    caminho: ['Administração e Configurações', 'Sabores de Casquinha'],
     grupo: 'configuracoes-comercial'
   },
   'kits-combos': {
     page: 'kits-combos',
     titulo: 'Kits e Combos',
     aliases: ['kits-combos', 'kits', 'combos', 'kit', 'combo'],
-    caminho: ['Configurações', 'Comercial', 'Kits e Combos'],
+    caminho: ['Administração e Configurações', 'Kits e Combos'],
     grupo: 'configuracoes-comercial'
   },
   'diagnostico-comercial': {
     page: 'diagnostico-comercial',
     titulo: 'Diagnóstico Comercial',
     aliases: ['diagnostico-comercial', 'diagnóstico comercial'],
-    caminho: ['Configurações', 'Comercial', 'Diagnóstico Comercial'],
+    caminho: ['Administração e Configurações', 'Diagnóstico Comercial'],
     grupo: 'configuracoes-comercial'
   },
   fiscal: {
@@ -207,24 +207,16 @@ function pesquisarNavErp(termo) {
 }
 
 /**
- * Expande submenu Configurações → Comercial ao abrir páginas do grupo.
+ * Destaca o destino comercial direto no grupo administrativo.
  */
 function destacarNavConfigComercial(page) {
   const meta = (window.ERP_NAV_CATALOG || {})[page];
   if (!meta || meta.grupo !== 'configuracoes-comercial') return;
 
-  const cfg = document.getElementById('submenu-configuracoes');
-  const com = document.getElementById('submenu-config-comercial');
-  if (cfg && window.bootstrap) {
-    bootstrap.Collapse.getOrCreateInstance(cfg, { toggle: false }).show();
-  } else if (cfg) {
-    cfg.classList.add('show');
-  }
-  if (com && window.bootstrap) {
-    bootstrap.Collapse.getOrCreateInstance(com, { toggle: false }).show();
-  } else if (com) {
-    com.classList.add('show');
-  }
+  const links = Array.from(document.querySelectorAll('#sidebar-nav .nav-link[data-page]'));
+  links.forEach((link) => link.classList.remove('active'));
+  const link = links.find((item) => item.dataset.page === page);
+  if (link) link.classList.add('active');
 }
 
 window.resolverPaginaErpNav = resolverPaginaErpNav;

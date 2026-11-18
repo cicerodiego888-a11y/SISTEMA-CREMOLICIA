@@ -19,6 +19,15 @@ const MotorEstoque = require('../../motores/motor-estoque');
 const mcc = require('../../motores/motor-conversao-comercial');
 const { publicarEventoPdvArMfe } = require('../../motores/motor-financeiro/adapters');
 const { obterMotor, FeatureFlag } = require('../../motores/motor-financeiro');
+const {
+  origemEhPdv,
+  listarInsumosEntreProdutos,
+  respostaInsumoPdv
+} = require('../pdv/produtoComercializavelPdv');
+const {
+  listarProdutosLinhaConvertidos,
+  respostaProdutoLinhaConvertido
+} = require('../../modules/fabrica-loja/produtoLinhaConvertido');
 
 const { agoraLocalBrasil, validarSomaPagamentosVenda } = VendaFinanceiroService;
 const { emitirFiscalSeSolicitado, responderVendaComFiscal } = VendaFiscalService;
@@ -359,6 +368,12 @@ function isOrigemConsignacao(body = {}) {
   const origem = body.origem || (body.metadata && body.metadata.origem) || '';
   return String(origem).toUpperCase() === 'CONSIGNACAO'
     || String(origem).toUpperCase() === 'CONSIGNACAO_PRESTACAO';
+}
+
+/** Acerto de consignação já entregue: a mercadoria saiu na entrega, não é venda nova. */
+function vendaDeConsignacaoExistente(req) {
+  const body = req.body || {};
+  return isOrigemConsignacao(body) || isPoliticaEstoqueJaBaixado(body) || resolverOrigemPdv(req) === 'CONSIGNACAO';
 }
 
 /**
@@ -970,6 +985,21 @@ const produtoIds = Array.from(
   new Set(itens.map((item) => item.produto_id).filter((id) => id !== undefined && id !== null))
 );
 
+const verificarInsumos = origemEhPdv(resolverOrigemPdv(req))
+  ? listarInsumosEntreProdutos(db, produtoIds)
+  : Promise.resolve([]);
+const verificarConvertidos = vendaDeConsignacaoExistente(req)
+  ? Promise.resolve([])
+  : listarProdutosLinhaConvertidos(db, produtoIds);
+
+Promise.all([verificarInsumos, verificarConvertidos]).then(([insumos, convertidos]) => {
+if (insumos.length) {
+  return res.status(409).json({ sucesso: false, ...respostaInsumoPdv(insumos) });
+}
+if (convertidos.length) {
+  return res.status(409).json({ sucesso: false, ...respostaProdutoLinhaConvertido(convertidos) });
+}
+
 db.all(`
   SELECT
     id,
@@ -1038,6 +1068,9 @@ db.all(`
     valor_nao_fiscal: totalNaoFiscal,
     itens: itensDistribuidos
   });
+});
+}).catch((err) => {
+  res.status(500).json({ sucesso: false, error: err?.message || String(err) });
 });
 }
 
@@ -1209,6 +1242,19 @@ db.all(`
 
   // PDV-01 — MCC converte comercial → base antes de distribuir / baixar estoque
   (async () => {
+    if (origemEhPdv(origemPdvGravar)) {
+      const insumos = await listarInsumosEntreProdutos(db, produtoIds);
+      if (insumos.length) {
+        return res.status(409).json(respostaInsumoPdv(insumos));
+      }
+    }
+    if (!vendaDeConsignacaoExistente(req)) {
+      const convertidos = await listarProdutosLinhaConvertidos(db, produtoIds);
+      if (convertidos.length) {
+        return res.status(409).json(respostaProdutoLinhaConvertido(convertidos));
+      }
+    }
+
     let itensParaDistribuir = itens;
     if (!pularBaixaEstoque) {
       itensParaDistribuir = [];

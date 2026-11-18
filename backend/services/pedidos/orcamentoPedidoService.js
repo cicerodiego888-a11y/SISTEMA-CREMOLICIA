@@ -12,6 +12,11 @@
 'use strict';
 
 const faturamento = require('../vendas/faturamentoNfeService');
+const {
+  CODIGO_PRODUTO_LINHA_CONVERTIDO,
+  MENSAGEM_PRODUTO_LINHA_CONVERTIDO,
+  listarProdutosLinhaConvertidos
+} = require('../../modules/fabrica-loja/produtoLinhaConvertido');
 
 const STATUS_ORCAMENTO = Object.freeze(['RASCUNHO', 'APRESENTADO', 'APROVADO', 'REPROVADO', 'CANCELADO']);
 const STATUS_PEDIDO = Object.freeze(['ABERTO', 'FATURADO', 'CANCELADO']);
@@ -116,6 +121,8 @@ async function normalizarDadosComerciais(db, dados) {
   const ids = [...new Set(itens.map((i) => i.produto_id))];
   const existentes = await all(db, `SELECT id FROM produtos WHERE id IN (${ids.map(() => '?').join(',')})`, ids);
   if (existentes.length !== ids.length) throw erro('Um ou mais produtos não foram encontrados.', 'PRODUTO_NAO_ENCONTRADO', 404);
+  const convertidos = await listarProdutosLinhaConvertidos(db, ids);
+  if (convertidos.length) throw erro(MENSAGEM_PRODUTO_LINHA_CONVERTIDO, CODIGO_PRODUTO_LINHA_CONVERTIDO, 409);
   const totais = faturamento.totaisComerciais(itens, dados.desconto);
   const forma = dados.forma_pagamento ?? dados.formaPagamento;
   const formaPagamento = forma ? String(forma).trim().toLowerCase() : 'dinheiro';

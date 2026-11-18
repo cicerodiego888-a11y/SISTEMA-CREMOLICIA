@@ -27,6 +27,13 @@ class ProdutoBridgeAdapter extends IProdutoBridge {
   async estaAtivo(produtoId) {
     return this._platform.estaAtivo(produtoId);
   }
+
+  /** @inheritdoc */
+  async motivoBloqueioComercial(produtoId) {
+    return typeof this._platform.motivoBloqueioComercial === 'function'
+      ? this._platform.motivoBloqueioComercial(produtoId)
+      : null;
+  }
 }
 
 module.exports = ProdutoBridgeAdapter;

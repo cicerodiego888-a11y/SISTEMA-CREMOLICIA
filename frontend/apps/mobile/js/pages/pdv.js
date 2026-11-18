@@ -315,6 +315,23 @@ async function recalcularCarrinhoViaResolver(root, aberto) {
   }
 }
 
+/** Regra do carrinho Mobile: PESO/VOLUME/CASQUINHA/KIT viram linha nova; UNIDADE soma no item já existente. */
+function incluirItemNoCarrinhoMobile(next, item) {
+  const formaUp = String(item.forma_comercializacao || '').toUpperCase();
+  if (formaUp === 'PESO' || formaUp === 'VOLUME' || formaUp === 'CASQUINHA' || formaUp === 'KIT') {
+    next.push(item);
+    return next;
+  }
+  const existing = next.find((x) => {
+    if (String(x.id) !== String(item.id)) return false;
+    const fx = String(x.forma_comercializacao || '').toUpperCase();
+    return !fx || fx === 'UNIDADE';
+  });
+  if (existing) existing.qtd = Number(existing.qtd) + Number(item.qtd);
+  else next.push(item);
+  return next;
+}
+
 function unwrapItems(payload) {
   if (Array.isArray(payload)) return payload;
   if (Array.isArray(payload?.items)) return payload.items;
@@ -1124,6 +1141,9 @@ async function renderVenderTab(root, caixa) {
       <button type="button" class="cds-quick" data-go="clientes/novo">Cadastro rápido</button>
       <button type="button" class="cds-quick" id="pdv-muc-scan">MUC / barras</button>
     </div>
+    <button type="button" class="cds-quick" id="pdv-venda-linha" style="display:none;width:100%;margin:0 0 8px">
+      Vender por Linha
+    </button>
     <div id="pdv-results">${emptyHtml('Busque um produto')}</div>
     ${sectionTitleHtml('Carrinho')}
     <div id="pdv-cart"></div>
@@ -1132,6 +1152,7 @@ async function renderVenderTab(root, caixa) {
   bindGo(root);
   paintCart(root, aberto);
   bindTerminalStatusUi(root);
+  bindVendaPorLinhaMobile(root, aberto);
 
   const results = root.querySelector('#pdv-results');
   // Foco inicial para scanner / digitação contínua
@@ -1148,7 +1169,7 @@ async function renderVenderTab(root, caixa) {
       try {
         payload = await window.CDSApi.get('produtos/consulta-pdv/buscar', { q, termo: q, busca: q });
       } catch (e1) {
-        payload = await window.CDSApi.get('produtos/search', { q, limite: 20 });
+        payload = await window.CDSApi.get('produtos/search', { q, limite: 20, contexto: 'pdv' });
       }
       const items = unwrapItems(payload);
       results.innerHTML = items.length
@@ -1327,18 +1348,7 @@ async function renderVenderTab(root, caixa) {
             resolver: 'Motor Oficial'
           };
           const next = loadCart();
-          const formaUp = String(itemForma || '').toUpperCase();
-          if (formaUp === 'PESO' || formaUp === 'VOLUME' || formaUp === 'CASQUINHA' || formaUp === 'KIT') {
-            next.push(item);
-          } else {
-            const existing = next.find((x) => {
-              if (String(x.id) !== String(item.id)) return false;
-              const fx = String(x.forma_comercializacao || '').toUpperCase();
-              return !fx || fx === 'UNIDADE';
-            });
-            if (existing) existing.qtd = Number(existing.qtd) + Number(item.qtd);
-            else next.push(item);
-          }
+          incluirItemNoCarrinhoMobile(next, item);
           saveCart(next);
           showToast('Produto adicionado.', 'success');
           await recalcularCarrinhoViaResolver(root, aberto);
@@ -1361,7 +1371,7 @@ async function renderVenderTab(root, caixa) {
     });
     if (!data?.codigo) return;
     try {
-      const muc = await window.CDSApi.get(`produtos/muc/barras/${encodeURIComponent(data.codigo)}`);
+      const muc = await window.CDSApi.get(`produtos/muc/barras/${encodeURIComponent(data.codigo)}`, { contexto: 'pdv' });
       const p = muc?.produto || muc?.data || muc;
       if (!p?.id && !muc?.produto_id) {
         showToast('MUC não encontrado.', 'warning');
@@ -1663,6 +1673,354 @@ async function renderVendaDetalhe(root, id) {
   }
 }
 
+function carregarComercializacaoMobile() {
+  if (!window.PdvComercializacao || !window.CDSApi) return Promise.resolve(null);
+  return window.PdvComercializacao.carregar((caminho) => window.CDSApi.get(caminho));
+}
+
+function atualizarOpcaoVendaPorLinhaMobile(root) {
+  const botao = root?.querySelector?.('#pdv-venda-linha');
+  if (!botao) return;
+  const visivel = !!window.PdvVendaPorLinha && window.PdvVendaPorLinha.opcaoVisivel(window.PdvComercializacao);
+  botao.style.display = visivel ? '' : 'none';
+}
+
+function bindVendaPorLinhaMobile(root, aberto) {
+  const botao = root.querySelector('#pdv-venda-linha');
+  if (!botao) return;
+  botao.addEventListener('click', () => abrirVendaPorLinhaMobile(root, aberto));
+  atualizarOpcaoVendaPorLinhaMobile(root);
+  window.PdvComercializacao?.pronto?.()
+    .then(() => atualizarOpcaoVendaPorLinhaMobile(root))
+    .catch(() => null);
+}
+
+/**
+ * Venda por Linha → carrinho Mobile: preço pelo Resolver oficial (com o carrinho atual como contexto)
+ * e inclusão pela mesma regra da busca de produto. Tudo ou nada: o carrinho só é gravado se todos entrarem.
+ */
+async function adicionarDistribuicaoLinhaNoCarrinhoMobile(distribuicao, produtos) {
+  const itens = ((distribuicao && distribuicao.distribuicao) || []).filter((item) => Number(item.quantidade) > 0);
+  if (!itens.length) return { ok: false, mensagem: 'Nenhum produto com quantidade para adicionar.' };
+  const porId = new Map((produtos || []).map((produto) => [Number(produto.id), produto]));
+  const next = loadCart();
+  let resolvido;
+  try {
+    resolvido = await resolverPrecosOficial(montarItensResolver(next).concat(itens.map((item) => ({
+      produto_id: Number(item.produto_id),
+      quantidade: Number(item.quantidade)
+    }))));
+  } catch (e) {
+    return { ok: false, mensagem: e.message || 'Não foi possível obter o preço oficial do Resolver.' };
+  }
+  const linhas = ((resolvido && resolvido.itens) || []).slice().reverse();
+
+  const novos = [];
+  for (const item of itens) {
+    const produto = porId.get(Number(item.produto_id));
+    if (!produto) return { ok: false, mensagem: 'Produto não pertence à linha selecionada.' };
+    const row = linhas.find((r) => Number(r.produto_id) === Number(item.produto_id));
+    const preco = row && !row.erro ? Number(row.preco_venda) : NaN;
+    if (!(preco > 0)) {
+      return { ok: false, mensagem: `Não foi possível encontrar o preço de ${produto.nome}.` };
+    }
+    const forma = String(row.forma_comercializacao || '').toUpperCase() || 'UNIDADE';
+    if (forma === 'KIT' || forma === 'CASQUINHA') {
+      return { ok: false, mensagem: `${produto.nome} precisa de montagem. Adicione pela busca de produto.` };
+    }
+    const porPeso = forma === 'PESO' || forma === 'VOLUME';
+    if (!porPeso && !Number.isInteger(Number(item.quantidade))) {
+      return { ok: false, mensagem: `A quantidade de ${produto.nome} deve ser inteira.` };
+    }
+    const unidade = String(row.unidade_comercial || '').toUpperCase() || null;
+    novos.push({
+      id: String(produto.id),
+      nome: produto.nome,
+      codigo: produto.codigo || '',
+      preco,
+      qtd: Number(item.quantidade),
+      forma_comercializacao: forma,
+      unidade_comercial: unidade || (forma === 'PESO' ? 'KG' : (forma === 'VOLUME' ? 'LITRO' : null)),
+      tipo_venda: porPeso ? 'PESO' : 'UNIDADE',
+      canal: String(row.canal || resolvido?.canal || resolvido?.meta?.canal || 'VAREJO').toUpperCase(),
+      quantidade_bolas: null,
+      sabores: null,
+      kit_id: null,
+      kit_itens: null,
+      preco_origem: row.preco_origem || null,
+      tabela_preco_id: row.tabela_preco_id || null,
+      tabela_preco_nome: row.tabela_preco_nome || null,
+      linha_comercial_id: row.linha_comercial_id || null,
+      preco_congelado: false,
+      resolver: 'Motor Oficial'
+    });
+  }
+
+  novos.forEach((novo) => incluirItemNoCarrinhoMobile(next, novo));
+  saveCart(next);
+  return { ok: true, itens: novos.length };
+}
+
+function abrirVendaPorLinhaMobile(root, aberto) {
+  const VendaPorLinha = window.PdvVendaPorLinha;
+  if (!VendaPorLinha || !VendaPorLinha.opcaoVisivel(window.PdvComercializacao) || !window.CDSApi) return;
+  const consultar = (caminho) => window.CDSApi.get(caminho);
+  VendaPorLinha.limpar();
+
+  const sheet = openBottomSheet({
+    title: 'Vender por Linha',
+    bodyHtml: '<div id="pdv-linha-corpo"></div>',
+    actionsHtml: `
+      <button type="button" class="cds-mobile-btn cds-mobile-btn--secondary" id="pdv-linha-voltar" style="display:none">Voltar</button>
+      <button type="button" class="cds-mobile-btn cds-mobile-btn--secondary" data-sheet-close>Fechar</button>
+      <button type="button" class="cds-mobile-btn" id="pdv-linha-continuar" style="display:none">Continuar</button>
+    `
+  });
+  sheet.querySelector('[data-sheet-close]')?.addEventListener('click', () => VendaPorLinha.limpar());
+  sheet.querySelector('.cds-sheet__backdrop')?.addEventListener('click', () => VendaPorLinha.limpar());
+  const corpo = sheet.querySelector('#pdv-linha-corpo');
+  const voltar = sheet.querySelector('#pdv-linha-voltar');
+  const continuar = sheet.querySelector('#pdv-linha-continuar');
+  let buscaAtual = 0;
+  let etapa = 'busca';
+
+  const listarLinhas = async (termo) => {
+    const lista = corpo.querySelector('#pdv-linha-lista');
+    if (!lista) return;
+    const consulta = ++buscaAtual;
+    lista.innerHTML = loadingHtml('Buscando…');
+    try {
+      const linhas = await VendaPorLinha.buscarLinhas(consultar, termo);
+      if (consulta !== buscaAtual) return;
+      lista.innerHTML = linhas.length
+        ? linhas.map((linha) => `
+            <button type="button" class="cds-list-card" data-linha-id="${escapeHtml(linha.id)}">
+              <div class="cds-list-card__main">
+                <h3 class="cds-list-card__title">${escapeHtml(linha.nome)}</h3>
+                ${linha.codigo ? `<p class="cds-list-card__subtitle">${escapeHtml(linha.codigo)}</p>` : ''}
+              </div>
+            </button>
+          `).join('')
+        : emptyHtml(VendaPorLinha.MENSAGEM_NENHUMA_LINHA);
+    } catch (e) {
+      if (consulta !== buscaAtual) return;
+      lista.innerHTML = emptyHtml(e.message || 'Não foi possível buscar as linhas.');
+    }
+  };
+
+  const mostrarBusca = () => {
+    VendaPorLinha.limpar();
+    etapa = 'busca';
+    voltar.style.display = 'none';
+    continuar.style.display = 'none';
+    corpo.innerHTML = `
+      <p class="cds-muted" style="margin:0 0 8px">Escolha uma linha que contém vários produtos. Para vender um produto só, use a busca de produto.</p>
+      ${searchBarHtml('Nome ou código da linha', 'pdv-linha-busca')}
+      <div id="pdv-linha-lista" style="margin-top:8px"></div>
+    `;
+    corpo.querySelector('#pdv-linha-busca')?.addEventListener('input', debounce((e) => {
+      listarLinhas(String(e.target.value || '').trim());
+    }, 250));
+    listarLinhas('');
+  };
+
+  const mostrarProdutos = (selecao) => {
+    const temProdutos = selecao.produtos.length > 0;
+    etapa = 'produtos';
+    voltar.style.display = '';
+    continuar.style.display = temProdutos ? '' : 'none';
+    corpo.innerHTML = `
+      <p style="margin:0 0 8px">Linha selecionada: <strong>${escapeHtml(selecao.nome)}</strong></p>
+      ${temProdutos ? `
+        ${fieldHtml({ name: 'linha_quantidade_total', label: 'Quantidade total a vender', inputmode: 'decimal', placeholder: 'Ex.: 100', autocomplete: 'off', value: selecao.quantidadeTotal == null ? '' : VendaPorLinha.formatarQuantidade(selecao.quantidadeTotal) })}
+        <p class="cds-muted" id="pdv-linha-quantidade-erro" style="margin:-4px 0 4px;color:#dc2626;display:none"></p>
+        <p class="cds-muted" style="margin:0 0 12px">${escapeHtml(VendaPorLinha.MENSAGEM_DISTRIBUICAO)}</p>
+      ` : ''}
+      ${selecao.produtos.length
+        ? selecao.produtos.map((produto) => `
+            <label class="cds-field cds-field--check" for="pdv-linha-produto-${escapeHtml(produto.id)}">
+              <input type="checkbox" id="pdv-linha-produto-${escapeHtml(produto.id)}" data-produto-id="${escapeHtml(produto.id)}" ${selecao.marcados.includes(produto.id) ? 'checked' : ''}>
+              <span>${escapeHtml(produto.nome)}</span>
+            </label>
+          `).join('')
+        : emptyHtml(selecao.mensagem)}
+    `;
+    const campo = corpo.querySelector('#f-linha_quantidade_total');
+    campo?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        continuarComQuantidade();
+      }
+    });
+    campo?.addEventListener('input', () => {
+      const erro = corpo.querySelector('#pdv-linha-quantidade-erro');
+      if (erro) erro.style.display = 'none';
+    });
+  };
+
+  const atualizarTotaisDistribuicao = () => {
+    const resumo = VendaPorLinha.resumoDistribuicao();
+    const distribuido = corpo.querySelector('#pdv-linha-distribuido');
+    const restante = corpo.querySelector('#pdv-linha-restante');
+    if (!resumo || !distribuido || !restante) return;
+    distribuido.textContent = VendaPorLinha.formatarQuantidade(resumo.distribuido);
+    restante.textContent = VendaPorLinha.formatarQuantidade(resumo.restante);
+    restante.style.color = resumo.completa ? '#16a34a' : (resumo.excedida ? '#dc2626' : '');
+  };
+
+  const mostrarErroDistribuicao = (mensagem) => {
+    const erro = corpo.querySelector('#pdv-linha-distribuicao-erro');
+    if (!erro) return;
+    erro.textContent = mensagem || '';
+    erro.style.display = mensagem ? '' : 'none';
+  };
+
+  const mostrarDistribuicao = (selecao) => {
+    etapa = 'distribuicao';
+    voltar.style.display = '';
+    continuar.style.display = '';
+    continuar.textContent = 'Continuar';
+    corpo.innerHTML = `
+      <p style="margin:0 0 4px">Linha: <strong>${escapeHtml(selecao.nome)}</strong></p>
+      <p style="margin:0 0 8px">Quantidade total: <strong>${escapeHtml(VendaPorLinha.formatarQuantidade(selecao.quantidadeTotal))}</strong></p>
+      <p style="margin:0 0 6px;font-weight:600">Distribua a quantidade:</p>
+      ${VendaPorLinha.produtosParaDistribuir().map((produto) => `
+        <div style="padding:6px 0;border-bottom:1px solid #f1f5f9">
+          <div style="display:grid;grid-template-columns:1fr 96px;gap:8px;align-items:center">
+            <label for="pdv-linha-distribuir-${escapeHtml(produto.id)}">${escapeHtml(produto.nome)}</label>
+            <input type="text" inputmode="decimal" class="cds-field__input" id="pdv-linha-distribuir-${escapeHtml(produto.id)}"
+              data-distribuir-produto-id="${escapeHtml(produto.id)}" placeholder="0" autocomplete="off">
+          </div>
+          <p class="cds-muted" data-distribuir-erro="${escapeHtml(produto.id)}" style="margin:2px 0 0;color:#dc2626;display:none"></p>
+        </div>
+      `).join('')}
+      <p style="margin:10px 0 0">Distribuído: <strong id="pdv-linha-distribuido">0</strong> · Restante: <strong id="pdv-linha-restante">0</strong></p>
+      <p class="cds-muted" id="pdv-linha-distribuicao-erro" style="margin:4px 0 0;color:#dc2626;display:none"></p>
+    `;
+    corpo.querySelectorAll('[data-distribuir-produto-id]').forEach((campo) => {
+      const produtoId = campo.getAttribute('data-distribuir-produto-id');
+      const pendencia = selecao.pendencias[produtoId];
+      campo.value = VendaPorLinha.valorDoCampo(Number(produtoId));
+      const erro = corpo.querySelector(`[data-distribuir-erro="${produtoId}"]`);
+      if (erro && pendencia) {
+        erro.textContent = pendencia.mensagem;
+        erro.style.display = '';
+      }
+    });
+    atualizarTotaisDistribuicao();
+  };
+
+  const mostrarConcluida = (resultado) => {
+    const selecao = VendaPorLinha.obterSelecao();
+    const nomes = new Map(selecao.produtos.map((produto) => [produto.id, produto.nome]));
+    etapa = 'concluida';
+    continuar.style.display = '';
+    continuar.textContent = 'Adicionar ao carrinho';
+    corpo.innerHTML = `
+      <p style="margin:0 0 4px">Linha: <strong>${escapeHtml(selecao.nome)}</strong></p>
+      <p style="margin:0 0 8px">Quantidade total: <strong>${escapeHtml(VendaPorLinha.formatarQuantidade(selecao.quantidadeTotal))}</strong></p>
+      <ul style="margin:0 0 8px;padding-left:18px">
+        ${resultado.distribuicao.distribuicao.map((item) => `
+          <li>${escapeHtml(nomes.get(item.produto_id))}: <strong>${escapeHtml(VendaPorLinha.formatarQuantidade(item.quantidade))}</strong></li>
+        `).join('')}
+      </ul>
+      <p style="margin:0;color:#16a34a">Distribuição concluída.</p>
+      <p class="cds-muted" id="pdv-linha-conclusao-erro" style="margin:4px 0 0;color:#dc2626;display:none"></p>
+    `;
+  };
+
+  let adicionando = false;
+  const adicionarAoCarrinho = async () => {
+    const distribuicao = VendaPorLinha.distribuicaoConfirmada();
+    if (!distribuicao || adicionando) return;
+    adicionando = true;
+    const botoes = sheet.querySelectorAll('button');
+    botoes.forEach((botao) => { botao.disabled = true; });
+    const resultado = await adicionarDistribuicaoLinhaNoCarrinhoMobile(distribuicao, VendaPorLinha.obterSelecao().produtos);
+    adicionando = false;
+    botoes.forEach((botao) => { botao.disabled = false; });
+    if (!resultado.ok) {
+      const erro = corpo.querySelector('#pdv-linha-conclusao-erro');
+      if (erro) {
+        erro.textContent = resultado.mensagem;
+        erro.style.display = '';
+      }
+      showToast(resultado.mensagem, 'error');
+      return;
+    }
+    VendaPorLinha.limpar();
+    closeBottomSheet();
+    showToast(resultado.itens === 1 ? 'Produto adicionado.' : `${resultado.itens} produtos adicionados.`, 'success');
+    if (root) {
+      await recalcularCarrinhoViaResolver(root, aberto);
+      if (root.querySelector('#pdv-sticky')) paintCart(root, aberto, { recolherResumo: true });
+    }
+  };
+
+  const concluirDistribuicao = () => {
+    const resultado = VendaPorLinha.concluirDistribuicao();
+    if (!resultado.ok) {
+      mostrarErroDistribuicao(resultado.mensagem);
+      return;
+    }
+    mostrarConcluida(resultado);
+  };
+
+  const continuarComQuantidade = () => {
+    const campo = corpo.querySelector('#f-linha_quantidade_total');
+    const resultado = VendaPorLinha.definirQuantidadeTotal(campo?.value);
+    if (!resultado.ok) {
+      const erro = corpo.querySelector('#pdv-linha-quantidade-erro');
+      if (erro) {
+        erro.textContent = resultado.mensagem;
+        erro.style.display = '';
+      }
+      campo?.focus();
+      return;
+    }
+    mostrarDistribuicao(resultado.selecao);
+  };
+
+  corpo.addEventListener('click', async (e) => {
+    const botaoLinha = e.target.closest?.('[data-linha-id]');
+    if (!botaoLinha) return;
+    try {
+      mostrarProdutos(await VendaPorLinha.selecionarLinha(consultar, Number(botaoLinha.getAttribute('data-linha-id'))));
+    } catch (err) {
+      showToast(err.message || 'Não foi possível abrir a linha.', 'warning');
+    }
+  });
+  corpo.addEventListener('change', (e) => {
+    const produtoId = e.target?.getAttribute?.('data-produto-id');
+    if (produtoId) VendaPorLinha.marcarProduto(Number(produtoId), e.target.checked);
+  });
+  corpo.addEventListener('input', (e) => {
+    const produtoId = e.target?.getAttribute?.('data-distribuir-produto-id');
+    if (!produtoId) return;
+    const resultado = VendaPorLinha.definirQuantidadeProduto(Number(produtoId), e.target.value);
+    const erro = corpo.querySelector(`[data-distribuir-erro="${produtoId}"]`);
+    if (erro) {
+      erro.textContent = resultado.ok ? '' : resultado.mensagem;
+      erro.style.display = resultado.ok ? 'none' : '';
+    }
+    mostrarErroDistribuicao('');
+    atualizarTotaisDistribuicao();
+  });
+  continuar.addEventListener('click', () => {
+    if (etapa === 'produtos') continuarComQuantidade();
+    else if (etapa === 'distribuicao') concluirDistribuicao();
+    else if (etapa === 'concluida') adicionarAoCarrinho();
+  });
+  voltar.addEventListener('click', () => {
+    const selecao = VendaPorLinha.obterSelecao();
+    if (etapa === 'concluida' && selecao) mostrarDistribuicao(selecao);
+    else if (etapa === 'distribuicao' && selecao) mostrarProdutos(selecao);
+    else mostrarBusca();
+  });
+
+  mostrarBusca();
+}
+
 export async function renderPdv(root, ctx = {}) {
   root.innerHTML = loadingHtml('Abrindo PDV…');
   try {
@@ -1681,6 +2039,7 @@ export async function renderPdv(root, ctx = {}) {
       }
       /* rede intermitente: segue com cache local e banner */
     }
+    carregarComercializacaoMobile();
 
     const parts = ctx.parts || [];
     if (parts[1] === 'venda' && parts[2]) {

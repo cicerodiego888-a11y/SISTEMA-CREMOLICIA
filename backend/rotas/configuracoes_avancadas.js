@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const configService = require('../services/configuracaoService');
+const comercializacao = require('../services/comercializacaoConfigService');
 const { exigirSuperAdmin } = require('../middleware/auth');
 
 router.get('/confirmacao-fiscal', (req, res) => {
@@ -39,6 +40,28 @@ router.put('/padrao-fiscal', exigirSuperAdmin, (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/comercializacao', (req, res) => {
+  try {
+    res.json(comercializacao.resumoComercializacao());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.put('/comercializacao', exigirSuperAdmin, (req, res) => {
+  try {
+    const salvo = comercializacao.salvarComercializacao(req.body || {});
+    res.json({
+      success: true,
+      message: 'Comercialização atualizada com sucesso.',
+      comercializacao: salvo
+    });
+  } catch (err) {
+    const status = err.details ? 400 : 500;
+    res.status(status).json({ error: err.message, details: err.details || undefined });
   }
 });
 

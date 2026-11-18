@@ -23,6 +23,8 @@ const DocumentoFiscalStatus = Object.freeze({
   DUPLICADA: 'DUPLICADA'
 });
 
+const STATUS_XML_COMPLETO_LEGADO = 'XML_COMPLETO';
+
 const TODOS = Object.freeze(Object.values(DocumentoFiscalStatus));
 
 const ESTADOS_TERMINAIS = Object.freeze([
@@ -36,6 +38,7 @@ const LABELS_UI = Object.freeze({
   [DocumentoFiscalStatus.AGUARDANDO_XML]: 'Aguardando XML',
   [DocumentoFiscalStatus.XML_RECUPERANDO]: 'Recuperando XML',
   [DocumentoFiscalStatus.ERRO_RECUPERACAO]: 'Erro de recuperação',
+  [STATUS_XML_COMPLETO_LEGADO]: 'XML completo',
   [DocumentoFiscalStatus.SINCRONIZADA]: 'Nova',
   [DocumentoFiscalStatus.EM_PROCESSAMENTO]: 'Processando',
   [DocumentoFiscalStatus.AGUARDANDO_REVISAO]: 'Revisar produtos',
@@ -74,6 +77,7 @@ function obterLabel(status) {
 
 module.exports = {
   DocumentoFiscalStatus,
+  STATUS_XML_COMPLETO_LEGADO,
   TODOS,
   ESTADOS_TERMINAIS,
   LABELS_UI,

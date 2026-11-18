@@ -320,6 +320,65 @@
   background: #1d4ed8;
 }
 
+.pdv-busca-linha button.pdv-btn-vender-linha {
+  background: #fff;
+  color: #1d4ed8;
+  border: 1px solid #2563eb;
+}
+
+.pdv-busca-linha button.pdv-btn-vender-linha:hover {
+  background: #eff6ff;
+}
+
+.pdv-linha-resultados {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.pdv-linha-produtos {
+  max-height: 320px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.pdv-linha-produto {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 100px;
+  gap: 12px;
+  align-items: center;
+  padding: 8px 2px;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.pdv-linha-produto label {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.pdv-linha-produto .invalid-feedback {
+  grid-column: 1 / -1;
+}
+
+.pdv-linha-rodape {
+  gap: 8px;
+}
+
+.pdv-linha-total {
+  margin-right: auto;
+  font-size: 0.95rem;
+  white-space: nowrap;
+}
+
+@media (max-width: 575.98px) {
+  .pdv-linha-rodape {
+    flex-wrap: wrap;
+  }
+
+  .pdv-linha-total {
+    width: 100%;
+  }
+}
+
 .lista-produtos-dropdown {
   margin-top: 6px;
   max-height: 280px;
@@ -331,6 +390,16 @@
   border-radius: 10px;
   background: #fff;
   padding: 4px;
+}
+
+.pdv-autocomplete-aviso {
+  margin: 2px 2px 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fef3c7;
+  color: #92400e;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .pdv-autocomplete-item {

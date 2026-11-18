@@ -17,6 +17,33 @@ const Muc = require('../motores/muc');
 const Uc01 = require('../motores/unidades-comercializacao');
 const Mcc = require('../motores/motor-conversao-comercial');
 const estoqueAdjustmentOperacional = Mcc.estoqueAdjustmentOperacional;
+const MotorEstoque = require('../motores/motor-estoque');
+const { aplicarNaturezaCadastro, validarTransicaoNatureza } = require('../modules/fabrica-loja/naturezaCadastro');
+const { aplicarGrupoInsumo, validarGrupoInsumoInformado } = require('../modules/fabrica-loja/GrupoInsumoService');
+const {
+  aplicarLinhaProdutos,
+  validarLinhaProdutosInformada,
+  listarLinhasProdutos,
+  estruturaInstalada: linhaProdutosInstalada
+} = require('../modules/fabrica-loja/LinhaProdutosService');
+const comercializacaoConfig = require('../services/comercializacaoConfigService');
+const {
+  prepararTermoIdentificacao,
+  sqlMatchExatoProdutoPdv,
+  paramsMatchExatoProdutoPdv
+} = require('../services/pdv/identificacaoProdutoPdv');
+const {
+  contextoPdv,
+  produtoEhInsumo,
+  sqlProdutoComercializavelPdv,
+  respostaInsumoPdv
+} = require('../services/pdv/produtoComercializavelPdv');
+const {
+  estruturaConversaoPresente,
+  sqlProdutoNaoConvertido,
+  listarProdutosLinhaConvertidos,
+  respostaProdutoLinhaConvertido
+} = require('../modules/fabrica-loja/produtoLinhaConvertido');
 
 /** PDV-UC-02: anexa Formas de Venda UC-01 (não MUC) na busca PDV. */
 async function anexarUnidadesComerciaisUc01(produto) {
@@ -202,6 +229,20 @@ function produtosTemColuna(nomeColuna, callback) {
   db.all(`PRAGMA table_info(produtos)`, [], (err, cols) => {
     if (err) return callback(err, false);
     callback(null, (cols || []).some((col) => col.name === nomeColuna));
+  });
+}
+
+/** Trecho SQL "AND ..." que exclui INSUMO e produto-linha convertido quando a consulta é do PDV. */
+function filtroComercializavelPdv(aplicar, callback) {
+  if (!aplicar) return callback(null, '');
+  produtosTemColuna('natureza_cadastro', (err, temNatureza) => {
+    if (err) return callback(err, '');
+    estruturaConversaoPresente(db).then((temConversao) => {
+      callback(null, [
+        temNatureza ? `AND ${sqlProdutoComercializavelPdv('p')}` : '',
+        temConversao ? `AND ${sqlProdutoNaoConvertido('p')}` : ''
+      ].join(' '));
+    }, (convErr) => callback(convErr, ''));
   });
 }
 
@@ -455,6 +496,11 @@ router.get('/', (req, res) => {
   const modoFiscal = isModoFiscalQuery(req.query.modo_fiscal);
   const filtroFiscal = filtroSqlModoFiscalProduto(modoFiscal, 'p');
 
+  filtroComercializavelPdv(contextoPdv(req.query), (filtroErr, filtroPdv) => {
+  if (filtroErr) {
+    return res.status(500).json({ error: filtroErr.message });
+  }
+
   db.all(`
     SELECT 
       p.*, 
@@ -474,6 +520,7 @@ router.get('/', (req, res) => {
     LEFT JOIN subcategorias s ON s.id = p.subcategoria_id
     WHERE 1=1
       ${filtroFiscal}
+      ${filtroPdv}
     ORDER BY p.id DESC
   `, [], async (err, rows) => {
     if (err) {
@@ -495,6 +542,7 @@ router.get('/', (req, res) => {
       console.error('Erro ao normalizar produtos:', normErr.message);
       res.status(500).json({ error: normErr.message });
     }
+  });
   });
 });
 
@@ -657,7 +705,7 @@ router.get('/consulta-pdv/buscar', (req, res) => {
   const termoNormalized = removeDiacritics(termo.toLowerCase());
   const buscaLike = `%${termo}%`;
   const buscaLikeNormalized = `%${termoNormalized}%`;
-  const buscaNumero = termo.replace(/\D/g, '') || termo;
+  const termoIdentificacao = prepararTermoIdentificacao(termo);
   const termoLower = termo.toLowerCase();
   const limite = Math.min(Math.max(parseInt(req.query.limite, 10) || 20, 1), 20);
   const hoje = new Date().toISOString().split('T')[0];
@@ -675,6 +723,11 @@ router.get('/consulta-pdv/buscar', (req, res) => {
     const to = replacements[ch];
     return `REPLACE(${acc}, '${ch}', '${to}')`;
   }, 'LOWER(p.nome)');
+
+  filtroComercializavelPdv(true, (filtroErr, filtroPdv) => {
+  if (filtroErr) {
+    return res.status(500).json({ error: filtroErr.message });
+  }
 
   db.all(`
     SELECT
@@ -709,15 +762,7 @@ router.get('/consulta-pdv/buscar', (req, res) => {
         WHEN promo.id IS NOT NULL THEN promo.desconto_percentual 
         ELSE NULL 
       END AS desconto_percentual,
-      CASE
-        WHEN LOWER(TRIM(COALESCE(p.codigo_barras, ''))) = ?
-          OR LOWER(TRIM(COALESCE(p.codigo, ''))) = ?
-          OR CAST(p.id AS TEXT) = ?
-          OR TRIM(COALESCE(p.codigo_barras, '')) = ?
-          OR TRIM(COALESCE(p.codigo, '')) = ?
-        THEN 1
-        ELSE 0
-      END AS match_exato
+      ${sqlMatchExatoProdutoPdv('p')} AS match_exato
     FROM produtos p
     LEFT JOIN promocoes promo ON promo.produto_id = p.id 
       AND promo.status = 'ativa'
@@ -745,17 +790,14 @@ router.get('/consulta-pdv/buscar', (req, res) => {
         )
       )
       ${filtroFiscal}
+      ${filtroPdv}
     ORDER BY match_exato DESC, p.nome ASC
     LIMIT ${limite}
   `, [
-    termoLower,
-    termoLower,
-    buscaNumero,
-    termo,
-    termo,
+    ...paramsMatchExatoProdutoPdv(termoIdentificacao),
     hoje,
     hoje,
-    buscaNumero,
+    termoIdentificacao.idListagem,
     buscaLike,
     buscaLike,
     buscaLikeNormalized,
@@ -785,12 +827,17 @@ router.get('/consulta-pdv/buscar', (req, res) => {
         } else {
           // produto pode não ter entrado pelo LIKE do nome — inclui
           const produtoExtra = await new Promise((resolve) => {
-            db.get(`SELECT * FROM produtos WHERE id = ?`, [matchBarras.produto_id], (e, r) => resolve(e ? null : r));
+            db.get(
+              `SELECT * FROM produtos p WHERE p.id = ? AND COALESCE(p.ativo, 1) = 1 ${filtroPdv}`,
+              [matchBarras.produto_id],
+              (e, r) => resolve(e ? null : r)
+            );
           });
           if (produtoExtra) {
             const normalizado = await normalizarProdutoResposta(produtoExtra, modoFiscal);
             await anexarUnidadesComerciaisUc01(normalizado);
             normalizado.unidade_comercial_sugerida_id = matchBarras.id;
+            normalizado.match_exato = 1;
             produtos.unshift(normalizado);
           }
         }
@@ -806,6 +853,63 @@ router.get('/consulta-pdv/buscar', (req, res) => {
       }
     }
   });
+  });
+});
+
+// VENDA POR LINHA NO PDV — só seleção: lista linhas e os produtos vendáveis de uma linha.
+// Não adiciona item, não calcula preço e não mexe em estoque.
+const MENSAGEM_VENDA_POR_LINHA_DESABILITADA = 'A venda por linha não está habilitada.';
+const MENSAGEM_LINHA_SEM_PRODUTOS_PDV = 'Esta linha não tem produtos disponíveis para venda.';
+
+function exigirVendaPorLinhaPdv(req, res, next) {
+  if (comercializacaoConfig.isVendaPorLinhaPermitida()) return next();
+  return res.status(403).json({ error: MENSAGEM_VENDA_POR_LINHA_DESABILITADA, codigo: 'VENDA_POR_LINHA_DESABILITADA' });
+}
+
+router.get('/consulta-pdv/linhas', exigirVendaPorLinhaPdv, async (req, res) => {
+  try {
+    const { linhas } = await listarLinhasProdutos(db, { busca: req.query.q });
+    res.json(linhas.map((linha) => ({ id: linha.id, codigo: linha.codigo, nome: linha.nome })));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/consulta-pdv/linhas/:id/produtos', exigirVendaPorLinhaPdv, async (req, res) => {
+  const linhaId = Number(req.params.id);
+  const naoEncontrada = () => res.status(404).json({ error: 'Linha de Produtos não encontrada.', codigo: 'LINHA_NAO_ENCONTRADA' });
+  if (!Number.isInteger(linhaId) || linhaId <= 0) return naoEncontrada();
+  try {
+    if (!(await linhaProdutosInstalada(db))) return naoEncontrada();
+    const linha = await new Promise((resolve, reject) => {
+      db.get('SELECT id, codigo, nome FROM linhas_produtos WHERE id = ? AND ativo = 1', [linhaId], (err, row) => (err ? reject(err) : resolve(row)));
+    });
+    if (!linha) return naoEncontrada();
+    const filtroFiscal = filtroSqlModoFiscalProduto(isModoFiscalQuery(req.query.modo_fiscal), 'p');
+    const filtroPdv = await new Promise((resolve, reject) => {
+      filtroComercializavelPdv(true, (err, filtro) => (err ? reject(err) : resolve(filtro)));
+    });
+    const produtos = await new Promise((resolve, reject) => {
+      db.all(`
+        SELECT p.id, p.codigo, p.nome, p.unidade
+        FROM produtos p
+        LEFT JOIN categorias c ON c.id = p.categoria_id
+        WHERE p.linha_produtos_id = ?
+          AND COALESCE(p.ativo, 1) = 1
+          AND (p.categoria_id IS NULL OR COALESCE(c.ativo, 1) = 1)
+          ${filtroFiscal}
+          ${filtroPdv}
+        ORDER BY p.nome COLLATE NOCASE, p.id
+      `, [linhaId], (err, rows) => (err ? reject(err) : resolve(rows || [])));
+    });
+    res.json({
+      linha: { id: Number(linha.id), codigo: linha.codigo || '', nome: linha.nome },
+      produtos: produtos.map((p) => ({ id: Number(p.id), codigo: p.codigo || '', nome: p.nome || '', unidade: p.unidade || '' })),
+      mensagem: produtos.length ? null : MENSAGEM_LINHA_SEM_PRODUTOS_PDV
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // LIP — Localizador Inteligente de Produtos (Sprint S-6.2)
@@ -833,7 +937,14 @@ router.get('/search', (req, res) => {
       return res.status(500).json({ error: colErr.message });
     }
 
-    const filtroAtivoProduto = temColunaAtivo ? 'COALESCE(p.ativo, 1) = 1' : '1 = 1';
+  filtroComercializavelPdv(contextoPdv(req.query), (filtroErr, filtroPdv) => {
+    if (filtroErr) {
+      return res.status(500).json({ error: filtroErr.message });
+    }
+
+    const filtroAtivoProduto = temColunaAtivo
+      ? `COALESCE(p.ativo, 1) = 1 ${filtroPdv}`
+      : `1 = 1 ${filtroPdv}`;
     const selectAtivo = temColunaAtivo ? 'COALESCE(p.ativo, 1) AS ativo' : '1 AS ativo';
 
     if (!termo) {
@@ -1015,6 +1126,7 @@ router.get('/search', (req, res) => {
         res.status(500).json({ error: normErr.message });
       }
     });
+  });
   });
 });
 
@@ -1926,12 +2038,23 @@ router.post('/:id/recalcular-saldos', verificarPermissaoEspecifica('produtos', '
 function executarAjusteEstoque(req, res) {
   const { id } = req.params;
   const body = req.body || {};
+  const local = String(body.local || 'LOJA').trim().toUpperCase();
+  const referenciaId = body.referencia_id;
+  if (![MotorEstoque.LOCAL_FABRICA, MotorEstoque.LOCAL_LOJA].includes(local)) {
+    return res.status(400).json({ error: 'Local de estoque inválido.' });
+  }
+  if (referenciaId != null
+    && (!Number.isSafeInteger(Number(referenciaId)) || Number(referenciaId) <= 0)) {
+    return res.status(400).json({ error: 'Identificador da solicitação de ajuste inválido.' });
+  }
 
   const finalizar = (ajusteFiscal, ajusteNaoFiscal, metaConversao = null) => {
     aplicarAjusteEstoqueProduto(db, {
       produtoId: id,
       ajusteFiscal,
       ajusteNaoFiscal,
+      local,
+      referenciaId: referenciaId == null ? null : Number(referenciaId),
       motivo: body.motivo,
       usuarioId: req.user?.id,
       usuarioNome: req.user?.username || req.user?.nome,
@@ -1941,11 +2064,11 @@ function executarAjusteEstoque(req, res) {
       lotesService
     }, (err, resultado) => {
       if (err) {
-        const status = err.message.includes('não encontrado') ? 404 : 400;
+        const status = err.status || (err.message.includes('não encontrado') ? 404 : 400);
         return res.status(status).json({ error: err.message, codigo: err.codigo || null });
       }
 
-      gravarAuditoria({
+      if (!resultado.repetida) gravarAuditoria({
         usuario_id: req.user?.id || null,
         usuario_nome: req.user?.username || req.user?.nome || null,
         modulo: 'produtos',
@@ -1955,6 +2078,7 @@ function executarAjusteEstoque(req, res) {
         detalhes: {
           ajuste_fiscal: ajusteFiscal,
           ajuste_nao_fiscal: ajusteNaoFiscal,
+          local,
           motivo: body.motivo,
           unidade_origem: metaConversao?.unidadeOrigem || null,
           quantidade_informada_fiscal: metaConversao?.quantidadeInformadaFiscal ?? null,
@@ -1964,10 +2088,10 @@ function executarAjusteEstoque(req, res) {
           sprint: 'EST-MCC-01'
         },
         ip_requisicao: req.ip || null
-      }).catch(() => {});
+      }).catch((auditErr) => console.error('Erro ao registrar auditoria do ajuste de estoque:', auditErr));
 
       res.json({
-        message: 'Estoque ajustado com sucesso',
+        message: resultado.repetida ? 'Este ajuste já havia sido registrado.' : 'Estoque ajustado com sucesso',
         ...resultado,
         mcc: metaConversao && !metaConversao.legado
           ? {
@@ -2032,7 +2156,12 @@ router.get('/:id/ajuste-estoque/unidades', exigirPerfilAjusteEstoque(), async (r
 
 router.post('/:id/ajuste-estoque/preview', exigirPerfilAjusteEstoque(), async (req, res) => {
   try {
-    const preview = await estoqueAdjustmentOperacional.preview(db, req.params.id, req.body || {});
+    const body = req.body || {};
+    const local = String(body.local || 'LOJA').trim().toUpperCase();
+    if (![MotorEstoque.LOCAL_FABRICA, MotorEstoque.LOCAL_LOJA].includes(local)) {
+      return res.status(400).json({ error: 'Local de estoque inválido.' });
+    }
+    const preview = await estoqueAdjustmentOperacional.preview(db, req.params.id, { ...body, local });
     res.json(preview);
   } catch (err) {
     const status = err.status || 400;
@@ -2134,6 +2263,17 @@ router.post('/:id/codigo-barras/gerar', gerarCodigoBarrasEan13Handler);
 
 // Criar produto
 router.post('/', async (req, res) => {
+  try {
+    await validarGrupoInsumoInformado(db, req.body);
+  } catch (grupoErr) {
+    return res.status(grupoErr.statusCode || 400).json({ error: grupoErr.message });
+  }
+  try {
+    await validarLinhaProdutosInformada(db, req.body, null);
+  } catch (linhaProdutosErr) {
+    return res.status(linhaProdutosErr.statusCode || 400).json({ error: linhaProdutosErr.message });
+  }
+
   const {
     codigo, nome, categoria_id, subcategoria_id, unidade, preco_compra,
     lucro_percentual, preco_venda, estoque_atual, estoque_minimo, fornecedor,
@@ -2409,6 +2549,10 @@ router.post('/', async (req, res) => {
           );
 
           const finalizarCriacao = () => {
+            aplicarNaturezaCadastro(db, produtoId, req.body)
+              .then(() => aplicarGrupoInsumo(db, produtoId, req.body))
+              .then(() => aplicarLinhaProdutos(db, produtoId, req.body))
+              .then(() => {
             buscarProdutoCompleto(produtoId, (err2, row) => {
               if (err2 || !row) {
                 return res.status(500).json({ error: err2?.message || 'Erro ao buscar produto criado' });
@@ -2439,6 +2583,15 @@ router.post('/', async (req, res) => {
                 ip_requisicao: req.ip || null
               }).catch((auditErr) => console.error('Erro ao gravar auditoria de criação de produto:', auditErr));
             });
+              })
+              .catch((natErr) => {
+                console.error('[CADASTRO] Falha ao gravar natureza/observações/grupo:', natErr.message);
+                if (!res.headersSent) {
+                  res.status(natErr.statusCode || 500).json({
+                    error: natErr.message || 'Não foi possível gravar o grupo do insumo.'
+                  });
+                }
+              });
           };
 
           if (Array.isArray(politicasIdsCriacao)) {
@@ -2611,6 +2764,32 @@ router.put('/:id', (req, res) => {
       }
     } catch (linhaErr) {
       return res.status(linhaErr.statusCode || 400).json({ error: linhaErr.message });
+    }
+
+    try {
+      if (Object.prototype.hasOwnProperty.call(bodyUpdates, 'grupo_insumo_id')) {
+        bodyUpdates.grupo_insumo_id = await validarGrupoInsumoInformado(db, bodyUpdates);
+      }
+    } catch (grupoErr) {
+      return res.status(grupoErr.statusCode || 400).json({ error: grupoErr.message });
+    }
+
+    try {
+      if (Object.prototype.hasOwnProperty.call(bodyUpdates, 'natureza_cadastro')) {
+        const natureza = validarTransicaoNatureza(old.natureza_cadastro, bodyUpdates.natureza_cadastro);
+        if (natureza === undefined) delete bodyUpdates.natureza_cadastro;
+        else bodyUpdates.natureza_cadastro = natureza;
+      }
+    } catch (naturezaErr) {
+      return res.status(naturezaErr.statusCode || 400).json({ error: naturezaErr.message, codigo: naturezaErr.code });
+    }
+
+    try {
+      const linhaProdutosId = await validarLinhaProdutosInformada(db, bodyUpdates, old);
+      if (linhaProdutosId === undefined) delete bodyUpdates.linha_produtos_id;
+      else bodyUpdates.linha_produtos_id = linhaProdutosId;
+    } catch (linhaProdutosErr) {
+      return res.status(linhaProdutosErr.statusCode || 400).json({ error: linhaProdutosErr.message });
     }
 
     if (bodyUpdates.forma_comercializacao !== undefined && bodyUpdates.forma_comercializacao !== null && bodyUpdates.forma_comercializacao !== '') {
@@ -3127,6 +3306,18 @@ router.get('/muc/barras/:codigo', async (req, res) => {
     const match = await Muc.resolverPorBarras(db, req.params.codigo);
     if (!match) {
       return res.status(404).json({ error: 'Código de barras não encontrado em unidades comerciais.' });
+    }
+    if (contextoPdv(req.query)) {
+      const produto = await new Promise((resolve, reject) => {
+        db.get('SELECT * FROM produtos WHERE id = ?', [match.produto_id], (e, r) => (e ? reject(e) : resolve(r)));
+      });
+      if (produtoEhInsumo(produto)) {
+        return res.status(409).json(respostaInsumoPdv([{ produto_id: produto.id, nome: produto.nome }]));
+      }
+      const convertidos = await listarProdutosLinhaConvertidos(db, [match.produto_id]);
+      if (convertidos.length) {
+        return res.status(409).json(respostaProdutoLinhaConvertido(convertidos));
+      }
     }
     res.json(match);
   } catch (err) {

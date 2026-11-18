@@ -7,15 +7,19 @@
  */
 
 const NFeParserService = require('../../../shared/nfe/NFeParserService');
-const NFeParserError = require('../../../shared/nfe/errors/NFeParserError');
 const { enriquecerParseComMiip } = require('../../../shared/nfe/enriquecerParseComMiip');
 const ProcessamentoResultadoDTO = require('../contracts/ProcessamentoResultadoDTO');
-const { DocumentoFiscalStatus } = require('../core/DocumentoFiscalStatus');
+const {
+  DocumentoFiscalStatus,
+  STATUS_XML_COMPLETO_LEGADO
+} = require('../core/DocumentoFiscalStatus');
 const { validarTransicao } = require('../core/MaquinaEstadosDocumento');
 const { xmlPossuiNfeCompleta } = require('../core/xmlDocumento');
 const { paraDocumentoDetalheDTO } = require('../utils/centralEntradasMapper');
 const CentralDocumentosRepository = require('../repositories/CentralDocumentosRepository');
+const { resolverDb } = require('../repositories/dbHelpers');
 const CentralHistoricoService = require('./CentralHistoricoService');
+const { validarProdutosIdentificadosCompra } = require('../../../modules/compras/resolverProdutoItem');
 
 const ETAPAS_PIPELINE = Object.freeze([
   { codigo: 'localizar', label: 'Localizando documento' },
@@ -38,6 +42,10 @@ class CentralProcessamentoService {
     /** @private */
     this._historicoService = deps.historicoService
       ?? new CentralHistoricoService();
+    this._validarProdutos = deps.validarProdutos
+      ?? ((itens) => validarProdutosIdentificadosCompra(resolverDb(deps.db ?? null), itens));
+    this._parser = deps.parser ?? NFeParserService;
+    this._enriquecerParseComMiip = deps.enriquecerParseComMiip ?? enriquecerParseComMiip;
   }
 
   /**
@@ -80,6 +88,7 @@ class CentralProcessamentoService {
   async processar(documentoId, opcoes = {}) {
     const etapasConcluidas = [];
     let etapaAtual = ETAPAS_PIPELINE[0].codigo;
+    let processamentoIniciado = false;
 
     try {
       etapaAtual = 'localizar';
@@ -104,25 +113,67 @@ class CentralProcessamentoService {
       }
 
       const statusInicial = documento.status;
-      if (statusInicial !== DocumentoFiscalStatus.SINCRONIZADA) {
+      if (statusInicial === DocumentoFiscalStatus.EM_PROCESSAMENTO) {
+        const erro = new Error('Documento já está em processamento.');
+        erro.statusCode = 409;
+        throw erro;
+      }
+
+      const statusProcessaveis = [
+        DocumentoFiscalStatus.SINCRONIZADA,
+        STATUS_XML_COMPLETO_LEGADO,
+        DocumentoFiscalStatus.ERRO
+      ];
+      if (!statusProcessaveis.includes(statusInicial)) {
         const erro = new Error(`Documento não pode ser processado no status ${statusInicial}`);
+        erro.statusCode = 400;
+        throw erro;
+      }
+
+      const transicao = validarTransicao(statusInicial, DocumentoFiscalStatus.EM_PROCESSAMENTO);
+      if (!transicao.valido) {
+        const erro = new Error(transicao.erro);
         erro.statusCode = 400;
         throw erro;
       }
 
       etapasConcluidas.push('localizar');
 
-      await this._transicionar(documentoId, statusInicial, DocumentoFiscalStatus.EM_PROCESSAMENTO, {
-        detalhe: 'Início do pipeline oficial de processamento',
-        usuarioId: opcoes.usuarioId
+      processamentoIniciado = await this._documentosRepository.iniciarProcessamento(
+        documentoId,
+        statusInicial,
+        {
+          detalhe: 'Início do pipeline oficial de processamento',
+          usuarioId: opcoes.usuarioId
+        }
+      );
+      if (!processamentoIniciado) {
+        const atual = await this._documentosRepository.buscarPorId(documentoId);
+        const erro = new Error(atual?.parseJson
+          ? 'Documento já processado.'
+          : atual?.status === DocumentoFiscalStatus.EM_PROCESSAMENTO
+            ? 'Documento já está em processamento.'
+            : 'Documento foi alterado por outra operação; atualize e tente novamente.');
+        erro.statusCode = 409;
+        throw erro;
+      }
+
+      await this._historicoService.registrar({
+        documentoId,
+        statusAnterior: statusInicial,
+        statusNovo: DocumentoFiscalStatus.EM_PROCESSAMENTO,
+        usuarioId: opcoes.usuarioId ?? null,
+        detalhe: 'Início do pipeline oficial de processamento'
       });
 
       etapaAtual = 'parse';
-      const parsed = await NFeParserService.parse(documento.xml);
+      const parsed = await this._parser.parse(documento.xml);
       etapasConcluidas.push('parse');
 
       etapaAtual = 'miip';
-      const { miipImportacao, possuiPendencias, erroMiip } = await enriquecerParseComMiip(parsed);
+      const { miipImportacao, possuiPendencias: possuiPendenciasMiip, erroMiip } = await this._enriquecerParseComMiip(parsed);
+      const problemasProdutos = await this._validarProdutos(Array.isArray(parsed.itens) ? parsed.itens : []);
+      const possuiPendencias = Boolean(possuiPendenciasMiip || problemasProdutos.length);
       etapasConcluidas.push('miip');
 
       etapaAtual = 'persistir';
@@ -149,7 +200,9 @@ class CentralProcessamentoService {
         : DocumentoFiscalStatus.PRONTA_PARA_COMPRA;
 
       const detalheStatus = possuiPendencias
-        ? 'MIIP identificou pendências — aguardando Central de Revisão'
+        ? possuiPendenciasMiip
+          ? 'MIIP identificou pendências — aguardando Central de Revisão'
+          : 'Existem itens sem vínculo válido — aguardando revisão de produtos'
         : 'Todos os itens identificados — pronto para Compras';
 
       if (erroMiip) {
@@ -198,11 +251,12 @@ class CentralProcessamentoService {
           : 'Processamento concluído — pronto para Compras'
       }).toJSON();
     } catch (error) {
-      if (error.statusCode === 404 || error.statusCode === 409) {
+      if (!processamentoIniciado && (error.statusCode === 404 || error.statusCode === 409)) {
         throw error;
       }
 
-      if (error instanceof NFeParserError || error.statusCode === 400) {
+      const erros = [error.message];
+      if (processamentoIniciado) {
         try {
           const doc = await this._documentosRepository.buscarPorId(documentoId);
           if (doc?.status === DocumentoFiscalStatus.EM_PROCESSAMENTO) {
@@ -213,8 +267,9 @@ class CentralProcessamentoService {
               { detalhe: error.message, usuarioId: opcoes.usuarioId }
             );
           }
-        } catch {
-          // ignora falha ao registrar ERRO
+        } catch (erroRegistro) {
+          console.error('[Central Entradas] Falha ao registrar erro do processamento:', erroRegistro);
+          erros.push(`Não foi possível registrar o estado de erro: ${erroRegistro.message}`);
         }
       }
 
@@ -226,7 +281,7 @@ class CentralProcessamentoService {
           concluida: etapasConcluidas.includes(e.codigo)
         })),
         mensagem: error.message,
-        erros: [error.message]
+        erros
       }).toJSON();
     }
   }

@@ -336,6 +336,8 @@ class EntregaComplementarPage {
     if (!host) return;
     if (this.lipInstance?.destroy) this.lipInstance.destroy();
     this.lipInstance = LIP.create({
+      showHistory: false,
+      searchServiceOptions: { contexto: 'pdv' },
       onSelect: (produto, quantidade) => this._onProdutoSelecionado(produto, quantidade)
     });
     this.lipInstance.mount(host);

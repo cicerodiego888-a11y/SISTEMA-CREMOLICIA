@@ -230,6 +230,8 @@ function aplicarAlteracoesPosCriacao() {
     `ALTER TABLE produtos ADD COLUMN bolas_min INTEGER`,
     `ALTER TABLE produtos ADD COLUMN bolas_max INTEGER`,
     `ALTER TABLE produtos ADD COLUMN linha_comercial_id INTEGER`,
+    `ALTER TABLE produtos ADD COLUMN natureza_cadastro TEXT`,
+    `ALTER TABLE produtos ADD COLUMN observacoes TEXT`,
     `ALTER TABLE categorias ADD COLUMN linha_comercial_id INTEGER`,
     `ALTER TABLE categorias ADD COLUMN codigo TEXT`,
     `ALTER TABLE categorias ADD COLUMN casquinha_bolas_min INTEGER DEFAULT 1`,
@@ -252,6 +254,8 @@ function aplicarAlteracoesPosCriacao() {
     `ALTER TABLE compras ADD COLUMN serie_nf TEXT`,
     `ALTER TABLE compras ADD COLUMN modelo_nf TEXT`,
     `ALTER TABLE compras ADD COLUMN chave_acesso TEXT`,
+    `ALTER TABLE compras ADD COLUMN idempotency_key TEXT`,
+    `ALTER TABLE compras ADD COLUMN idempotency_payload_hash TEXT`,
     `ALTER TABLE compras ADD COLUMN data_emissao DATE`,
     `ALTER TABLE compras ADD COLUMN data_entrada DATE`,
     `ALTER TABLE compras ADD COLUMN valor_produtos DECIMAL(10,2) DEFAULT 0`,
@@ -268,7 +272,9 @@ function aplicarAlteracoesPosCriacao() {
     `ALTER TABLE compras ADD COLUMN fornecedor_cnpj TEXT`,
     `ALTER TABLE compras ADD COLUMN tipo_entrada TEXT DEFAULT 'COMPRA_FORNECEDOR'`,
     `ALTER TABLE compras ADD COLUMN origem_movimentacao TEXT`,
-    `ALTER TABLE compras ADD COLUMN tipo_movimentacao TEXT`
+    `ALTER TABLE compras ADD COLUMN tipo_movimentacao TEXT`,
+    `ALTER TABLE compras ADD COLUMN destinatario_cnpj TEXT`,
+    `ALTER TABLE compras ADD COLUMN destinatario_uf TEXT`
   ];
 
   const alteracoesFinanceiro = [
@@ -306,7 +312,19 @@ function aplicarAlteracoesPosCriacao() {
     `ALTER TABLE compras_itens ADD COLUMN compra_em TEXT`,
     `ALTER TABLE compras_itens ADD COLUMN quantidade_embalagens DECIMAL(10,3) DEFAULT 0`,
     `ALTER TABLE compras_itens ADD COLUMN quantidade_por_embalagem DECIMAL(10,3) DEFAULT 0`,
-    `ALTER TABLE compras_itens ADD COLUMN valor_total_embalagem DECIMAL(10,2) DEFAULT 0`
+    `ALTER TABLE compras_itens ADD COLUMN valor_total_embalagem DECIMAL(10,2) DEFAULT 0`,
+    `ALTER TABLE compras_itens ADD COLUMN destino_estoque TEXT`,
+    `ALTER TABLE compras_itens ADD COLUMN local_id INTEGER`,
+    `ALTER TABLE compras_itens ADD COLUMN finalidade_item TEXT`,
+    `ALTER TABLE compras_itens ADD COLUMN cfop_xml TEXT`,
+    `ALTER TABLE compras_itens ADD COLUMN cst_csosn_xml TEXT`,
+    `ALTER TABLE compras_itens ADD COLUMN orig_xml TEXT`,
+    `ALTER TABLE compras_itens ADD COLUMN cfop_entrada TEXT`,
+    `ALTER TABLE compras_itens ADD COLUMN regra_fiscal_entrada TEXT`,
+    `ALTER TABLE compras_itens ADD COLUMN origem_regra_fiscal TEXT`,
+    `ALTER TABLE compras_itens ADD COLUMN justificativa_fiscal TEXT`,
+    `ALTER TABLE compras_itens ADD COLUMN numero_item_xml INTEGER`,
+    `ALTER TABLE compras_itens ADD COLUMN central_documento_id INTEGER`
   ];
 
   const alteracoesVendas = [
@@ -334,6 +352,10 @@ function aplicarAlteracoesPosCriacao() {
 
   alteracoesProdutos.forEach(sql => aplicarAlteracaoSegura('produtos', sql));
   alteracoesCompras.forEach(sql => aplicarAlteracaoSegura('compras', sql));
+  aplicarAlteracaoSegura(
+    'compras',
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_compras_idempotency_key ON compras(idempotency_key) WHERE idempotency_key IS NOT NULL`
+  );
   alteracoesFinanceiro.forEach(sql => aplicarAlteracaoSegura('financeiro', sql));
   alteracoesComprasItens.forEach(sql => aplicarAlteracaoSegura('compras_itens', sql));
   alteracoesVendas.forEach(sql => aplicarAlteracaoSegura('vendas', sql));
@@ -1410,6 +1432,8 @@ function criarTabelas() {
         serie_nf TEXT,
         modelo_nf TEXT,
         chave_acesso TEXT,
+        idempotency_key TEXT,
+        idempotency_payload_hash TEXT,
         valor_produtos DECIMAL(10,2) DEFAULT 0,
         valor_desconto DECIMAL(10,2) DEFAULT 0,
         valor_frete DECIMAL(10,2) DEFAULT 0,
@@ -2125,6 +2149,9 @@ async function finalizarBootstrapAposSchema() {
     const ComercialV2 = require('./modules/comercial');
     await ComercialV2.bootstrapComercialV2Schema(db);
 
+    const FabricaLoja = require('./modules/fabrica-loja');
+    await FabricaLoja.bootstrapFabricaLojaSchema(db);
+
     const { executarBootstrap } = require('./lib/DatabaseBootstrapService');
     await executarBootstrap(db, { migrationsJaExecutadas: true });
 
@@ -2185,6 +2212,8 @@ function garantirColunasCompras() {
       !colunas.includes('serie_nf') && `ALTER TABLE compras ADD COLUMN serie_nf TEXT`,
       !colunas.includes('modelo_nf') && `ALTER TABLE compras ADD COLUMN modelo_nf TEXT`,
       !colunas.includes('chave_acesso') && `ALTER TABLE compras ADD COLUMN chave_acesso TEXT`,
+      !colunas.includes('idempotency_key') && `ALTER TABLE compras ADD COLUMN idempotency_key TEXT`,
+      !colunas.includes('idempotency_payload_hash') && `ALTER TABLE compras ADD COLUMN idempotency_payload_hash TEXT`,
       !colunas.includes('data_emissao') && `ALTER TABLE compras ADD COLUMN data_emissao DATE`,
       !colunas.includes('data_entrada') && `ALTER TABLE compras ADD COLUMN data_entrada DATE`,
       !colunas.includes('valor_produtos') && `ALTER TABLE compras ADD COLUMN valor_produtos DECIMAL(10,2) DEFAULT 0`,
@@ -2206,6 +2235,13 @@ function garantirColunasCompras() {
             console.log(`Alteração aplicada em compras: ${sql}`);
           }
         });
+      });
+      db.run(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_compras_idempotency_key
+        ON compras(idempotency_key)
+        WHERE idempotency_key IS NOT NULL
+      `, (indexErr) => {
+        if (indexErr) console.error('Erro ao criar índice de idempotência das compras:', indexErr);
       });
     });
   });

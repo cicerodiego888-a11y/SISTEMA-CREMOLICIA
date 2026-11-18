@@ -76,10 +76,10 @@ class CentralEntradasService {
       ?? new CentralSincronizacaoService();
     /** @private */
     this._processamentoService = deps.processamentoService
-      ?? new CentralProcessamentoService({ documentosRepository, historicoRepository });
+      ?? new CentralProcessamentoService({ documentosRepository, historicoRepository, db: this._db });
     /** @private */
     this._comprasBridgeService = deps.comprasBridgeService
-      ?? new CentralComprasBridgeService({ documentosRepository, historicoRepository });
+      ?? new CentralComprasBridgeService({ documentosRepository, historicoRepository, db: this._db });
     /** @private */
     this._scoreDocumentoService = deps.scoreDocumentoService
       ?? new CentralScoreDocumentoService();

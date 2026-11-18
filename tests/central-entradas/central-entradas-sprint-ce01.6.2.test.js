@@ -8,15 +8,24 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const zlib = require('zlib');
 const forge = require('node-forge');
 const sqlite3 = require('sqlite3').verbose();
 
 const {
   sincronizarDistribuicaoDFe,
-  consultarNotaPorChave
+  consultarNotaPorChave,
+  persistirDocumentosRetorno
 } = require('../../backend/services/fiscal/distribuicaoDFe');
+const { DocumentoFiscalStatus } = require('../../backend/motores/central-entradas/core/DocumentoFiscalStatus');
 const { CODIGOS } = require('../../backend/services/fiscal/sefazErroOperacional');
 const { inspecionarCertificadoPfx } = require('../../backend/services/fiscal/certificateService');
+const CentralDocumentosRepository = require('../../backend/motores/central-entradas/repositories/CentralDocumentosRepository');
+const CentralHistoricoRepository = require('../../backend/motores/central-entradas/repositories/CentralHistoricoRepository');
+const CentralHistoricoService = require('../../backend/motores/central-entradas/services/CentralHistoricoService');
+const CentralDfePersistenciaService = require('../../backend/motores/central-entradas/services/CentralDfePersistenciaService');
+const CentralProcessamentoService = require('../../backend/motores/central-entradas/services/CentralProcessamentoService');
+const NFeParserService = require('../../backend/shared/nfe/NFeParserService');
 const sefazGate = require('../../backend/motores/central-entradas/services/CentralSefazOperationalGate');
 const { CentralSyncExecucaoService } = require('../../backend/motores/central-entradas/services/CentralSyncExecucaoService');
 const CentralSincronizacaoService = require('../../backend/motores/central-entradas/services/CentralSincronizacaoService');
@@ -30,6 +39,7 @@ const CNPJ_OU_TECNICO = '45616309000149';
 const CNPJ_OUTRA_EMPRESA = '57824986000131';
 const NSU_148 = '000000000000148';
 const CHAVE = '23261036811652000153550010000001601000001601';
+const CHAVE_PROCESSAMENTO_AUTO = '35260112345678000199550010000000011000000001';
 const UMA_HORA = 60 * 60 * 1000;
 
 let passou = 0;
@@ -200,6 +210,146 @@ function abrirDbMemoria() {
 
 async function main() {
   console.log('\n=== Testes Central de Entradas — CDS-SORV-CE-01.6.2 ===\n');
+
+  await test('XML completo recém-persistido inicia o pipeline, sem reprocessar duplicados', async () => {
+    const xml = fs.readFileSync(
+      path.join(__dirname, '../shared/nfe/fixtures/nfe-proc-sample.xml'),
+      'utf8'
+    );
+    const compactado = zlib.gzipSync(Buffer.from(xml)).toString('base64');
+    const retorno = `<retDistDFeInt><docZip NSU="${NSU_148}" schema="procNFe_v4.00">${compactado}</docZip></retDistDFeInt>`;
+    const chamadas = [];
+    const persistencia = {
+      persistirDocumentoDfe: async (dados) => {
+        chamadas.push({ etapa: 'persistir', xml: dados.xml });
+        return {
+          novo: true,
+          duplicado: false,
+          ignorado: false,
+          documento: { id: 901, chave: CHAVE, xml, status: DocumentoFiscalStatus.SINCRONIZADA }
+        };
+      }
+    };
+    const processamentoService = {
+      processar: async (id, opcoes) => {
+        chamadas.push({ etapa: 'processar', id, origem: opcoes.origem });
+        return { sucesso: true };
+      }
+    };
+
+    await persistirDocumentosRetorno(retorno, persistencia, 'dfe', processamentoService);
+    assert.deepStrictEqual(chamadas.map((chamada) => chamada.etapa), ['persistir', 'processar']);
+    assert.strictEqual(chamadas[1].id, 901);
+    assert.strictEqual(chamadas[1].origem, 'dfe');
+
+    chamadas.length = 0;
+    await persistirDocumentosRetorno(retorno, {
+      persistirDocumentoDfe: async () => ({
+        novo: false,
+        recuperado: true,
+        duplicado: false,
+        ignorado: false,
+        documento: { id: 902, chave: CHAVE, xml, status: DocumentoFiscalStatus.SINCRONIZADA }
+      })
+    }, 'consulta_chave', processamentoService);
+    assert.deepStrictEqual(chamadas.map((chamada) => chamada.etapa), ['processar']);
+    assert.strictEqual(chamadas[0].id, 902);
+    assert.strictEqual(chamadas[0].origem, 'consulta_chave');
+
+    chamadas.length = 0;
+    await persistirDocumentosRetorno(retorno, {
+      persistirDocumentoDfe: async () => ({
+        novo: false,
+        duplicado: true,
+        ignorado: false,
+        documento: {
+          id: 901,
+          chave: CHAVE,
+          xml,
+          parseJson: { itens: [] },
+          status: DocumentoFiscalStatus.PRONTA_PARA_COMPRA
+        }
+      })
+    }, 'dfe', processamentoService);
+    assert.deepStrictEqual(chamadas, []);
+  });
+
+  await test('fluxo DistDFe mock persiste XML e conclui o pipeline sem chamada SEFAZ real', async () => {
+    const documentosRepository = new CentralDocumentosRepository();
+    const historicoRepository = new CentralHistoricoRepository();
+    const historicoService = new CentralHistoricoService({ historicoRepository });
+    const existente = await documentosRepository.buscarPorChave(CHAVE_PROCESSAMENTO_AUTO);
+    if (existente) {
+      await historicoRepository._obterSql().run(
+        'DELETE FROM central_entradas_historico WHERE documento_id = ?',
+        [existente.id]
+      );
+      await documentosRepository.remover(existente.id);
+    }
+
+    const xml = fs.readFileSync(
+      path.join(__dirname, '../shared/nfe/fixtures/nfe-proc-sample.xml'),
+      'utf8'
+    );
+    const compactado = zlib.gzipSync(Buffer.from(xml)).toString('base64');
+    const retorno = `${retornoSoap({
+      cStat: '138',
+      xMotivo: 'Documento localizado',
+      ultNSU: '000000000000149',
+      maxNSU: '000000000000149'
+    }).replace('</retDistDFeInt>', '')}<docZip NSU="000000000000149" schema="procNFe_v4.00">${compactado}</docZip></retDistDFeInt>`;
+    const persistenciaService = new CentralDfePersistenciaService({
+      documentosRepository,
+      historicoRepository
+    });
+    let chamadasParser = 0;
+    const processamentoService = new CentralProcessamentoService({
+      documentosRepository,
+      historicoService,
+      parser: {
+        parse: async (conteudo) => {
+          chamadasParser += 1;
+          return NFeParserService.parse(conteudo);
+        }
+      },
+      enriquecerParseComMiip: async (parsed) => ({
+        parsed,
+        miipImportacao: null,
+        possuiPendencias: false,
+        erroMiip: null
+      }),
+      validarProdutos: async () => []
+    });
+    const soap = criarSoapContador(retorno);
+
+    try {
+      const resultadoSync = await sincronizarDistribuicaoDFe({
+        ...depsSync({
+          gate: criarGate(),
+          soap,
+          nsu: criarNsuMemoria()
+        }),
+        persistenciaService,
+        processamentoService
+      });
+
+      assert.strictEqual(soap.chamadas.length, 1);
+      assert.strictEqual(resultadoSync.notasNovas, 1);
+      const atualizado = await documentosRepository.buscarPorChave(CHAVE_PROCESSAMENTO_AUTO);
+      assert.strictEqual(atualizado.status, DocumentoFiscalStatus.PRONTA_PARA_COMPRA);
+      assert.ok(atualizado.parseJson?.itens?.length > 0);
+      assert.strictEqual(chamadasParser, 1);
+    } finally {
+      const atual = await documentosRepository.buscarPorChave(CHAVE_PROCESSAMENTO_AUTO);
+      if (atual) {
+        await historicoRepository._obterSql().run(
+          'DELETE FROM central_entradas_historico WHERE documento_id = ?',
+          [atual.id]
+        );
+        await documentosRepository.remover(atual.id);
+      }
+    }
+  });
 
   await test('1) cStat 656 real inicia cooldown de 1h e não altera NSU', async () => {
     const store = criarStoreMemoria();

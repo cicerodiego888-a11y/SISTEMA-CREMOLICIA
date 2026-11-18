@@ -21,6 +21,9 @@ class NfeParseadaDTO {
     this.dataEntrada = dados.dataEntrada ?? dados.data_entrada ?? '';
     this.fornecedor = dados.fornecedor ?? '';
     this.fornecedorCnpj = dados.fornecedorCnpj ?? dados.fornecedor_cnpj ?? '';
+    this.fornecedorCrt = dados.fornecedorCrt ?? dados.fornecedor_crt ?? '';
+    this.destinatarioCnpj = dados.destinatarioCnpj ?? dados.destinatario_cnpj ?? '';
+    this.destinatarioUf = dados.destinatarioUf ?? dados.destinatario_uf ?? '';
     this.fornecedorRua = dados.fornecedorRua ?? dados.fornecedor_rua ?? '';
     this.fornecedorNumero = dados.fornecedorNumero ?? dados.fornecedor_numero ?? '';
     this.fornecedorBairro = dados.fornecedorBairro ?? dados.fornecedor_bairro ?? '';
@@ -63,6 +66,9 @@ class NfeParseadaDTO {
       data_entrada: this.dataEntrada,
       fornecedor: this.fornecedor,
       fornecedor_cnpj: this.fornecedorCnpj,
+      fornecedor_crt: this.fornecedorCrt,
+      destinatario_cnpj: this.destinatarioCnpj,
+      destinatario_uf: this.destinatarioUf,
       fornecedor_rua: this.fornecedorRua,
       fornecedor_numero: this.fornecedorNumero,
       fornecedor_bairro: this.fornecedorBairro,

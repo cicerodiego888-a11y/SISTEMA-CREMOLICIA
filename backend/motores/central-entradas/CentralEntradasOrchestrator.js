@@ -7,7 +7,10 @@
  * @class CentralEntradasOrchestrator
  */
 
-const { DocumentoFiscalStatus } = require('./core/DocumentoFiscalStatus');
+const {
+  DocumentoFiscalStatus,
+  STATUS_XML_COMPLETO_LEGADO
+} = require('./core/DocumentoFiscalStatus');
 const { validarTransicao } = require('./core/MaquinaEstadosDocumento');
 const { xmlPossuiNfeCompleta, classificarXml, CLASSE_XML } = require('./core/xmlDocumento');
 const { emitirEvento } = require('./utils/centralEventosEmitter');
@@ -82,6 +85,7 @@ class CentralEntradasOrchestrator {
       if (
         documento.status === DocumentoFiscalStatus.SINCRONIZADA
         || documento.status === DocumentoFiscalStatus.RECEBIDA
+        || documento.status === STATUS_XML_COMPLETO_LEGADO
       ) {
         await this._transicionar(
           documento,
@@ -135,10 +139,11 @@ class CentralEntradasOrchestrator {
     }
 
     if (xmlPossuiNfeCompleta(documento.xml)) {
+      let documentoAtual = documento;
       if (documento.status === DocumentoFiscalStatus.AGUARDANDO_XML
         || documento.status === DocumentoFiscalStatus.XML_RECUPERANDO
         || documento.status === DocumentoFiscalStatus.ERRO_RECUPERACAO) {
-        await this._transicionar(
+        documentoAtual = await this._transicionar(
           documento,
           DocumentoFiscalStatus.SINCRONIZADA,
           'XML completo já disponível',
@@ -146,11 +151,20 @@ class CentralEntradasOrchestrator {
         );
       }
 
+      const elegivelParaProcessamento = [
+        DocumentoFiscalStatus.SINCRONIZADA,
+        STATUS_XML_COMPLETO_LEGADO
+      ].includes(documentoAtual.status);
+      const processamento = elegivelParaProcessamento && !documentoAtual.parseJson
+        ? await this._processamentoService.processar(documentoAtual.id, opcoes)
+        : null;
+
       return {
-        sucesso: true,
+        sucesso: processamento ? processamento.sucesso : true,
         recuperado: true,
         jaPossuiaXml: true,
-        documentoId: documento.id
+        documentoId: documento.id,
+        ...(processamento ? { processamento } : {})
       };
     }
 

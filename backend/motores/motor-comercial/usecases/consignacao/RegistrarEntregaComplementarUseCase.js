@@ -143,6 +143,10 @@ class RegistrarEntregaComplementarUseCase extends ConsignacaoWriteUseCase {
       if (!ativo) {
         throw new ProdutoInvalidoError(linha.produtoId, 'Produto inativo');
       }
+      if (typeof this._produtoBridge.motivoBloqueioComercial === 'function') {
+        const bloqueio = await this._produtoBridge.motivoBloqueioComercial(linha.produtoId);
+        if (bloqueio) throw new ProdutoInvalidoError(linha.produtoId, bloqueio);
+      }
 
       const snap = montarSnapshotPrecificacaoItem(produto, linha);
       const qtdCheck = validarQuantidadePorUnidade(linha.quantidade, snap.unidadeComercial);

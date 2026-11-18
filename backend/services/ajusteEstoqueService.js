@@ -1,4 +1,5 @@
 const MotorEstoque = require('../motores/motor-estoque');
+const ajustesEmAndamento = new WeakMap();
 
 function produtoTemMovimentacoes(db, produtoId, callback) {
   db.get(`
@@ -8,8 +9,9 @@ function produtoTemMovimentacoes(db, produtoId, callback) {
       (SELECT COUNT(*) FROM compras_devolucoes WHERE produto_id = ?) AS devolucoes,
       (SELECT COUNT(*) FROM produtos_ajustes_estoque WHERE produto_id = ?) AS ajustes,
       (SELECT COUNT(*) FROM produtos_lotes
-        WHERE produto_id = ? AND COALESCE(origem, '') != 'ESTOQUE_INICIAL') AS lotes_mov
-  `, [produtoId, produtoId, produtoId, produtoId, produtoId], (err, row) => {
+        WHERE produto_id = ? AND COALESCE(origem, '') != 'ESTOQUE_INICIAL') AS lotes_mov,
+      (SELECT COUNT(*) FROM estoque_movimentacoes WHERE produto_id = ?) AS motor_mov
+  `, [produtoId, produtoId, produtoId, produtoId, produtoId, produtoId], (err, row) => {
     if (err) return callback(err);
 
     const tem = (
@@ -18,6 +20,7 @@ function produtoTemMovimentacoes(db, produtoId, callback) {
       || Number(row?.devolucoes || 0) > 0
       || Number(row?.ajustes || 0) > 0
       || Number(row?.lotes_mov || 0) > 0
+      || Number(row?.motor_mov || 0) > 0
     );
 
     callback(null, tem);
@@ -54,12 +57,13 @@ function registrarAjusteEstoque(db, dados, callback) {
  * Deltas devem estar em unidade base (conversão via EstoqueAdjustmentOrchestrator / MCC).
  * Persistência de saldo + auditoria oficial via MotorEstoque.
  */
-function aplicarAjusteEstoqueProduto(db, opcoes, callback) {
+function aplicarAjusteEstoqueProdutoInterno(db, opcoes, callback) {
   const {
     produtoId,
     ajusteFiscal,
     ajusteNaoFiscal,
     motivo,
+    local,
     usuarioId,
     usuarioNome,
     lote,
@@ -72,6 +76,9 @@ function aplicarAjusteEstoqueProduto(db, opcoes, callback) {
   const ajusteF = Number(ajusteFiscal || 0);
   const ajusteNF = Number(ajusteNaoFiscal || 0);
 
+  if (!Number.isFinite(ajusteF) || !Number.isFinite(ajusteNF)) {
+    return callback(new Error('Informe quantidades válidas para o ajuste fiscal e não fiscal.'));
+  }
   if (ajusteF === 0 && ajusteNF === 0) {
     return callback(new Error('Informe ao menos um ajuste fiscal ou não fiscal diferente de zero.'));
   }
@@ -125,12 +132,26 @@ function aplicarAjusteEstoqueProduto(db, opcoes, callback) {
         produtoId,
         deltaFiscal: ajusteF,
         deltaNaoFiscal: ajusteNF,
+        local,
         motivo: String(motivo).trim(),
         origem: MotorEstoque.OrigemEstoque.AJUSTE_MANUAL,
         loteId: lotePersistidoId || loteId || null,
         usuarioId,
-        referenciaTipo: 'ajuste_estoque'
+        referenciaTipo: 'ajuste_estoque',
+        referenciaId: opcoes.referenciaId ?? null
       }).then((resultado) => {
+        if (resultado.repetida) {
+          return callback(null, {
+            saldo_fiscal: resultado.saldo_fiscal,
+            saldo_nao_fiscal: resultado.saldo_nao_fiscal,
+            estoque_atual: resultado.estoque_atual,
+            local: resultado.local,
+            saldo_local: resultado.saldo_local,
+            motor: resultado.motor,
+            movimentacao: resultado.movimentacao || null,
+            repetida: true
+          });
+        }
         registrarAjusteEstoque(db, {
           produto_id: produtoId,
           usuario_id: usuarioId,
@@ -150,6 +171,8 @@ function aplicarAjusteEstoqueProduto(db, opcoes, callback) {
             saldo_fiscal: resultado.saldo_fiscal,
             saldo_nao_fiscal: resultado.saldo_nao_fiscal,
             estoque_atual: resultado.estoque_atual,
+            local: resultado.local,
+            saldo_local: resultado.saldo_local,
             motor: resultado.motor,
             movimentacao: resultado.movimentacao || null
           });
@@ -191,6 +214,95 @@ function aplicarAjusteEstoqueProduto(db, opcoes, callback) {
 
     finalizarComMotorEstoque();
   });
+}
+
+function aplicarAjusteEstoqueProduto(db, opcoes, callback) {
+  const referenciaId = opcoes && opcoes.referenciaId;
+  if (referenciaId == null || referenciaId === '') {
+    return aplicarAjusteEstoqueProdutoInterno(db, opcoes, callback);
+  }
+
+  let operacoes = ajustesEmAndamento.get(db);
+  if (!operacoes) {
+    operacoes = new Map();
+    ajustesEmAndamento.set(db, operacoes);
+  }
+  const produtoId = Number(opcoes.produtoId);
+  const chave = String(referenciaId);
+  const assinatura = JSON.stringify([
+    produtoId,
+    String(opcoes.local || 'LOJA').trim().toUpperCase(),
+    Number(opcoes.ajusteFiscal || 0),
+    Number(opcoes.ajusteNaoFiscal || 0),
+    String(opcoes.motivo || '').trim()
+  ]);
+  const emAndamento = operacoes.get(chave);
+  if (emAndamento) {
+    if (emAndamento.assinatura !== assinatura) {
+      const err = new Error('A chave de ajuste já está em uso em outra operação.');
+      err.status = 409;
+      return callback(err);
+    }
+    return emAndamento.promessa.then(
+      (resultado) => callback(null, { ...resultado, repetida: true }),
+      callback
+    );
+  }
+
+  const operacao = new Promise((resolve, reject) => {
+    db.get(`
+      SELECT * FROM estoque_movimentacoes
+      WHERE referencia_tipo = 'ajuste_estoque' AND referencia_id = ?
+      LIMIT 1
+    `, [referenciaId], (getErr, movimento) => {
+      if (getErr) return reject(getErr);
+      if (!movimento) {
+        return aplicarAjusteEstoqueProdutoInterno(db, opcoes, (err, resultado) => {
+          if (err) reject(err);
+          else resolve(resultado);
+        });
+      }
+
+      const local = String(opcoes.local || 'LOJA').trim().toUpperCase();
+      const mesmaOperacao = Number(movimento.produto_id) === produtoId
+        && String(movimento.local || '') === local
+        && Math.round(Number(movimento.quantidade_fiscal) * 1000) / 1000
+          === Math.round(Number(opcoes.ajusteFiscal || 0) * 1000) / 1000
+        && Math.round(Number(movimento.quantidade_nao_fiscal) * 1000) / 1000
+          === Math.round(Number(opcoes.ajusteNaoFiscal || 0) * 1000) / 1000
+        && String(movimento.motivo || '') === String(opcoes.motivo || '').trim();
+      if (!mesmaOperacao) {
+        const err = new Error('A chave de ajuste já foi utilizada em outra operação.');
+        err.status = 409;
+        return reject(err);
+      }
+
+      Promise.all([
+        MotorEstoque.consultarSaldo(db, produtoId),
+        MotorEstoque.consultarSaldoLocal(db, produtoId, local)
+      ]).then(([saldo, saldoLocal]) => resolve({
+        saldo_fiscal: saldo.saldoFiscal,
+        saldo_nao_fiscal: saldo.saldoNaoFiscal,
+        estoque_atual: saldo.estoqueAtual,
+        local,
+        saldo_local: saldoLocal,
+        motor: MotorEstoque.MOTOR_ESTOQUE_NOME,
+        movimentacao: MotorEstoque.MovimentacaoEstoque.criar(movimento).toJSON(),
+        repetida: true
+      }), reject);
+    });
+  });
+
+  const registro = { promessa: operacao, assinatura };
+  operacoes.set(chave, registro);
+  operacao.then(
+    () => { if (operacoes.get(chave) === registro) operacoes.delete(chave); },
+    () => { if (operacoes.get(chave) === registro) operacoes.delete(chave); }
+  );
+  operacao.then(
+    (resultado) => callback(null, resultado),
+    callback
+  );
 }
 
 function definirSaldosIniciaisProduto(saldoFiscal, saldoNaoFiscal) {

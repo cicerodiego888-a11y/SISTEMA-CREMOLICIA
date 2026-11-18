@@ -356,6 +356,34 @@ class CentralDocumentosRepository extends IRepository {
   }
 
   /**
+   * Adquire atomicamente o processamento do documento se ele ainda não foi processado.
+   *
+   * @param {number|string} id
+   * @param {string} statusEsperado
+   * @param {Object} [opcoes]
+   * @returns {Promise<boolean>}
+   */
+  async iniciarProcessamento(id, statusEsperado, opcoes = {}) {
+    const sql = this._obterSql();
+    await sql.whenReady();
+
+    const resultado = await sql.run(
+      `UPDATE ${CentralDocumentosRepository.TABELA}
+       SET status = ?, status_detalhe = ?, usuario_id = ?, updated_at = datetime('now')
+       WHERE id = ? AND status = ? AND parse_json IS NULL`,
+      [
+        DocumentoFiscalStatus.EM_PROCESSAMENTO,
+        opcoes.detalhe ?? null,
+        opcoes.usuarioId ?? null,
+        id,
+        statusEsperado
+      ]
+    );
+
+    return resultado.changes > 0;
+  }
+
+  /**
    * @param {number|string} id
    * @returns {Promise<boolean>}
    */

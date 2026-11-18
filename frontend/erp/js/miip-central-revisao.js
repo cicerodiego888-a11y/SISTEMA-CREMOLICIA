@@ -15,6 +15,41 @@
 
   let estado = null;
 
+  function atualizarCandidatoPendencia(pendencia, sugestao) {
+    const produtoId = Number(sugestao?.produtoId);
+    if (!sugestao?.encontrado || !Number.isFinite(produtoId) || produtoId <= 0) {
+      pendencia.produtoEncontrado = null;
+      pendencia.candidatoSelecionado = null;
+      pendencia.score = Number(sugestao?.score || 0);
+      pendencia.motor = null;
+      pendencia.precisaConfirmacao = false;
+      pendencia.precisaCadastro = true;
+      return false;
+    }
+
+    const produto = {
+      id: produtoId,
+      nome: sugestao.produtoNome || '',
+      codigo: sugestao.produtoCodigo || '',
+      codigoBarras: sugestao.codigoBarras || null
+    };
+    const motor = sugestao.motor || null;
+
+    pendencia.produtoEncontrado = produto;
+    pendencia.candidatoSelecionado = {
+      produtoId,
+      produto,
+      motoresQueVotaram: motor ? [motor] : [],
+      evidencias: sugestao.motorLabel ? [{ descricao: sugestao.motorLabel }] : []
+    };
+    pendencia.score = Number(sugestao.score || 0);
+    pendencia.motor = motor;
+    pendencia.nivelCerteza = sugestao.confianca || null;
+    pendencia.precisaConfirmacao = true;
+    pendencia.precisaCadastro = false;
+    return true;
+  }
+
   function escapeHtml(texto) {
     return String(texto ?? '')
       .replace(/&/g, '&amp;')
@@ -58,6 +93,61 @@
       if (!semA && semB) return -1;
       return Number(b.score ?? 0) - Number(a.score ?? 0);
     });
+  }
+
+  // O MIIP só reconhece GTIN e associação de fornecedor; um insumo recém-cadastrado
+  // para este item é oferecido como candidato, mas o vínculo continua exigindo confirmação.
+  function aplicarProdutoRecemCadastrado(pendencia, produto, descricaoEvidencia) {
+    const produtoId = Number(produto?.id);
+    if (!Number.isFinite(produtoId) || produtoId <= 0) return false;
+
+    const candidato = {
+      id: produtoId,
+      nome: produto.nome || '',
+      codigo: produto.codigo || '',
+      codigoBarras: produto.codigo_barras || null
+    };
+    pendencia.produtoEncontrado = candidato;
+    pendencia.candidatoSelecionado = {
+      produtoId,
+      produto: candidato,
+      motoresQueVotaram: [],
+      evidencias: [{ descricao: descricaoEvidencia || 'Produto cadastrado agora para este item' }]
+    };
+    pendencia.score = 0;
+    pendencia.motor = null;
+    pendencia.precisaConfirmacao = true;
+    pendencia.precisaCadastro = false;
+    return true;
+  }
+
+  function normalizarNome(texto) {
+    return String(texto || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toUpperCase()
+      .replace(/[^A-Z0-9]+/g, ' ')
+      .trim();
+  }
+
+  // Quando o MIIP não reconhece o item, procura no cadastro de produtos já carregado
+  // (mesma fonte da pesquisa F2) por código de barras ou nome idêntico. Só sugere se for único.
+  function sugerirProdutoCadastrado(pendencia, produtos, item) {
+    const lista = (produtos || []).filter((p) => !(p.ativo === 0 || p.ativo === '0' || p.ativo === false));
+    const barras = String(item?.codigo_barras || item?.codigoBarras || '').replace(/\s+/g, '');
+    if (/^\d{8,14}$/.test(barras)) {
+      const porBarras = lista.filter((p) => String(p.codigo_barras || '').replace(/\s+/g, '') === barras);
+      if (porBarras.length === 1) {
+        return aplicarProdutoRecemCadastrado(pendencia, porBarras[0], 'Mesmo código de barras do cadastro');
+      }
+      if (porBarras.length > 1) return false;
+    }
+
+    const nome = normalizarNome(item?.produto_nome);
+    if (!nome) return false;
+    const porNome = lista.filter((p) => normalizarNome(p.nome) === nome);
+    if (porNome.length !== 1) return false;
+    return aplicarProdutoRecemCadastrado(pendencia, porNome[0], 'Nome idêntico ao produto cadastrado');
   }
 
   function extrairEvidencias(candidato, motor) {
@@ -196,13 +286,39 @@
           <div class="miip-central-lista-titulo">${escapeHtml(nome)}</div>
           <div class="miip-central-lista-meta">
             <span class="miip-central-tag miip-central-tag--${tipo}">${tipo === 'cadastro' ? 'Cadastro' : 'Confirmação'}</span>
-            <span>${score > 0 ? `${score}%` : 'Sem candidato'}</span>
+            <span>${score > 0 ? `${score}%` : (pendencia.produtoEncontrado ? 'Sugestão do cadastro' : 'Sem candidato')}</span>
             ${status === 'resolvida' ? '<i class="fas fa-check-circle text-success"></i>' : ''}
             ${status === 'ignorada' ? '<i class="fas fa-ban text-muted"></i>' : ''}
           </div>
         </button>
       `;
     }).join('');
+  }
+
+  function linhaInfo(rotulo, valor) {
+    if (valor === null || valor === undefined || String(valor).trim() === '') return '';
+    return `<dt>${escapeHtml(rotulo)}</dt><dd>${escapeHtml(valor)}</dd>`;
+  }
+
+  // Completa o candidato com os dados do cadastro de produtos já carregado.
+  function dadosCompletosProduto(produto) {
+    const lista = estado?.opcoes?.produtos || [];
+    const completo = lista.find((p) => String(p.id) === String(produto.id)) || {};
+    return { ...completo, ...Object.fromEntries(Object.entries(produto).filter(([, v]) => v !== null && v !== '')) };
+  }
+
+  function renderInfoProduto(produto) {
+    const p = dadosCompletosProduto(produto);
+    const custo = Number(p.preco_compra);
+    return `<dl class="miip-central-dl">
+      ${linhaInfo('Código', p.codigo)}
+      ${linhaInfo('Código de barras', p.codigo_barras || p.codigoBarras)}
+      ${linhaInfo('Unidade', p.unidade)}
+      ${linhaInfo('NCM', p.ncm)}
+      ${linhaInfo('Marca', p.marca)}
+      ${linhaInfo('Fornecedor', p.fornecedor)}
+      ${Number.isFinite(custo) && custo > 0 ? `<dt>Custo de compra</dt><dd>${formatarMoeda(custo)}</dd>` : ''}
+    </dl>`;
   }
 
   function renderDetalhes(pendencia, sessao) {
@@ -216,6 +332,9 @@
           <dt>Código fornecedor</dt><dd>${escapeHtml(xml.codigo_fornecedor || '-')}</dd>
           <dt>Quantidade</dt><dd>${escapeHtml(xml.quantidade ?? '-')} ${escapeHtml(xml.unidade || '')}</dd>
           <dt>Valor</dt><dd>${formatarMoeda(xml.preco_unitario || xml.subtotal)}</dd>
+          ${linhaInfo('Código de barras', xml.codigo_barras || xml.codigoBarras)}
+          ${linhaInfo('NCM', xml.ncm)}
+          ${linhaInfo('CFOP', xml.cfop)}
           <dt>Descrição completa</dt><dd>${escapeHtml(xml.produto_nome || '-')}</dd>
         </dl>
       </div>
@@ -240,10 +359,11 @@
       <div class="miip-central-candidato">
         <h6>Produto CDS</h6>
         <p class="miip-central-candidato-nome">${escapeHtml(produto.nome || '-')}</p>
-        <div class="miip-central-candidato-score">
+        ${renderInfoProduto(produto)}
+        ${score > 0 ? `<div class="miip-central-candidato-score">
           <span>Nível de Certeza</span>
           <strong>${score}%</strong>
-        </div>
+        </div>` : ''}
         <div class="miip-central-evidencias">
           <span>Baseado em</span>
           <ul>${evidencias.map((ev) => `<li><i class="fas fa-check"></i> ${escapeHtml(ev)}</li>`).join('')}</ul>
@@ -264,7 +384,7 @@
     $('#miipCentralContador').text(`${sessao.indiceAtual + 1} / ${sessao.pendencias.length} pendências (${abertas} abertas)`);
 
     if (abertas === 0) {
-      mostrarTelaFinal();
+      renderTelaFinal();
     }
   }
 
@@ -464,8 +584,19 @@
     if (!item) return;
 
     if (typeof estado.opcoes.abrirCadastroProduto === 'function') {
+      const sessao = estado.sessao;
       estado.opcoes.abrirCadastroProduto(item, (produto) => {
-        if (produto?.id) aplicarConfirmacao(pendencia, produto.id, produto, false);
+        if (produto?.id) {
+          if (!estado || estado.sessao !== sessao) return;
+          const produtos = estado.opcoes.produtos;
+          if (!produtos.some((p) => String(p.id) === String(produto.id))) produtos.push(produto);
+
+          // O operador acabou de cadastrar este produto para o item: o cadastro já é a decisão de vínculo.
+          if (!pendenciaAberta(sessao, pendencia)) return;
+          aplicarProdutoRecemCadastrado(pendencia, produto);
+          aplicarConfirmacao(pendencia, produto.id, pendencia.produtoEncontrado);
+          notificar('Produto cadastrado e vinculado ao item.', 'success');
+        }
       });
       return;
     }
@@ -575,6 +706,12 @@
 
     abrirModal();
 
+    estado.sessao.pendencias.forEach((pendencia) => {
+      if (pendencia.produtoEncontrado) return;
+      const item = estado.sessao.itens[pendencia.indice] || pendencia.produtoXML;
+      sugerirProdutoCadastrado(pendencia, estado.opcoes.produtos, item);
+    });
+
     if (estado.sessao.pendencias.length === 0) {
       renderSemPendencias();
       return;
@@ -589,7 +726,11 @@
       montarSessao,
       ordenarPendencias,
       extrairPendencias,
-      calcularPrecisao
+      calcularPrecisao,
+      atualizarCandidatoPendencia,
+      aplicarProdutoRecemCadastrado,
+      sugerirProdutoCadastrado,
+      normalizarNome
     }
   };
 })(typeof window !== 'undefined' ? window : global);

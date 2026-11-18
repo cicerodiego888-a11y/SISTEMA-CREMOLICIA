@@ -25,6 +25,8 @@ class SincronizacaoResultadoDTO {
     this.janelaSefaz = dados.janelaSefaz ?? null;
     this.proximaConsultaApos = dados.proximaConsultaApos ?? null;
     this.operacional = dados.operacional ?? Boolean(dados.erro?.operacional);
+    this.aguardandoIntervaloSefaz = Boolean(dados.aguardandoIntervaloSefaz);
+    this.detalheTecnico = dados.detalheTecnico ?? null;
   }
 
   /**
@@ -36,10 +38,36 @@ class SincronizacaoResultadoDTO {
   }
 
   /**
+   * Distribuição em dia (ultNSU = maxNSU) com intervalo obrigatório da SEFAZ: estado normal.
+   *
+   * @param {*} error
+   * @returns {boolean}
+   */
+  static ehDistribuicaoEmDia(error) {
+    const codigoGate = ['SEFAZ_GATE_BLOQUEADO', 'SEFAZ_GATE'].includes(error?.code)
+      || ['SEFAZ_GATE_BLOQUEADO', 'SEFAZ_GATE'].includes(error?.codigo);
+    return codigoGate && error?.janelaSefaz?.motivoCodigo === 'NSU_ALCANCADO';
+  }
+
+  /**
    * @param {*} error
    * @returns {Object}
    */
   static fromError(error) {
+    if (SincronizacaoResultadoDTO.ehDistribuicaoEmDia(error)) {
+      const janela = error.janelaSefaz;
+      return SincronizacaoResultadoDTO.create({
+        sucesso: true,
+        aguardandoIntervaloSefaz: true,
+        notasNovas: 0,
+        notasDuplicadas: 0,
+        mensagem: 'Documentos atualizados. Próxima consulta conforme intervalo da SEFAZ.',
+        detalheTecnico: error.message || null,
+        janelaSefaz: janela,
+        proximaConsultaApos: janela.desbloqueioEm || null,
+        erros: []
+      }).toJSON();
+    }
     const { classificarErroSefaz } = require('../../../services/fiscal/sefazErroOperacional');
     const classificado = classificarErroSefaz(error);
     return SincronizacaoResultadoDTO.create({
@@ -76,7 +104,9 @@ class SincronizacaoResultadoDTO {
       erro: this.erro,
       janelaSefaz: this.janelaSefaz,
       proximaConsultaApos: this.proximaConsultaApos,
-      operacional: this.operacional
+      operacional: this.operacional,
+      aguardandoIntervaloSefaz: this.aguardandoIntervaloSefaz,
+      detalheTecnico: this.detalheTecnico
     };
   }
 }

@@ -392,7 +392,7 @@ router.post('/:id/revisar/concluir', async (req, res) => {
     return res.json(resultado);
   } catch (error) {
     const code = error.statusCode || 500;
-    return res.status(code).json({ error: error.message });
+    return res.status(code).json({ error: error.message, codigo: error.codigo, itens: error.itens });
   }
 });
 
@@ -413,7 +413,7 @@ router.post('/:id/abrir-compra', async (req, res) => {
     return res.json(resultado);
   } catch (error) {
     const code = error.statusCode || 500;
-    return res.status(code).json({ error: error.message });
+    return res.status(code).json({ error: error.message, codigo: error.codigo, itens: error.itens });
   }
 });
 

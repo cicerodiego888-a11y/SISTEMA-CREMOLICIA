@@ -1,9 +1,47 @@
 let produtosCompraList = [];
+let produtosInativosCompraIds = new Set();
 let fornecedoresList = [];
 let itensCompraAtual = [];
 let compraImportadaXml = null;
 let centralDocumentoIdAtual = null;
 let modoEntradaF7Compra = false;
+let itemCompraEmEdicao = null;
+let requisicaoCompraEmAndamento = false;
+
+function serializarCompraIdempotente(valor) {
+    if (Array.isArray(valor)) return `[${valor.map(serializarCompraIdempotente).join(',')}]`;
+    if (valor && typeof valor === 'object') {
+        return `{${Object.keys(valor).sort().map((chave) => (
+            `${JSON.stringify(chave)}:${serializarCompraIdempotente(valor[chave])}`
+        )).join(',')}}`;
+    }
+    return JSON.stringify(valor);
+}
+
+function fingerprintCompraIdempotente(data) {
+    const serializado = serializarCompraIdempotente(JSON.parse(JSON.stringify(data)));
+    let hashA = 0x811c9dc5;
+    let hashB = 0x9e3779b9;
+    for (let indice = 0; indice < serializado.length; indice += 1) {
+        const codigo = serializado.charCodeAt(indice);
+        hashA = Math.imul(hashA ^ codigo, 0x01000193);
+        hashB = Math.imul(hashB ^ codigo, 0x85ebca6b);
+    }
+    return `${(hashA >>> 0).toString(16).padStart(8, '0')}${(hashB >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+function obterChaveIdempotenciaCompra(data) {
+    const fingerprint = fingerprintCompraIdempotente(data);
+    const storageKey = `cds_compra_manual_idempotencia_${fingerprint}`;
+    let chave = sessionStorage.getItem(storageKey);
+    if (!chave) {
+        chave = window.crypto?.randomUUID
+            ? window.crypto.randomUUID()
+            : `${Date.now()}-${Math.random().toString(16).slice(2)}-${Math.random().toString(16).slice(2)}`;
+        sessionStorage.setItem(storageKey, chave);
+    }
+    return { chave, storageKey };
+}
 
 function loadCompras() {
     $.when(
@@ -11,13 +49,51 @@ function loadCompras() {
         $.ajax({ url: `${API_URL}/compras`, method: 'GET' }),
         $.ajax({ url: `${API_URL}/fornecedores`, method: 'GET' })
     ).done(function(produtosResp, comprasResp, fornecedoresResp) {
-        produtosCompraList = produtosResp[0] || [];
+        const produtos = produtosResp[0] || [];
+        produtosCompraList = produtos.filter(produtoAtivoCompra);
+        produtosInativosCompraIds = new Set(produtos.filter((p) => !produtoAtivoCompra(p)).map((p) => String(p.id)));
         fornecedoresList = fornecedoresResp[0] || [];
         renderCompras(comprasResp[0] || []);
         consumirPendenciaCompraCentral();
     }).fail(function() {
         $('#page-content').html('<div class="alert alert-danger">Erro ao carregar compras.</div>');
     });
+}
+
+function produtoAtivoCompra(produto) {
+    return !(produto.ativo === 0 || produto.ativo === '0' || produto.ativo === false);
+}
+
+function produtoDisponivelCompraManual(produto) {
+    return Boolean(produto) && produtoAtivoCompra(produto)
+        && String(produto.natureza_cadastro || '').trim().toUpperCase() === 'INSUMO';
+}
+
+function produtosDisponiveisCompraManual() {
+    return produtosCompraList.filter(produtoDisponivelCompraManual);
+}
+
+function produtosPermitidosSelecaoCompra(produtos) {
+    const lista = Array.isArray(produtos) ? produtos : [];
+    return centralDocumentoIdAtual ? lista : lista.filter(produtoDisponivelCompraManual);
+}
+
+function filtrarResultadosBuscaCompra(produtos) {
+    const lista = Array.isArray(produtos) ? produtos : [];
+    if (centralDocumentoIdAtual) return lista;
+    const insumoIds = new Set(produtosDisponiveisCompraManual().map((produto) => String(produto.id)));
+    return lista.filter((produto) => insumoIds.has(String(produto.id)));
+}
+
+function produtoInativoCompra(produtoId) {
+    return produtoId != null && produtoId !== '' && produtosInativosCompraIds.has(String(produtoId));
+}
+
+function recusarVinculoInativoItemCompra(item) {
+    if (!item || !produtoInativoCompra(item.produto_id)) return false;
+    item.produto_inativo_id = item.produto_id;
+    item.produto_id = '';
+    return true;
 }
 
 function renderCompras(compras) {
@@ -689,7 +765,14 @@ function normalizeItemCompra(item = {}) {
         miip_resultado: item.miip_resultado || null,
         quantidade_embalagens: Number(item.quantidade_embalagens || 0),
         quantidade_por_embalagem: Number(item.quantidade_por_embalagem || 0),
-        valor_total_embalagem: Number(item.valor_total_embalagem || 0)
+        valor_total_embalagem: Number(item.valor_total_embalagem || 0),
+        finalidade_item: finalidadeValidaItemCompra(item.finalidade_item),
+        numero_item_xml: item.numero_item_xml || null,
+        cfop_xml: item.cfop_xml || '',
+        cst_csosn_xml: item.cst_csosn_xml || '',
+        orig_xml: item.orig_xml || '',
+        cfop_entrada_manual: item.cfop_entrada_manual || '',
+        justificativa_fiscal: item.justificativa_fiscal || ''
     };
 
     return sincronizarQuantidadesEstoqueItemCompra(
@@ -833,17 +916,173 @@ function sincronizarQuantidadesEstoqueItemCompra(item = {}) {
     return item;
 }
 
+function sugerirDestinoItemCompra(item) {
+    const produto = produtosCompraList.find((p) => String(p.id) === String(item?.produto_id));
+    return String(produto?.natureza_cadastro || '').toUpperCase() === 'INSUMO' ? 'FABRICA' : 'LOJA';
+}
+
+const FINALIDADES_ITEM_COMPRA = ['INSUMO', 'USO_E_CONSUMO'];
+
+function finalidadeValidaItemCompra(valor) {
+    const finalidade = String(valor || '').toUpperCase();
+    return FINALIDADES_ITEM_COMPRA.includes(finalidade) ? finalidade : '';
+}
+
+function itemCompraSemFinalidade(item) {
+    return !finalidadeValidaItemCompra(item?.finalidade_item);
+}
+
+function itemCompraEhUsoConsumo(item) {
+    return String(item?.finalidade_item || '').toUpperCase() === 'USO_E_CONSUMO';
+}
+
+function contextoFiscalEntradaCompra() {
+    return {
+        central_documento_id: centralDocumentoIdAtual || null,
+        chave_acesso: String($('#chave_acesso').val() || '').replace(/\D/g, '')
+    };
+}
+
+function dadosItemFiscalEntradaCompra(item) {
+    return {
+        produto_id: item.produto_id || null,
+        produto_nome: item.produto_nome,
+        finalidade_item: item.finalidade_item,
+        numero_item_xml: item.numero_item_xml || null,
+        codigo_fornecedor: item.codigo_fornecedor || '',
+        cfop_entrada_manual: item.cfop_entrada_manual,
+        justificativa_fiscal: item.justificativa_fiscal
+    };
+}
+
+// Pré-visualização do tratamento fiscal proposto; não grava a compra.
+function validarFiscalEntradaItemCompra(index) {
+    const item = itensCompraAtual[index];
+    if (!item || !itemCompraEhUsoConsumo(item)) return;
+    $.ajax({
+        url: `${API_URL}/compras/validar-fiscal-entrada`,
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({ ...contextoFiscalEntradaCompra(), itens: [dadosItemFiscalEntradaCompra(item)] })
+    }).done((resp) => {
+        if (itensCompraAtual[index] !== item) return;
+        item.fiscal_preview = resp?.itens?.[0] || null;
+        renderItensCompraTabela();
+    }).fail((xhr) => {
+        showNotification(xhr.responseJSON?.error || 'Não foi possível validar o tratamento fiscal.', 'danger');
+    });
+}
+
+function alterarFinalidadeItemCompra(index, valor) {
+    const item = itensCompraAtual[index];
+    if (!item) return;
+    item.finalidade_item = finalidadeValidaItemCompra(valor);
+    item.fiscal_preview = null;
+    if (item.finalidade_item !== 'USO_E_CONSUMO') {
+        item.cfop_entrada_manual = '';
+        item.justificativa_fiscal = '';
+        return renderItensCompraTabela();
+    }
+    renderItensCompraTabela();
+    validarFiscalEntradaItemCompra(index);
+}
+
+function alterarCorrecaoFiscalItemCompra(index) {
+    const item = itensCompraAtual[index];
+    if (!item) return;
+    item.cfop_entrada_manual = String($(`[data-fiscal-cfop-manual="${index}"]`).val() || '').replace(/\D/g, '');
+    item.justificativa_fiscal = String($(`[data-fiscal-justificativa="${index}"]`).val() || '').trim();
+    validarFiscalEntradaItemCompra(index);
+}
+
+function renderFiscalEntradaItemCompra(item, index) {
+    const prev = item.fiscal_preview;
+    const statusClasse = { APLICAVEL: 'success', REQUER_VALIDACAO: 'warning', BLOQUEADO: 'danger' };
+    const cfop = prev?.cfop_entrada ? `CFOP de entrada: <strong>${escapeHtml(prev.cfop_entrada)}</strong>` : 'CFOP de entrada: pendente';
+    const mensagens = [...(prev?.mensagens || []), ...(prev?.alertas || [])]
+        .map((m) => `<li>${escapeHtml(m)}</li>`).join('');
+    const xml = prev?.dados_xml_originais || {};
+    return `
+        <div class="small mt-1" data-fiscal-entrada="${index}">
+            <span class="badge bg-${statusClasse[prev?.status] || 'secondary'}">${escapeHtml(prev?.status || 'Validando...')}</span>
+            ${cfop}
+            ${prev?.regra ? `<div class="text-muted">Regra: ${escapeHtml(prev.regra)} (${escapeHtml(prev.origem_regra || '')})</div>` : ''}
+            <div class="text-muted">XML: CFOP ${escapeHtml(xml.cfop || item.cfop_xml || '-')} · CST/CSOSN ${escapeHtml(xml.cst_csosn || item.cst_csosn_xml || '-')} · Origem ${escapeHtml(xml.orig || item.orig_xml || '-')}</div>
+            ${mensagens ? `<ul class="mb-1 ps-3">${mensagens}</ul>` : ''}
+            ${prev && prev.status !== 'APLICAVEL' ? `
+            <div class="d-flex gap-1">
+                <input class="form-control form-control-sm" style="max-width:90px" maxlength="4" placeholder="CFOP" data-fiscal-cfop-manual="${index}" value="${escapeHtml(item.cfop_entrada_manual || '')}">
+                <input class="form-control form-control-sm" placeholder="Justificativa (mín. 10 caracteres)" data-fiscal-justificativa="${index}" value="${escapeHtml(item.justificativa_fiscal || '')}">
+                <button type="button" class="btn btn-sm btn-outline-primary" onclick="alterarCorrecaoFiscalItemCompra(${index})">Aplicar</button>
+            </div>` : ''}
+        </div>`;
+}
+
+function destinoEfetivoItemCompra(item) {
+    const atual = String(item?.destino_estoque || '').toUpperCase();
+    if (atual === 'FABRICA' || atual === 'LOJA') return atual;
+    return sugerirDestinoItemCompra(item);
+}
+
+function alterarDestinoItemCompra(index, valor) {
+    if (!itensCompraAtual[index]) return;
+    itensCompraAtual[index].destino_estoque = String(valor || '').toUpperCase();
+    itensCompraAtual[index].destino_manual = true;
+    itensCompraAtual[index].destino_manual_produto_id = String(itensCompraAtual[index].produto_id || '');
+}
+
+function iniciarEdicaoDestinoItemCompra(item) {
+    itemCompraEmEdicao = {
+        produtoId: String(item?.produto_id || ''),
+        destino: destinoEfetivoItemCompra(item),
+        manual: Boolean(item?.destino_manual)
+    };
+}
+
+function aplicarDestinoEdicaoItemCompra(item) {
+    const edicao = itemCompraEmEdicao;
+    itemCompraEmEdicao = null;
+
+    const mesmoProduto = Boolean(edicao?.produtoId)
+        && edicao.produtoId === String(item?.produto_id || '');
+    item.destino_estoque = mesmoProduto ? edicao.destino : sugerirDestinoItemCompra(item);
+    item.destino_manual = Boolean(mesmoProduto && edicao.manual);
+    item.destino_manual_produto_id = item.destino_manual ? edicao.produtoId : null;
+}
+
 function renderItensCompraTabela() {
     const tbody = $('#itensCompraBody');
-    const optionsProdutos = '<option value="">Selecione</option>' + produtosCompraList.map(p => `<option value="${p.id}">${p.nome}</option>`).join('');
-    tbody.html(itensCompraAtual.map((item, index) => `
+    const produtosSelecao = produtosPermitidosSelecaoCompra(produtosCompraList);
+    const optionsProdutos = '<option value="">Selecione</option>' + produtosSelecao.map(p => `<option value="${p.id}">${p.nome}</option>`).join('');
+    tbody.html(itensCompraAtual.map((item, index) => {
+        const destino = destinoEfetivoItemCompra(item);
+        const usoConsumo = itemCompraEhUsoConsumo(item);
+        const semFinalidade = itemCompraSemFinalidade(item);
+        const finalidade = finalidadeValidaItemCompra(item.finalidade_item);
+        return `
         <tr>
             <td style="min-width:220px;">
                 <select class="form-control form-control-sm mb-1" onchange="alterarProdutoItemCompra(${index}, this.value)">
                     ${optionsProdutos.replace(`value="${item.produto_id}"`, `value="${item.produto_id}" selected`)}
                 </select>
+                ${renderAvisoProdutoNaoCadastrado(item, index)}
                 ${renderMiipSugestaoCard(item, index)}
                 <div class="text-muted small">${escapeHtml(item.produto_nome || '')}</div>
+            </td>
+            <td style="min-width:150px;">
+                <select class="form-control form-control-sm ${semFinalidade ? 'is-invalid' : ''}" data-finalidade-item="${index}" aria-label="Finalidade do item" onchange="alterarFinalidadeItemCompra(${index}, this.value)">
+                    <option value="" disabled ${semFinalidade ? 'selected' : ''}>Selecione</option>
+                    <option value="INSUMO" ${finalidade === 'INSUMO' ? 'selected' : ''}>Insumo</option>
+                    <option value="USO_E_CONSUMO" ${usoConsumo ? 'selected' : ''}>Uso e consumo</option>
+                </select>
+                ${semFinalidade ? '<div class="invalid-feedback d-block">Escolha a finalidade.</div>' : ''}
+            </td>
+            <td style="min-width:130px;">
+                ${semFinalidade ? '<span class="text-muted small">Defina a finalidade.</span>' : usoConsumo ? renderFiscalEntradaItemCompra(item, index) : `
+                <select class="form-control form-control-sm" data-destino-estoque="${index}" onchange="alterarDestinoItemCompra(${index}, this.value)">
+                    <option value="FABRICA" ${destino === 'FABRICA' ? 'selected' : ''}>Fábrica</option>
+                    <option value="LOJA" ${destino === 'LOJA' ? 'selected' : ''}>Loja</option>
+                </select>`}
             </td>
             <td style="min-width:120px;">${escapeHtml(item.codigo_barras || '')}</td>
             <td style="min-width:110px;">${item.data_validade ? escapeHtml(item.data_validade) : '<span class="text-muted">-</span>'}</td>
@@ -872,7 +1111,8 @@ function renderItensCompraTabela() {
                 <button class="btn btn-sm btn-danger" onclick="removerItemCompra(${index})"><i class="fas fa-trash"></i></button>
             </td>
         </tr>
-    `).join('') || '<tr><td colspan="9" class="text-center">Nenhum item adicionado.</td></tr>');
+    `;
+    }).join('') || '<tr><td colspan="11" class="text-center">Nenhum item adicionado.</td></tr>');
     recalcularTotaisCompraNota();
     calcularParcelasCompra();
 }
@@ -922,6 +1162,69 @@ function miipItemExibeSugestao(item) {
         && item.miip_sugestao.status === 'pendente'
         && item.miip_sugestao.produtoId
     );
+}
+
+function renderAvisoProdutoNaoCadastrado(item, index) {
+    if (item?.produto_id) return '';
+    const codigo = item?.codigo_barras || item?.codigo || '';
+    return `
+        <div class="compra-produto-pendente" data-situacao="PRODUTO_NAO_CADASTRADO">
+            <div class="compra-produto-pendente-titulo"><i class="fas fa-exclamation-triangle"></i> PRODUTO NÃO CADASTRADO</div>
+            <div>${escapeHtml(item?.produto_nome || '')}</div>
+            <div>Código: ${escapeHtml(codigo)}</div>
+            <div>Quantidade: ${escapeHtml(item?.quantidade)} ${escapeHtml(item?.unidade || '')}</div>
+            <p>Este item da nota ainda não está vinculado a um produto do sistema.</p>
+            ${item?.produto_inativo_id ? '<p class="fw-bold" data-produto-inativo="1">O produto inativo não pode ser utilizado em uma nova compra. Vincule outro produto ou reative o cadastro.</p>' : ''}
+            ${renderSugestoesProdutoItemCompra(item, index)}
+            <div class="d-flex flex-wrap gap-2">
+                <button type="button" class="btn btn-sm btn-warning" onclick="cadastrarProdutoItemCompra(${index})">Cadastrar produto</button>
+                <button type="button" class="btn btn-sm btn-outline-primary" onclick="vincularProdutoItemCompra(${index})">Vincular produto existente</button>
+            </div>
+        </div>
+    `;
+}
+
+const MOTIVOS_SUGESTAO_PRODUTO_COMPRA = {
+    CODIGO_BARRAS: 'mesmo código de barras',
+    CODIGO: 'mesmo código',
+    NOME: 'nome parecido'
+};
+
+function renderSugestoesProdutoItemCompra(item, index) {
+    const sugestoes = Array.isArray(item?.sugestoes_produto) ? item.sugestoes_produto : [];
+    if (!sugestoes.length) return '';
+    return `
+        <div class="compra-produto-sugestoes" data-sugestoes-produto="${index}">
+            <div class="compra-produto-sugestoes-titulo">Possíveis produtos — confirme para vincular:</div>
+            ${sugestoes.map((sugestao) => `
+                <div class="compra-produto-sugestao">
+                    <div>
+                        <strong>${escapeHtml(sugestao.nome)}</strong>
+                        <small>Código: ${escapeHtml(sugestao.codigo || '-')} · Barras: ${escapeHtml(sugestao.codigo_barras || '-')} · ${escapeHtml(MOTIVOS_SUGESTAO_PRODUTO_COMPRA[sugestao.motivo] || 'sugestão')}</small>
+                    </div>
+                    <button type="button" class="btn btn-sm btn-outline-success" data-confirmar-sugestao="${sugestao.id}" onclick="confirmarSugestaoProdutoItemCompra(${index}, ${Number(sugestao.id)})">Vincular este produto</button>
+                </div>
+            `).join('')}
+        </div>
+    `;
+}
+
+function confirmarSugestaoProdutoItemCompra(index, produtoId) {
+    const item = itensCompraAtual[index];
+    if (!item) return;
+    const sugestao = (item.sugestoes_produto || []).find((candidato) => Number(candidato.id) === Number(produtoId));
+    if (!sugestao) return;
+    incluirProdutoNaListaCompra({
+        id: sugestao.id,
+        nome: sugestao.nome,
+        codigo: sugestao.codigo,
+        codigo_barras: sugestao.codigo_barras,
+        unidade: sugestao.unidade || item.unidade || 'UN',
+        natureza_cadastro: sugestao.natureza_cadastro || null,
+        ativo: 1
+    });
+    alterarProdutoItemCompra(index, sugestao.id);
+    showNotification('Produto vinculado ao item da compra.', 'success');
 }
 
 function renderMiipSugestaoCard(item, index) {
@@ -1024,6 +1327,7 @@ function aplicarMiipImportacaoXml(data) {
 
         if (resultado.associadoAutomaticamente && resultado.produtoEncontrado?.id) {
             item.produto_id = resultado.produtoEncontrado.id;
+            recusarVinculoInativoItemCompra(item);
         }
 
         if (resultado.precisaConfirmacao && item.miip_sugestao) {
@@ -1100,6 +1404,10 @@ function confirmarAssociacaoMiip(index) {
     const item = itensCompraAtual[index];
     const sugestao = item?.miip_sugestao;
     if (!item || !sugestao || !sugestao.produtoId) return;
+    if (produtoInativoCompra(sugestao.produtoId)) {
+        showNotification('O produto inativo não pode ser utilizado em uma nova compra. Vincule outro produto ou reative o cadastro.', 'warning');
+        return;
+    }
 
     alterarProdutoItemCompra(index, sugestao.produtoId);
 
@@ -1150,25 +1458,171 @@ function miipNovoProdutoItemCompra(index) {
         item.miip_sugestao = { ...item.miip_sugestao, status: 'novo_produto' };
     }
 
-    renderItensCompraTabela();
+    cadastrarProdutoItemCompra(index);
+}
 
-    if (typeof showProdutoModal === 'function') {
-        showProdutoModal(null);
-        $('#produtoModal').one('shown.bs.modal', function preencherNovoProdutoMiip() {
-            $('#nome').val(item.produto_nome || '');
-            if ($('#codigo_barras').length) $('#codigo_barras').val(item.codigo_barras || '');
-            if ($('#ncm').length) $('#ncm').val(item.ncm || '');
-            if ($('#unidade').length) $('#unidade').val(item.unidade || 'UN');
-            if ($('#preco_compra').length) $('#preco_compra').val(formatNumberInput(item.preco_unitario || 0));
-            if ($('#preco_venda').length) $('#preco_venda').val(formatNumberInput(item.preco_venda_sugerido || 0));
-            if ($('#lucro_percentual').length) $('#lucro_percentual').val(formatNumberInput(item.margem_lucro || 30));
-        });
-        showNotification('Preencha o cadastro do novo produto e selecione-o no item.', 'info');
+function preencherCadastroProdutoDesdeItemCompra(item) {
+    $('#nome').val(item.produto_nome || '');
+    const codigo = item.codigo && item.codigo !== item.codigo_barras ? item.codigo : '';
+    if (codigo && $('#codigo').length) {
+        $('#areaCodigoManualUx').removeClass('d-none');
+        $('#codigo').prop('readonly', false).val(codigo);
+    }
+    if ($('#codigo_barras').length) $('#codigo_barras').val(item.codigo_barras || '');
+    if ($('#ncm').length) $('#ncm').val(item.ncm || '');
+    if ($('#unidade').length) $('#unidade').val(item.unidade || 'UN');
+    if ($('#preco_compra').length) $('#preco_compra').val(formatNumberInput(item.preco_unitario || 0));
+    if ($('#preco_venda').length) $('#preco_venda').val(formatNumberInput(item.preco_venda_sugerido || 0));
+    if ($('#lucro_percentual').length) $('#lucro_percentual').val(formatNumberInput(item.margem_lucro || 30));
+    if ($('#natureza_cadastro_produto').length) {
+        $('#natureza_cadastro_produto').val('');
+        if (typeof atualizarNaturezaCadastroProduto === 'function') atualizarNaturezaCadastroProduto();
+    }
+}
+
+function cadastrarProdutoItemCompra(index) {
+    const item = itensCompraAtual[index];
+    if (!item) return;
+
+    if (typeof showProdutoModal !== 'function') {
+        showNotification('Cadastro de produto indisponível.', 'warning');
         return;
     }
 
-    editarItemCompra(index);
-    showNotification('Cadastre o novo produto e selecione-o no item.', 'info');
+    window._aposSalvarProdutoCompra = function(produtoSalvo) {
+        window._aposSalvarProdutoCompra = null;
+        if (!produtoSalvo || !produtoSalvo.id || !itensCompraAtual[index]) return;
+        const produtoLista = {
+            ...produtoSalvo,
+            nome: produtoSalvo.nome || item.produto_nome,
+            unidade: produtoSalvo.unidade || item.unidade || 'UN',
+            codigo_barras: produtoSalvo.codigo_barras || item.codigo_barras || ''
+        };
+        if (!produtosCompraList.some((produto) => String(produto.id) === String(produtoLista.id))) {
+            produtosCompraList.push(produtoLista);
+        }
+        alterarProdutoItemCompra(index, produtoSalvo.id);
+        showNotification('Produto cadastrado e vinculado ao item da compra.', 'success');
+    };
+
+    showProdutoModal(null);
+    $('#produtoModal').one('shown.bs.modal', function preencherCadastroDaCompra() {
+        preencherCadastroProdutoDesdeItemCompra(item);
+    });
+    $('#produtoModal').one('hidden.bs.modal', function limparVinculoCadastroCompra() {
+        window._aposSalvarProdutoCompra = null;
+    });
+}
+
+function incluirProdutoNaListaCompra(produto) {
+    if (!produto || !produto.id) return;
+    if (!produtosCompraList.some((item) => String(item.id) === String(produto.id))) {
+        produtosCompraList.push(produto);
+    }
+}
+
+function vincularProdutoItemCompra(index) {
+    const item = itensCompraAtual[index];
+    if (!item) return;
+
+    $('#modalVincularProdutoCompra').remove();
+    $('body').append(`
+        <div class="modal fade" id="modalVincularProdutoCompra" tabindex="-1">
+            <div class="modal-dialog modal-lg">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">Vincular produto existente</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <p class="text-muted">A vinculação usa um produto já cadastrado. Nenhum produto novo é criado.</p>
+                        <input type="search" class="form-control" id="buscaVincularProdutoCompra" placeholder="Nome, código ou código de barras" autocomplete="off">
+                        <div id="resultadoVincularProdutoCompra" class="list-group mt-3"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `);
+
+    const modal = new bootstrap.Modal(document.getElementById('modalVincularProdutoCompra'));
+    modal.show();
+
+    let aguardarBusca = null;
+    $('#buscaVincularProdutoCompra').on('input', function() {
+        const termo = String($(this).val() || '').trim();
+        clearTimeout(aguardarBusca);
+        if (termo.length < 2) {
+            $('#resultadoVincularProdutoCompra').html('<div class="text-muted small">Digite ao menos 2 caracteres.</div>');
+            return;
+        }
+        aguardarBusca = setTimeout(function() {
+            $.ajax({
+                url: `${API_URL}/produtos/search`,
+                method: 'GET',
+                data: { q: termo, limite: 20 }
+            }).done(function(resposta) {
+                const items = filtrarResultadosBuscaCompra(resposta?.items);
+                if (!items.length) {
+                    const mensagem = centralDocumentoIdAtual
+                        ? 'Nenhum produto encontrado.'
+                        : 'Nenhum insumo encontrado.';
+                    $('#resultadoVincularProdutoCompra').html(`<div class="text-muted">${mensagem}</div>`);
+                    return;
+                }
+                $('#resultadoVincularProdutoCompra').html(items.map((produto) => `
+                    <button type="button" class="list-group-item list-group-item-action" data-produto-id="${produto.id}">
+                        <strong>${escapeHtml(produto.nome)}</strong><br>
+                        <small>Código: ${escapeHtml(produto.codigo || '-')} · Barras: ${escapeHtml(produto.codigo_barras || '-')}</small>
+                    </button>
+                `).join(''));
+                $('#resultadoVincularProdutoCompra button').on('click', function() {
+                    const produtoId = $(this).data('produto-id');
+                    const produto = produtosCompraList.find((candidato) => String(candidato.id) === String(produtoId))
+                        || items.find((candidato) => String(candidato.id) === String(produtoId));
+                    incluirProdutoNaListaCompra(produto);
+                    modal.hide();
+                    alterarProdutoItemCompra(index, produtoId);
+                });
+            }).fail(function() {
+                $('#resultadoVincularProdutoCompra').html('<div class="text-danger">Não foi possível buscar os produtos.</div>');
+            });
+        }, 250);
+    });
+
+    document.getElementById('modalVincularProdutoCompra').addEventListener('hidden.bs.modal', function() {
+        $('#modalVincularProdutoCompra').remove();
+    });
+
+    const termoInicial = String(item.produto_nome || '').trim();
+    if (termoInicial) {
+        $('#buscaVincularProdutoCompra').val(termoInicial).trigger('input');
+    }
+}
+
+function buscarSugestoesProdutosItensCompra() {
+    const pendentes = itensCompraAtual
+        .map((item, index) => ({ item, index }))
+        .filter(({ item }) => !item.produto_id);
+    if (!pendentes.length) return;
+
+    $.ajax({
+        url: `${API_URL}/compras/resolver-itens`,
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({ itens: pendentes.map(({ item }) => item) })
+    }).done(function(resposta) {
+        let mudou = false;
+        (resposta?.itens || []).forEach((resultado, posicao) => {
+            const alvo = pendentes[posicao];
+            const item = alvo ? itensCompraAtual[alvo.index] : null;
+            if (!item || item !== alvo.item || item.produto_id) return;
+            const sugestoes = produtosPermitidosSelecaoCompra(resultado?.sugestoes);
+            if (!sugestoes.length) return;
+            item.sugestoes_produto = sugestoes;
+            mudou = true;
+        });
+        if (mudou) renderItensCompraTabela();
+    });
 }
 
 function alterarCampoItemCompra(index, campo, valor) {
@@ -1189,12 +1643,29 @@ function alterarNumeroItemCompra(index, campo, valor, origem) {
 function alterarProdutoItemCompra(index, produtoId) {
     const produto = produtosCompraList.find(p => String(p.id) === String(produtoId));
     if (!itensCompraAtual[index]) return;
+    if (produtoInativoCompra(produtoId)) {
+        showNotification('O produto inativo não pode ser utilizado em uma nova compra. Vincule outro produto ou reative o cadastro.', 'warning');
+        renderItensCompraTabela();
+        return;
+    }
+    const item = itensCompraAtual[index];
+    const destinoManualDoMesmoProduto = item.destino_manual
+        && String(item.destino_manual_produto_id || item.produto_id || '') === String(produtoId || '');
     itensCompraAtual[index].produto_id = produtoId ? Number(produtoId) : '';
+    if (produtoId) {
+        delete itensCompraAtual[index].sugestoes_produto;
+        delete itensCompraAtual[index].produto_inativo_id;
+    }
     if (produto) {
         itensCompraAtual[index].produto_nome = produto.nome;
         itensCompraAtual[index].codigo_barras = produto.codigo_barras || produto.codigo || '';
         itensCompraAtual[index].unidade = produto.unidade || 'UN';
         itensCompraAtual[index].ncm = produto.ncm || '';
+        if (!destinoManualDoMesmoProduto) {
+            itensCompraAtual[index].destino_estoque = sugerirDestinoItemCompra(itensCompraAtual[index]);
+            itensCompraAtual[index].destino_manual = false;
+            itensCompraAtual[index].destino_manual_produto_id = null;
+        }
         if (!Number(itensCompraAtual[index].preco_unitario)) {
             itensCompraAtual[index].preco_unitario = Number(produto.preco_compra || 0);
         }
@@ -1214,6 +1685,10 @@ function adicionarItemCompra() {
     const produtoId = $('#produto_id_item').val();
     const descricaoLivre = ($('#codigo_barras_item').val() || '').trim();
     const produto = produtosCompraList.find(p => String(p.id) === String(produtoId));
+    if (produtoId && (!produto || (!centralDocumentoIdAtual && !produtoDisponivelCompraManual(produto)))) {
+        showNotification('Selecione um insumo ativo.', 'warning');
+        return;
+    }
     const mccAtivo = produtoUsaMccEntrada(produto);
     const fracionado = !mccAtivo && produtoUsaConversaoUnidadesCompra(produto);
 
@@ -1381,10 +1856,12 @@ function adicionarItemCompra() {
         ...dadosEmbalagem,
         ...dadosMcc
     });
+    aplicarDestinoEdicaoItemCompra(item);
 
     itensCompraAtual.push(item);
     limparFormularioItemCompra();
     renderItensCompraTabela();
+    if (!item.produto_id) buscarSugestoesProdutosItensCompra();
 }
 
 function limparFormularioItemCompra() {
@@ -1439,6 +1916,7 @@ function editarItemCompra(index) {
     const item = itensCompraAtual[index];
     if (!item) return;
 
+    iniciarEdicaoDestinoItemCompra(item);
     const temSplit = Number(item.quantidade_nao_fiscal || 0) > 0;
     modoEntradaF7Compra = temSplit;
 
@@ -1554,6 +2032,7 @@ function onFornecedorKeyDown(event) {
 
 function onProdutoInput() {
     const inputValue = $('#codigo_barras_item').val().trim();
+    atualizarMensagemNenhumInsumoCompra(inputValue);
     if (!inputValue) {
         $('#produto_id_item').val('');
         atualizarCamposValidadeCompra();
@@ -1586,7 +2065,7 @@ function onProdutoKeyDown(event) {
     if (!inputValue) return;
     const produto = findProdutoByInput(inputValue);
     if (!produto) {
-        showNotification('Produto não encontrado', 'warning');
+        showNotification('Produto não identificado. Selecione o produto na lista ou leia o código de barras.', 'warning');
         return;
     }
 
@@ -1599,7 +2078,7 @@ function onProdutoKeyDown(event) {
         $('#preco_item').val('');
         $('#preco_venda_item').val('');
     }
-    $('#codigo_barras_item').val(`${produto.codigo_barras || produto.codigo || ''} - ${produto.nome}`);
+    $('#codigo_barras_item').val(rotuloProdutoCompra(produto));
 
     onProdutoSelecionado();
 
@@ -1627,22 +2106,52 @@ function findFornecedorByTerm(term) {
     });
 }
 
+function rotuloProdutoCompra(produto) {
+    return `${produto.codigo_barras || produto.codigo || ''} - ${produto.nome}`.trim();
+}
+
+function atualizarMensagemNenhumInsumoCompra(termo) {
+    const busca = String(termo || '').trim().toLowerCase();
+    const produtos = produtosPermitidosSelecaoCompra(produtosCompraList);
+    const encontrou = !busca || produtos.some((produto) => [
+        produto.nome,
+        produto.codigo,
+        produto.codigo_barras,
+        rotuloProdutoCompra(produto)
+    ].some((valor) => String(valor || '').toLowerCase().includes(busca)));
+    const mostrar = produtos.length === 0 || !encontrou;
+    const mensagem = centralDocumentoIdAtual ? 'Nenhum produto encontrado.' : 'Nenhum insumo encontrado.';
+    $('#mensagemNenhumInsumoCompra').text(mensagem).toggleClass('d-none', !mostrar);
+    $('#mensagemNenhumInsumoCompra').toggleClass('d-none', !mostrar);
+}
+
+function produtoUnicoCompra(lista) {
+    return lista.length === 1 ? lista[0] : null;
+}
+
 function findProdutoByInput(input) {
-    const cleaned = input.replace(/\s+-\s+.*$/, '').trim();
-    const lower = input.toLowerCase().trim();
-    return produtosCompraList.find(p => {
+    const termo = String(input || '').trim();
+    if (!termo) return null;
+    const produtos = produtosPermitidosSelecaoCompra(produtosCompraList);
+    const porRotulo = produtos.filter((p) => rotuloProdutoCompra(p) === termo);
+    if (porRotulo.length) return produtoUnicoCompra(porRotulo);
+    return produtoUnicoCompra(produtos.filter((p) => {
         const codigo = String(p.codigo || '').trim();
         const codigoBarras = String(p.codigo_barras || '').trim();
-        const nome = String(p.nome || '').toLowerCase().trim();
-        return codigo === cleaned || codigoBarras === cleaned || nome === lower;
-    });
+        return (codigo !== '' && codigo === termo) || (codigoBarras !== '' && codigoBarras === termo);
+    }));
 }
 
 function showCompraModal() {
     console.log('showCompraModal chamada - gerando modal');
     itensCompraAtual = [];
+    itemCompraEmEdicao = null;
     compraImportadaXml = null;
     modoEntradaF7Compra = false;
+    const produtosParaSelecionar = produtosPermitidosSelecaoCompra(produtosCompraList);
+    const textoSemResultadoProduto = centralDocumentoIdAtual
+        ? 'Nenhum produto encontrado.'
+        : 'Nenhum insumo encontrado.';
     const hoje = new Date().toISOString().split('T')[0];
     const modalHtml = `
         <div class="modal fade" id="compraModal" tabindex="-1">
@@ -1776,8 +2285,9 @@ function showCompraModal() {
                                 <label class="form-label fw-bold">Código de barras / descrição rápida (Enter para adicionar)</label>
                                 <input type="text" class="form-control" id="codigo_barras_item" placeholder="Leitor, código ou nome" list="produtos-datalist" autocomplete="off" oninput="onProdutoInput()" onkeydown="onProdutoKeyDown(event)" style="font-size: 1.1em; font-weight: 500;">
                                 <datalist id="produtos-datalist">
-                                    ${produtosCompraList.map(p => `<option value="${escapeHtml((p.codigo_barras || p.codigo || '') + ' - ' + p.nome)}"></option>`).join('')}
+                                    ${produtosParaSelecionar.map(p => `<option value="${escapeHtml(rotuloProdutoCompra(p))}"></option>`).join('')}
                                 </datalist>
+                                <div id="mensagemNenhumInsumoCompra" class="form-text text-muted ${produtosParaSelecionar.length ? 'd-none' : ''}">${textoSemResultadoProduto}</div>
                             </div>
                         </div>
 
@@ -1786,8 +2296,9 @@ function showCompraModal() {
                                 <div class="col-md-6">
                                     <label class="form-label">Produto</label>
                                     <select class="form-control" id="produto_id_item" onchange="onProdutoSelecionado()">
-                                        <option value="">Selecione</option>
-                                        ${produtosCompraList.map(p => `<option value="${p.id}" data-controlar-validade="${p.controlar_validade || 0}">${escapeHtml(p.nome)}</option>`).join('')}
+                                        ${produtosParaSelecionar.length
+                                            ? `<option value="">Selecione</option>${produtosParaSelecionar.map(p => `<option value="${p.id}" data-controlar-validade="${p.controlar_validade || 0}">${escapeHtml(p.nome)}</option>`).join('')}`
+                                            : `<option value="" disabled selected>${textoSemResultadoProduto}</option>`}
                                     </select>
                                 </div>
                             </div>
@@ -1966,6 +2477,8 @@ function showCompraModal() {
                                 <thead>
                                     <tr>
                                         <th>Produto / descrição</th>
+                                        <th>Finalidade</th>
+                                        <th>Destino do estoque</th>
                                         <th>Cód. barras</th>
                                         <th>Validade</th>
                                         <th id="colunaQuantidadeCompraHeader">Qtd Fiscal</th>
@@ -1978,7 +2491,7 @@ function showCompraModal() {
                                 </thead>
 
                                 <tbody id="itensCompraBody"></tbody>
-                                <tfoot><tr><th colspan="7" class="text-end">Total</th><th id="totalCompra">${formatCurrency(0)}</th><th></th></tr></tfoot>
+                                <tfoot><tr><th colspan="9" class="text-end">Total</th><th id="totalCompra">${formatCurrency(0)}</th><th></th></tr></tfoot>
                             </table>
                         </div>
 
@@ -2153,6 +2666,7 @@ function toggleTipoEntradaCompra() {
 }
 
 function saveCompra() {
+    if (requisicaoCompraEmAndamento) return;
     const isNotaAvulsa = $('#nota_fiscal_avulsa').is(':checked');
     const isProducaoPropria = isEntradaProducaoPropriaCompra();
     const tipoEntrada = obterTipoEntradaCompra();
@@ -2164,6 +2678,29 @@ function saveCompra() {
 
     if (!isNotaAvulsa && !itensCompraAtual.length) {
         showNotification('Adicione ao menos um item.', 'warning');
+        return;
+    }
+
+    if (!isNotaAvulsa && itensCompraAtual.some((item) => !item.produto_id)) {
+        showNotification('Existem itens da compra sem produto cadastrado. Cadastre ou vincule esses produtos antes de concluir a entrada.', 'warning');
+        renderItensCompraTabela();
+        return;
+    }
+
+    if (!isNotaAvulsa && !isProducaoPropria) {
+        const pendentes = itensCompraAtual
+            .map((item, i) => (itemCompraSemFinalidade(item) ? `${i + 1} (${item.produto_nome || 'sem descrição'})` : null))
+            .filter(Boolean);
+        if (pendentes.length) {
+            showNotification(`Escolha a finalidade (Insumo ou Uso e consumo) dos itens: ${pendentes.join(', ')}.`, 'warning');
+            renderItensCompraTabela();
+            return;
+        }
+    }
+
+    if (!isNotaAvulsa && !isProducaoPropria && itensCompraAtual.some((item) => !itemCompraEhUsoConsumo(item) && !['FABRICA', 'LOJA'].includes(destinoEfetivoItemCompra(item)))) {
+        showNotification('Informe o destino do estoque de cada item da compra.', 'warning');
+        renderItensCompraTabela();
         return;
     }
 
@@ -2271,7 +2808,15 @@ function saveCompra() {
             modo_entrada_conversao: sincronizado.modo_entrada_conversao || null,
             peso_embalagem: sincronizado.peso_embalagem != null ? Number(sincronizado.peso_embalagem) : null,
             peso_total: sincronizado.peso_total != null ? Number(sincronizado.peso_total) : null,
-            volume_total: sincronizado.volume_total != null ? Number(sincronizado.volume_total) : null
+            volume_total: sincronizado.volume_total != null ? Number(sincronizado.volume_total) : null,
+            destino_estoque: itemCompraEhUsoConsumo(sincronizado)
+                ? null
+                : (isProducaoPropria ? (destinoEfetivoItemCompra(sincronizado) || 'LOJA') : destinoEfetivoItemCompra(sincronizado)),
+            finalidade_item: sincronizado.finalidade_item || null,
+            numero_item_xml: sincronizado.numero_item_xml || null,
+            codigo_fornecedor: sincronizado.codigo_fornecedor || null,
+            cfop_entrada_manual: sincronizado.cfop_entrada_manual || null,
+            justificativa_fiscal: sincronizado.justificativa_fiscal || null
         };
         }),
         condicao_pagamento: condicaoPagamento,
@@ -2299,14 +2844,32 @@ function saveCompra() {
         return;
     }
 
+    const compraManualSemNfe = !isProducaoPropria
+        && !isNotaAvulsa
+        && !data.chave_acesso
+        && !centralDocumentoIdAtual;
+    let idempotenciaCompra = null;
+    if (compraManualSemNfe) {
+        try {
+            idempotenciaCompra = obterChaveIdempotenciaCompra(data);
+        } catch (erro) {
+            showNotification(`Não foi possível preparar a proteção contra reenvio: ${erro.message}`, 'danger');
+            return;
+        }
+    }
+
     console.log('ITENS ENVIADOS:', JSON.stringify(itensCompraAtual, null, 2));
 
+    requisicaoCompraEmAndamento = true;
     $.ajax({
         url: `${API_URL}/compras`,
         method: 'POST',
         contentType: 'application/json',
+        headers: idempotenciaCompra ? { 'Idempotency-Key': idempotenciaCompra.chave } : {},
         data: JSON.stringify(data)
     }).done(function(resposta) {
+        requisicaoCompraEmAndamento = false;
+        if (idempotenciaCompra) sessionStorage.removeItem(idempotenciaCompra.storageKey);
         const docCentral = centralDocumentoIdAtual;
         centralDocumentoIdAtual = null;
         $('#compraModal').modal('hide');
@@ -2319,7 +2882,39 @@ function saveCompra() {
             sessionStorage.setItem('central_pos_gravacao', String(docCentral));
         }
     }).fail(function(xhr) {
-        showNotification(xhr.responseJSON?.error || 'Erro ao registrar compra.', 'danger');
+        requisicaoCompraEmAndamento = false;
+        const corpo = xhr.responseJSON || {};
+        if (corpo.codigo === 'FISCAL_ENTRADA_PENDENTE' && Array.isArray(corpo.itens)) {
+            corpo.itens.forEach((resultado) => {
+                if (itensCompraAtual[resultado.indice]) itensCompraAtual[resultado.indice].fiscal_preview = resultado;
+            });
+            renderItensCompraTabela();
+        }
+        if (['PRODUTO_NAO_CADASTRADO', 'PRODUTO_INATIVO'].includes(corpo.codigo) && Array.isArray(corpo.itens)) {
+            corpo.itens.forEach((resultado, indice) => {
+                const item = itensCompraAtual[indice];
+                if (item && ['PRODUTO_INATIVO', 'PRODUTO_INEXISTENTE'].includes(resultado?.motivo)) {
+                    if (resultado.motivo === 'PRODUTO_INATIVO') {
+                        produtosInativosCompraIds.add(String(item.produto_id));
+                        produtosCompraList = produtosCompraList.filter((p) => String(p.id) !== String(item.produto_id));
+                        item.produto_inativo_id = item.produto_id;
+                    }
+                    item.produto_id = '';
+                    return;
+                }
+                if (!item || resultado?.situacao !== 'VINCULADO' || !resultado.produtoId) return;
+                incluirProdutoNaListaCompra({
+                    id: resultado.produtoId,
+                    nome: resultado.nome || itensCompraAtual[indice].produto_nome,
+                    codigo: resultado.codigo || '',
+                    codigo_barras: resultado.codigo_barras || '',
+                    unidade: resultado.unidade || 'UN'
+                });
+                itensCompraAtual[indice].produto_id = resultado.produtoId;
+            });
+            renderItensCompraTabela();
+        }
+        showNotification(corpo.error || 'Erro ao registrar compra.', 'danger');
     });
 }
 
@@ -2511,29 +3106,6 @@ function cancelarCompra(id) {
     });
 }
 
-function abrirCadastroProdutoCentralMiip(item, callback) {
-    if (typeof showProdutoModal !== 'function') {
-        if (typeof callback === 'function') callback(null);
-        return;
-    }
-
-    showProdutoModal(null);
-    $('#produtoModal').one('shown.bs.modal', function preencherNovoProdutoCentralMiip() {
-        $('#nome').val(item.produto_nome || '');
-        if ($('#codigo_barras').length) $('#codigo_barras').val(item.codigo_barras || '');
-        if ($('#ncm').length) $('#ncm').val(item.ncm || '');
-        if ($('#unidade').length) $('#unidade').val(item.unidade || 'UN');
-        if ($('#preco_compra').length) $('#preco_compra').val(formatNumberInput(item.preco_unitario || 0));
-        if ($('#preco_venda').length) $('#preco_venda').val(formatNumberInput(item.preco_venda_sugerido || 0));
-        if ($('#lucro_percentual').length) $('#lucro_percentual').val(formatNumberInput(item.margem_lucro || 30));
-    });
-
-    $('#produtoModal').one('hidden.bs.modal', function aposCadastroCentralMiip() {
-        const ultimo = produtosCompraList[produtosCompraList.length - 1];
-        if (typeof callback === 'function') callback(ultimo || null);
-    });
-}
-
 function finalizarImportacaoXmlCompra(data) {
     compraImportadaXml = data;
     preencherFormularioCompra(data);
@@ -2545,6 +3117,7 @@ function abrirCompraDesdeCentralEntradas(payload) {
     if (!payload?.dadosCompra) return;
 
     centralDocumentoIdAtual = payload.documentoId || null;
+    if (typeof rolarParaTopoConteudoErp === 'function') rolarParaTopoConteudoErp();
     showCompraModal();
     finalizarImportacaoXmlCompra(payload.dadosCompra);
 }
@@ -2594,7 +3167,9 @@ function preencherFormularioCompra(data) {
 
     // Itens
     itensCompraAtual = (data.itens || []).map(item => normalizeItemCompra(item));
+    itensCompraAtual.forEach(recusarVinculoInativoItemCompra);
     renderItensCompraTabela();
+    buscarSugestoesProdutosItensCompra();
 
     // Pagamento padrão
     $('#condicao_pagamento').val('avista');
@@ -2957,4 +3532,3 @@ function confirmarEmissaoNFeDevolucaoCompra(id) {
         });
     });
 }
-

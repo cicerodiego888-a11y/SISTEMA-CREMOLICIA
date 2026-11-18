@@ -25,6 +25,7 @@ class LipSearchService {
       return localStorage.getItem('token');
     });
     this.pageSize = options.pageSize || 20;
+    this.contexto = String(options.contexto || '').trim();
     this.cache = new Map();
     this.inflight = new Map();
     this.requestId = 0;
@@ -95,6 +96,7 @@ class LipSearchService {
     }
     params.set('offset', String(offset));
     params.set('limite', String(this.pageSize));
+    if (this.contexto) params.set('contexto', this.contexto);
 
     const headers = { 'Content-Type': 'application/json' };
     const token = this.getToken();

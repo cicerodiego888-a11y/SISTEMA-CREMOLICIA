@@ -1003,7 +1003,59 @@ window.minimizarModal = function(modalId) {
 // =========================
 
 // Carrega página de produtos
-function loadProdutos() {
+function capturarEstadoTelaProdutos(produtoId, novoAtivo) {
+    const categoriasAbertas = $('#categorias-container .categoria-card')
+        .filter(function () {
+            return $(this).find('.card-body[id^="produtos-categoria-"]').is(':visible');
+        })
+        .map(function () {
+            return String($(this).attr('data-categoria-id') || '');
+        })
+        .get()
+        .filter(Boolean);
+
+    return {
+        busca: String($('#buscaProduto').val() || ''),
+        categoriaId: String($('#filtroCategoriaProduto').val() || ''),
+        status: String($('#filtroStatusProduto').val() || 'todos'),
+        categoriasAbertas,
+        produtoId: produtoId == null ? null : String(produtoId),
+        novoAtivo: novoAtivo == null ? null : Number(novoAtivo),
+        scrollX: window.scrollX,
+        scrollY: window.scrollY
+    };
+}
+
+function restaurarEstadoTelaProdutos(estado) {
+    if (!estado) return;
+
+    if (!estado.busca && !estado.categoriaId) {
+        estado.categoriasAbertas.forEach((categoriaId) => {
+            toggleProdutosCategoriaMenu(categoriaId);
+        });
+    }
+
+    requestAnimationFrame(() => {
+        window.scrollTo(estado.scrollX, estado.scrollY);
+
+        if (estado.produtoId != null && estado.novoAtivo != null) {
+            const acaoProduto = estado.novoAtivo === 1 ? 'desabilitarProduto' : 'habilitarProduto';
+            const linhaProduto = document.querySelector(
+                `#page-content [data-produto-id="${estado.produtoId}"]`
+            );
+            const botaoAcao = linhaProduto?.querySelector(
+                `button[onclick="${acaoProduto}(${estado.produtoId})"]`
+            );
+            const focoAlternativo = document.getElementById(
+                estado.busca ? 'buscaProduto' : 'filtroStatusProduto'
+            );
+
+            (botaoAcao || focoAlternativo)?.focus({ preventScroll: true });
+        }
+    });
+}
+
+function loadProdutos(estadoUi = null) {
     const modoFiscal = typeof modoFiscalQueryParam === 'function' ? modoFiscalQueryParam() : '0';
 
     $.ajax({
@@ -1011,7 +1063,7 @@ function loadProdutos() {
         method: 'GET',
         success: function (produtos) {
             window.produtosList = produtos || [];
-            renderProdutos(window.produtosList);
+            renderProdutos(window.produtosList, estadoUi);
         },
         error: function () {
             $('#page-content').html('<div class="alert alert-danger">Erro ao carregar produtos!</div>');
@@ -2062,10 +2114,11 @@ function gerarRelatorioEstoque() {
 }
 
 // Renderiza listagem de produtos
-function renderProdutos(produtos) {
+function renderProdutos(produtos, estadoUi = null) {
     window.produtosCache = produtos;
     window.produtosOriginais = produtos;
     const filtroStatusAtual = String(
+        estadoUi?.status ||
         window._filtroStatusProdutoPreferido ||
         ($('#filtroStatusProduto').length ? $('#filtroStatusProduto').val() : '') ||
         'todos'
@@ -2201,6 +2254,16 @@ function renderProdutos(produtos) {
 
     $('#page-content').html(html);
 
+    if (estadoUi) {
+        $('#buscaProduto').val(estadoUi.busca);
+        $('#filtroCategoriaProduto').val(estadoUi.categoriaId);
+        $('#filtroStatusProduto').val(estadoUi.status);
+        window._filtroStatusProdutoPreferido = estadoUi.status;
+        if (estadoUi.busca || estadoUi.categoriaId) {
+            aplicarFiltrosProdutos(produtos);
+        }
+    }
+
     $('#buscaProduto, #filtroCategoriaProduto, #filtroStatusProduto').on('input change', function () {
         if (this.id === 'filtroStatusProduto') {
             window._filtroStatusProdutoPreferido = String($(this).val() || 'todos');
@@ -2209,7 +2272,10 @@ function renderProdutos(produtos) {
     });
 
     // Carregar categorias inicialmente
-    carregarCategoriasProdutos();
+    const requisicaoCategorias = carregarCategoriasProdutos();
+    if (estadoUi) {
+        requisicaoCategorias.always(() => restaurarEstadoTelaProdutos(estadoUi));
+    }
     inicializarCardEstoqueBaixo();
     inicializarModalVencimentosProdutos();
     carregarVencimentosProdutos();
@@ -2257,7 +2323,7 @@ function carregarCategoriasProdutos() {
         </div>
     `);
 
-    $.ajax({
+    return $.ajax({
         url: `${API_URL}/categorias?tipo=produto`,
         method: 'GET',
         success: function(categorias) {
@@ -2415,17 +2481,92 @@ function sugerirUnidadeFisicaPorCategoria() {
     return 'KG';
 }
 
+function rotuloNaturezaCadastro(valor) {
+    const natureza = String(valor || '').trim().toUpperCase();
+    const rotulos = { INSUMO: 'Insumo', PRODUZIDO: 'Produzido', COMERCIAL: 'Comercial' };
+    return rotulos[natureza] || '';
+}
+
+function moedaCadastroProduto(valor) {
+    const numero = Number(valor);
+    if (!Number.isFinite(numero)) return '';
+    return numero.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+}
+
+function montarCartoesResumoProduto(produto, isEdit) {
+    if (!isEdit || !produto) return '';
+    const unidade = produto.unidade || '';
+    const opcoes = { produtoFracionado: produtoUsaConversaoUnidades(produto) };
+    const cartoes = [];
+    const total = Number(produto.estoque_atual ?? (Number(produto.saldo_fiscal || 0) + Number(produto.saldo_nao_fiscal || 0)));
+    if (Number.isFinite(total)) {
+        cartoes.push(['Estoque total', formatarEstoqueProduto(total, unidade, opcoes)]);
+    }
+    if (produto.preco_compra != null && produto.preco_compra !== '') {
+        cartoes.push(['Último custo', moedaCadastroProduto(produto.preco_compra)]);
+    }
+    if (produto.custo_medio != null && produto.custo_medio !== '') {
+        cartoes.push(['Custo médio', moedaCadastroProduto(produto.custo_medio)]);
+    }
+    if (produto.preco_venda != null && produto.preco_venda !== '') {
+        cartoes.push(['Preço de segurança', moedaCadastroProduto(produto.preco_venda)]);
+    }
+    if (String(produto.fornecedor || '').trim()) {
+        cartoes.push(['Fornecedor preferencial', escapeHtml(String(produto.fornecedor).trim())]);
+    }
+    if (!cartoes.length) return '';
+    return `<div class="produto-ficha-cartoes">${cartoes.map(([rotulo, valor]) => `
+        <div class="produto-ficha-cartao">
+            <span>${rotulo}</span>
+            <strong>${valor}</strong>
+        </div>
+    `).join('')}</div>`;
+}
+
 function montarResumoInteligenteProduto(produto, isEdit) {
     const nome = isEdit ? (produto?.nome || '—') : 'Novo produto';
     const fase = avaliarFaseCadastroProduto(isEdit, Boolean(produto?.tem_movimentacoes));
+    const codigo = isEdit ? (produto?.codigo || '') : '';
+    const natureza = rotuloNaturezaCadastro(produto?.natureza_cadastro);
+    const ativo = !isEdit || produtoEstaAtivo(produto);
+    const grupo = isEdit
+        ? (produto?.categoria_nome || produto?.categoria || '')
+        : '';
+    const acoesExtras = isEdit ? `
+        <button type="button" onclick="historicoProduto(${Number(produto.id)})">Histórico</button>
+        ${ativo
+            ? `<button type="button" onclick="desabilitarProduto(${Number(produto.id)})">Desabilitar</button>`
+            : `<button type="button" onclick="habilitarProduto(${Number(produto.id)})">Reabilitar</button>`}
+    ` : '';
 
     return `
         <div class="col-12 mb-2" id="resumoInteligenteProduto">
-            <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 py-1">
-                <div class="fs-5 fw-semibold" id="resumo_produto_nome">${escapeHtml(nome)}</div>
-                <span class="badge ${fase.fase === 'OPERACAO' ? 'bg-secondary' : 'bg-info text-dark'}" id="resumo_produto_fase">
-                    ${escapeHtml(fase.label)}
-                </span>
+            <div class="produto-ficha-topo">
+                <div class="produto-ficha-trilha">Produtos <span>›</span> Cadastro <span>›</span> <strong id="ficha_produto_trilha">${escapeHtml(nome)}</strong></div>
+                <div class="produto-ficha-topo__linha">
+                    <div>
+                        <h2 class="produto-ficha-nome" id="resumo_produto_nome">${escapeHtml(nome)}</h2>
+                        <div class="produto-ficha-codigo">Código: <strong id="ficha_produto_codigo">${escapeHtml(codigo || '—')}</strong></div>
+                        <div class="produto-ficha-badges">
+                            <span class="produto-ficha-badge ${ativo ? 'is-ativo' : 'is-inativo'}" id="ficha_produto_status">${ativo ? 'Ativo' : 'Desabilitado'}</span>
+                            ${natureza ? `<span class="produto-ficha-badge is-natureza" id="ficha_produto_natureza">${escapeHtml(natureza)}</span>` : '<span class="produto-ficha-badge is-natureza" id="ficha_produto_natureza" hidden></span>'}
+                            <span class="badge ${fase.fase === 'OPERACAO' ? 'bg-secondary' : 'bg-info text-dark'}" id="resumo_produto_fase">${escapeHtml(fase.label)}</span>
+                        </div>
+                        <div class="produto-ficha-grupo">Grupo comercial <strong id="ficha_produto_grupo">${escapeHtml(grupo || 'Não informado')}</strong></div>
+                    </div>
+                    <div class="produto-ficha-acoes">
+                        <details class="produto-ficha-mais">
+                            <summary>Mais ações</summary>
+                            <div>
+                                <button type="button" onclick="minimizarModal('produtoModal')">Minimizar</button>
+                                ${acoesExtras}
+                            </div>
+                        </details>
+                        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancelar</button>
+                        <button type="button" class="btn btn-primary btn-sm" onclick="saveProduto()">Salvar produto</button>
+                    </div>
+                </div>
+                ${montarCartoesResumoProduto(produto, isEdit)}
             </div>
             <span class="d-none" id="resumo_unidade_base"></span>
             <span class="d-none" id="resumo_conversao_fisica"></span>
@@ -2440,6 +2581,13 @@ function atualizarResumoInteligenteProduto() {
     if (!$resumo.length) return;
 
     const nome = ($('#nome').val() || '').trim() || 'Novo produto';
+    const codigo = ($('#codigo').val() || '').trim();
+    $('#ficha_produto_trilha').text(nome);
+    $('#ficha_produto_codigo').text(codigo || '—');
+    const grupo = ($('#categoria_id option:selected').text() || '').trim();
+    if ($('#ficha_produto_grupo').length && $('#categoria_id').val()) {
+        $('#ficha_produto_grupo').text(grupo || 'Não informado');
+    }
     const base = String($('#unidade').val() || 'un').toUpperCase();
     const fisicaOn = $('#utiliza_conversao_fisica').is(':checked');
     const fisicaUn = fisicaOn
@@ -2467,6 +2615,1604 @@ function atualizarResumoInteligenteProduto() {
     }
     $('#resumo_produto_status').text('');
 }
+
+function abaDoDominioProduto(texto) {
+    const titulo = String(texto || '');
+    if (/identifica/i.test(titulo)) return { id: 'geral', rotulo: 'Geral' };
+    if (/comercial|unidades|convers|formas de venda/i.test(titulo)) return { id: 'comercial', rotulo: 'Comercial' };
+    if (/estoque/i.test(titulo)) return { id: 'estoque', rotulo: 'Estoque' };
+    if (/custos/i.test(titulo)) return { id: 'custos', rotulo: 'Custos' };
+    if (/fiscal/i.test(titulo)) return { id: 'fiscal', rotulo: 'Fiscal' };
+    if (/hist[oó]rico/i.test(titulo)) return { id: 'historico', rotulo: 'Histórico' };
+    return null;
+}
+
+function renderOpcoesLinhaProdutosProduto() {
+    const wrap = $('#linha_produtos_produto_wrap');
+    const select = document.getElementById('linha_produtos_produto');
+    if (!wrap.length || !select) return;
+    const linhas = wrap.data('linhas') || [];
+    const escolhida = String($('#linha_produtos_id_produto').val() || '');
+    const termo = String($('#linha_produtos_busca').val() || '').trim().toLowerCase();
+    const visiveis = linhas.filter(function(linha) {
+        if (String(linha.id) === escolhida) return true;
+        if (Number(linha.ativo) !== 1) return false;
+        if (!termo) return true;
+        return String(linha.nome || '').toLowerCase().includes(termo)
+            || String(linha.codigo || '').toLowerCase().includes(termo);
+    });
+    const opcoes = ['<option value="">Sem Linha</option>'].concat(visiveis.map(function(linha) {
+        const rotulo = (linha.codigo ? linha.codigo + ' — ' : '') + (linha.nome || '') + (Number(linha.ativo) === 1 ? '' : ' (inativa)');
+        return `<option value="${Number(linha.id)}">${escapeHtml(rotulo)}</option>`;
+    }));
+    select.innerHTML = opcoes.join('');
+    select.value = escolhida && visiveis.some(function(linha) { return String(linha.id) === escolhida; }) ? escolhida : '';
+}
+
+function atualizarLinhaProdutosCadastroProduto(natureza) {
+    const wrap = $('#linha_produtos_produto_wrap');
+    if (!wrap.length) return;
+    wrap.toggleClass('d-none', natureza === 'INSUMO' || wrap.data('ausente') === 1);
+    if (wrap.data('carregado') || wrap.data('carregando')) return;
+    wrap.data('carregando', 1);
+    $.ajax({
+        url: `${API_URL}/fabrica-loja/linhas-produtos?incluir_inativas=1`,
+        method: 'GET'
+    }).done(function(resposta) {
+        if (resposta && resposta.instalada === false) {
+            wrap.data('ausente', 1).addClass('d-none');
+            return;
+        }
+        wrap.data('linhas', resposta?.linhas || []);
+        wrap.data('carregado', 1);
+        renderOpcoesLinhaProdutosProduto();
+    }).always(function() {
+        wrap.removeData('carregando');
+    });
+}
+
+$(document).on('input', '#linha_produtos_busca', renderOpcoesLinhaProdutosProduto);
+$(document).on('change', '#linha_produtos_produto', function() {
+    $('#linha_produtos_id_produto').val(this.value || '');
+});
+
+function atualizarNaturezaCadastroProduto() {
+    const natureza = $('#natureza_cadastro_produto').val();
+    atualizarLinhaProdutosCadastroProduto(natureza);
+    const wrap = $('#grupo_insumo_produto_wrap');
+    if (!wrap.length) return;
+    if (natureza !== 'INSUMO') {
+        wrap.addClass('d-none');
+        return;
+    }
+    wrap.removeClass('d-none');
+    if (wrap.data('carregado')) return;
+    const select = document.getElementById('grupo_insumo_produto');
+    const atual = select ? (select.getAttribute('data-grupo-atual') || '') : '';
+    $.ajax({
+        url: `${API_URL}/fabrica-loja/grupos-insumos`,
+        method: 'GET'
+    }).done(function(resposta) {
+        const grupos = resposta?.grupos || [];
+        const opcoes = ['<option value="">Sem grupo</option>'].concat(grupos.map(function(grupo) {
+            return `<option value="${grupo.id}">${escapeHtml(grupo.nome || '')}</option>`;
+        }));
+        const escolhido = select && select.value ? select.value : '';
+        $('#grupo_insumo_produto').html(opcoes.join(''));
+        const manter = escolhido || atual;
+        if (manter) $('#grupo_insumo_produto').val(String(manter));
+        wrap.data('carregado', 1);
+    });
+}
+
+function organizarFichaOperacionalProduto(produto, isEdit) {
+    const root = document.getElementById('produtoFormDominios');
+    if (!root || root.dataset.abas === '1') return;
+    const filhos = Array.from(root.children);
+    const ordem = ['geral', 'comercial', 'estoque', 'custos', 'fiscal', 'observacoes', 'historico', 'ficha_tecnica'];
+    const rotulos = {
+        geral: 'Geral',
+        comercial: 'Comercial',
+        estoque: 'Estoque',
+        custos: 'Custos',
+        fiscal: 'Fiscal',
+        observacoes: 'Observações',
+        historico: 'Histórico',
+        ficha_tecnica: 'Ficha Técnica'
+    };
+    const panes = {};
+    let atual = null;
+
+    function garantirPainel(id) {
+        if (panes[id]) return panes[id];
+        const pane = document.createElement('div');
+        pane.className = 'col-12 produto-ficha-aba';
+        pane.dataset.aba = id;
+        pane.hidden = id !== 'geral';
+        panes[id] = pane;
+        return pane;
+    }
+
+    filhos.forEach((el) => {
+        if (el.id === 'resumoInteligenteProduto') return;
+        const titulo = el.querySelector ? el.querySelector(':scope > h6') : null;
+        const aba = titulo ? abaDoDominioProduto(titulo.textContent) : null;
+        if (aba) {
+            atual = aba.id;
+            garantirPainel(atual).appendChild(el);
+            return;
+        }
+        if (atual) garantirPainel(atual).appendChild(el);
+    });
+
+    const observacoes = document.createElement('div');
+    observacoes.className = 'col-12 mb-3';
+    observacoes.innerHTML = `
+        <div class="card">
+            <div class="card-body">
+                <label for="observacoes" class="form-label">Observações</label>
+                <textarea class="form-control" id="observacoes" rows="4">${escapeHtml(isEdit ? (produto?.observacoes || '') : '')}</textarea>
+            </div>
+        </div>
+    `;
+    garantirPainel('observacoes').appendChild(observacoes);
+    garantirPainel('ficha_tecnica');
+
+    if (isEdit && produto && panes.estoque) {
+        const saldos = document.createElement('div');
+        saldos.className = 'col-12 mb-3';
+        saldos.innerHTML = `
+            <div class="card produto-ficha-saldos">
+                <div class="card-body">
+                    <div class="produto-ficha-secao">Estoque do produto</div>
+                    ${formatarEstoqueDetalheProduto(produto)}
+                    <p class="small text-muted mb-0">Os números acima são os saldos já gravados. Salvar o cadastro não movimenta estoque.</p>
+                </div>
+            </div>
+        `;
+        panes.estoque.prepend(saldos);
+    }
+
+    const nav = document.createElement('div');
+    nav.className = 'col-12 produto-ficha-abas';
+    nav.innerHTML = '<div class="produto-ficha-abas__nav" role="tablist"></div>';
+    const navInterno = nav.querySelector('.produto-ficha-abas__nav');
+
+    function ativarAba(id) {
+        root.querySelectorAll('.produto-ficha-aba').forEach((pane) => {
+            pane.hidden = pane.dataset.aba !== id;
+        });
+        navInterno.querySelectorAll('.produto-ficha-abas__btn').forEach((botao) => {
+            botao.classList.toggle('is-ativa', botao.dataset.aba === id);
+        });
+        if (id === 'ficha_tecnica' && typeof root._carregarFichaTecnicaProduto === 'function') {
+            root._carregarFichaTecnicaProduto();
+        }
+    }
+
+    ordem.forEach((id) => {
+        if (!panes[id]) return;
+        const botao = document.createElement('button');
+        botao.type = 'button';
+        botao.className = 'produto-ficha-abas__btn' + (id === 'geral' ? ' is-ativa' : '');
+        botao.dataset.aba = id;
+        botao.textContent = rotulos[id];
+        botao.addEventListener('click', () => ativarAba(id));
+        navInterno.appendChild(botao);
+    });
+
+    const resumo = document.getElementById('resumoInteligenteProduto');
+    if (resumo) resumo.after(nav);
+    else root.prepend(nav);
+    ordem.forEach((id) => {
+        if (panes[id]) root.appendChild(panes[id]);
+    });
+    root.dataset.abas = '1';
+    root._ativarAbaProduto = ativarAba;
+    root._carregarFichaTecnicaProduto = () => inicializarAbaFichaTecnicaProduto(root, produto, isEdit);
+
+    if (isEdit && produto?.id && String(produto.natureza_cadastro || '').toUpperCase() !== 'INSUMO') {
+        vincularAbaProducaoProduto(produto, ativarAba);
+    }
+}
+
+function vincularAbaProducaoProduto(produto, ativarAba) {
+    $.ajax({
+        url: `${API_URL}/fabrica-loja/fichas?incluir_inativas=1`,
+        method: 'GET',
+        headers: { Authorization: 'Bearer ' + (localStorage.getItem('token') || '') },
+        success: function (resposta) {
+            const lista = Array.isArray(resposta?.fichas) ? resposta.fichas : [];
+            const fichas = lista.filter((ficha) => Number(ficha.produto_id) === Number(produto.id));
+            const produzido = String(produto.natureza_cadastro || '').toUpperCase() === 'PRODUZIDO';
+            if (!produzido && !fichas.length) return;
+            const root = document.getElementById('produtoFormDominios');
+            const nav = root && root.querySelector('.produto-ficha-abas__nav');
+            if (!root || !nav || root.querySelector('[data-aba="producao"]')) return;
+            const pane = document.createElement('div');
+            pane.className = 'col-12 produto-ficha-aba';
+            pane.dataset.aba = 'producao';
+            pane.hidden = true;
+            const itens = fichas.length
+                ? fichas.map((ficha) => `
+                    <div class="produto-ficha-producao">
+                        <div>
+                            <div class="produto-ficha-secao">${escapeHtml(ficha.codigo || 'Ficha técnica')}</div>
+                            <strong>${escapeHtml(ficha.nome || 'Ficha técnica')}</strong>
+                            <div>Rendimento: ${escapeHtml(ficha.rendimento_quantidade == null ? '—' : String(ficha.rendimento_quantidade))} ${escapeHtml(ficha.rendimento_unidade || '')}</div>
+                            ${ficha.ativa ? '' : '<div class="small text-muted">Inativa</div>'}
+                        </div>
+                        <button type="button" class="btn btn-outline-primary btn-sm" onclick="abrirFichaVinculada(${Number(ficha.id)})">Ver ficha técnica</button>
+                    </div>
+                `).join('')
+                : '<p class="mb-0">Nenhuma ficha técnica vinculada a este produto.</p>';
+            pane.innerHTML = `
+                <div class="card"><div class="card-body">
+                    <div class="produto-ficha-secao">Produção</div>
+                    ${itens}
+                    <button type="button" class="btn btn-link btn-sm px-0" onclick="abrirFichasTecnicas()">Abrir fichas técnicas</button>
+                </div></div>
+            `;
+            const historico = root.querySelector(':scope > .produto-ficha-aba[data-aba="historico"]');
+            if (historico) root.insertBefore(pane, historico);
+            else root.appendChild(pane);
+            const botao = document.createElement('button');
+            botao.type = 'button';
+            botao.className = 'produto-ficha-abas__btn';
+            botao.dataset.aba = 'producao';
+            botao.textContent = 'Produção';
+            botao.addEventListener('click', () => ativarAba('producao'));
+            const botaoHistorico = nav.querySelector('[data-aba="historico"]');
+            if (botaoHistorico) nav.insertBefore(botao, botaoHistorico);
+            else nav.appendChild(botao);
+        }
+    });
+}
+
+function inicializarAbaFichaTecnicaProduto(root, produto, isEdit) {
+    const pane = root.querySelector('.produto-ficha-aba[data-aba="ficha_tecnica"]');
+    if (!pane || pane.dataset.ftPadraoInicializada === '1') return;
+
+    pane.dataset.ftPadraoInicializada = '1';
+    pane.innerHTML = `
+        <div class="card">
+            <div class="card-body">
+                <div class="produto-ficha-secao">Fichas técnicas do produto</div>
+                <div class="alert mb-3" data-ft-produto-feedback role="status" hidden></div>
+                <div data-ft-produto-conteudo><p class="text-muted mb-0">Preparando ficha técnica...</p></div>
+            </div>
+        </div>
+    `;
+
+    const conteudo = pane.querySelector('[data-ft-produto-conteudo]');
+    const feedback = pane.querySelector('[data-ft-produto-feedback]');
+    const produtoId = Number(produto?.id) || 0;
+    const natureza = String(produto?.natureza_cadastro || '').toUpperCase();
+    const estado = {
+        produtoId,
+        fichas: [],
+        vinculos: [],
+        vinculosAtivos: [],
+        fichasTradicionaisAtivas: [],
+        fichaTradicionalExpandidaId: null,
+        detalhesFichasTradicionais: {},
+        buscaFicha: '',
+        resultadosBuscaFicha: [],
+        buscaFichaCarregando: false,
+        erroBuscaFicha: '',
+        buscaFichaRequestId: 0,
+        buscaFichaTimer: null,
+        fichaSelecionadaId: null,
+        origemFichaSelecionada: null,
+        fichaSelecionada: null,
+        fichaTradicionalSelecionada: null,
+        versaoSelecionadaId: null,
+        versaoCarregando: false,
+        fichaRequestId: 0,
+        insumos: [],
+        operacaoAjuste: 'HERDAR',
+        componenteBaseId: '',
+        produtoAjusteId: '',
+        nomeProdutoAjuste: '',
+        quantidadeAjuste: '',
+        unidadeAjuste: '',
+        justificativaAjuste: '',
+        ajusteEditando: null,
+        ajusteEditandoVinculoId: null,
+        carregando: false,
+        carregado: false,
+        ocupado: false,
+        buscandoInsumos: false,
+        conflitoVinculos: false,
+        erroCarga: false,
+        mensagem: '',
+        tipoMensagem: 'info'
+    };
+
+    function definirMensagem(mensagem, tipo = 'info') {
+        estado.mensagem = mensagem || '';
+        estado.tipoMensagem = tipo;
+        feedback.textContent = estado.mensagem;
+        feedback.className = `alert alert-${tipo} mb-3`;
+        feedback.hidden = !estado.mensagem;
+    }
+
+    function mensagemErro(xhr, reserva) {
+        if (typeof ftPadraoMensagemErro === 'function') {
+            return ftPadraoMensagemErro(xhr, reserva);
+        }
+        return xhr?.responseJSON?.error || reserva || 'Falha de comunicação com o servidor.';
+    }
+
+    function falhaCarga(xhr, reserva) {
+        estado.carregando = false;
+        estado.carregado = false;
+        estado.erroCarga = true;
+        definirMensagem(mensagemErro(xhr, reserva), 'danger');
+        renderizar();
+    }
+
+    function formatarVersao(versao) {
+        return versao ? `v${escapeHtml(versao.numero_versao)}` : 'Versão indisponível';
+    }
+
+    function acharComponenteBase(id, versao) {
+        return (versao?.componentes || []).find((item) =>
+            Number(item.componente_base_id ?? item.produto_id) === Number(id));
+    }
+
+    function obterVinculoCarregado(id) {
+        return estado.vinculosAtivos.find((item) => Number(item.id) === Number(id));
+    }
+
+    function htmlVinculosInativos() {
+        const inativos = estado.vinculos.filter((item) => !item.ativo);
+        if (!inativos.length) return '';
+        return `
+            <div class="alert alert-light border mt-3 mb-0">
+                <strong>Vínculos inativos anteriores</strong>
+                ${inativos.map((item) => `
+                    <div class="small mt-1">
+                        ${escapeHtml(item.ficha_codigo || '')} ${escapeHtml(item.ficha_nome || 'Ficha padrão')}
+                        — ${formatarVersao({ numero_versao: item.numero_versao })}
+                    </div>
+                `).join('')}
+            </div>
+        `;
+    }
+
+    function htmlAssociacao() {
+        return `
+            ${htmlFichasTradicionaisVinculadas()}
+            ${estado.vinculosAtivos.length
+                ? estado.vinculosAtivos.map((item) => htmlFichaVinculada(item)).join('')
+                : ''}
+            ${!estado.vinculosAtivos.length && !estado.fichasTradicionaisAtivas.length
+                ? '<p class="text-muted">Nenhuma ficha técnica ativa está associada a este produto.</p>'
+                : ''}
+            ${htmlVinculosInativos()}
+            ${natureza !== 'PRODUZIDO'
+                ? '                <div class="alert alert-warning mb-0">A API permite vínculos de fichas versionadas somente para produtos classificados como PRODUZIDO.</div>'
+                : `
+                    <div data-ft-produto-associacao>
+                        <h6 class="mb-2">Adicionar ficha técnica</h6>
+                        <div class="mb-3">
+                            <label class="form-label" for="ft-produto-ficha-busca">Buscar ficha técnica</label>
+                            <input class="form-control" id="ft-produto-ficha-busca" data-ft-produto-ficha-busca type="search" autocomplete="off" placeholder="Código ou nome da ficha" value="${escapeHtml(estado.buscaFicha)}" ${estado.ocupado ? 'disabled' : ''}>
+                            <div class="small text-muted mt-1">Pesquise por código ou nome. Fichas tradicionais, por sabor e legadas aparecem juntas; a origem define como cada ficha será utilizada.</div>
+                        </div>
+                        <div class="produto-ficha-busca-resultados mb-3" data-ft-produto-ficha-resultados aria-live="polite">
+                            ${htmlResultadosBuscaFicha()}
+                        </div>
+                        <div data-ft-produto-ficha-selecao>${htmlPreviaFichaSelecionada()}</div>
+                    </div>
+                `}
+        `;
+    }
+
+    function htmlFichasTradicionaisVinculadas() {
+        if (!estado.fichasTradicionaisAtivas.length) return '';
+        return `
+            <section class="mb-3">
+                <h6>Fichas tradicionais vinculadas</h6>
+                ${estado.fichasTradicionaisAtivas.map((ficha) => {
+                    const id = Number(ficha.id);
+                    const expandida = estado.fichaTradicionalExpandidaId === id;
+                    const detalhe = estado.detalhesFichasTradicionais[id];
+                    const composicao = detalhe && Array.isArray(detalhe.componentes)
+                        ? `<ul class="mb-2">${detalhe.componentes.map((item) => `<li>${escapeHtml(item.quantidade)} ${escapeHtml(item.unidade)} — ${escapeHtml(item.descricao)}</li>`).join('')}</ul>`
+                        : '';
+                    const etapas = detalhe && Array.isArray(detalhe.etapas)
+                        ? `<ol class="mb-2">${detalhe.etapas.map((item) => `<li>${escapeHtml(item.titulo)}${item.descricao ? ` — ${escapeHtml(item.descricao)}` : ''}</li>`).join('')}</ol>`
+                        : '';
+                    return `
+                        <article class="border rounded p-2 mb-2">
+                            <div class="d-flex justify-content-between align-items-start gap-2">
+                                <div>
+                                    <strong>${escapeHtml(ficha.nome || 'Ficha sem nome')}</strong>
+                                    <div class="small text-muted">${escapeHtml(ficha.codigo || 'Sem código')} · Tradicional · ${ficha.ativa ? 'Ativa' : 'Inativa'}</div>
+                                    <div class="small text-muted">Rendimento: ${escapeHtml(ficha.rendimento_quantidade ?? '—')} ${escapeHtml(ficha.rendimento_unidade || '')}</div>
+                                </div>
+                                <div class="d-flex gap-2">
+                                    <button type="button" class="btn btn-outline-secondary btn-sm" data-ft-produto-acao="visualizar-ficha-tradicional" data-ficha-id="${id}" ${estado.ocupado ? 'disabled' : ''}>${expandida ? 'Ocultar composição' : 'Ver composição'}</button>
+                                    <button type="button" class="btn btn-outline-danger btn-sm" data-ft-produto-acao="remover-ficha-tradicional" data-ficha-id="${id}" ${estado.ocupado ? 'disabled' : ''}>Desvincular</button>
+                                </div>
+                            </div>
+                            ${expandida ? `<div class="mt-2"><strong>Componentes</strong>${composicao || '<p class="mb-2 text-muted">Nenhum componente cadastrado.</p>'}<strong>Etapas</strong>${etapas || '<p class="mb-0 text-muted">Nenhuma etapa cadastrada.</p>'}</div>` : ''}
+                        </article>
+                    `;
+                }).join('')}
+            </section>
+        `;
+    }
+
+    function htmlResultadosBuscaFicha() {
+        if (!estado.buscaFicha.trim()) return '<p class="text-muted mb-0">Digite um código ou nome para buscar fichas técnicas.</p>';
+        if (estado.buscaFichaCarregando) return '<p class="text-muted mb-0">Buscando fichas técnicas...</p>';
+        const alerta = estado.erroBuscaFicha
+            ? `<div class="alert alert-warning mb-2">${escapeHtml(estado.erroBuscaFicha)}</div>`
+            : '';
+        if (!estado.resultadosBuscaFicha.length) {
+            return `${alerta}<p class="text-muted mb-0">Nenhuma ficha técnica encontrada.</p>`;
+        }
+        return `${alerta}${estado.resultadosBuscaFicha.map((item) => {
+            if (item.tipo === 'TRADICIONAL') {
+                const vinculadaAoProduto = Number(item.produto_id) === Number(produtoId);
+                const vinculadaOutroProduto = item.produto_id != null && !vinculadaAoProduto;
+                const bloqueada = estado.ocupado || vinculadaAoProduto || vinculadaOutroProduto;
+                return `
+                    <button type="button" class="produto-ficha-busca-resultado" data-ft-produto-acao="selecionar-ficha-tradicional" data-ficha-id="${escapeHtml(item.id)}" ${bloqueada ? 'disabled' : ''}>
+                        <span><strong>${escapeHtml(item.nome || 'Ficha sem nome')}</strong><small>${escapeHtml(item.codigo || 'Sem código')}</small></span>
+                        <span><small>Tradicional · ${escapeHtml(item.componentes)} componentes · ${escapeHtml(item.etapas)} etapas</small><small>${vinculadaAoProduto ? 'Já vinculada' : (vinculadaOutroProduto ? 'Vinculada a outro produto' : (item.ativa === true ? 'Ativa' : 'Inativa'))}</small></span>
+                    </button>
+                `;
+            }
+            const podeSelecionar = item.ativa === true && item.ultima_versao_id != null;
+            return `
+                <button type="button" class="produto-ficha-busca-resultado" data-ft-produto-acao="selecionar-ficha" data-ficha-id="${escapeHtml(item.id)}" ${estado.ocupado || !podeSelecionar ? 'disabled' : ''}>
+                    <span><strong>${escapeHtml(item.nome || 'Ficha sem nome')}</strong><small>${escapeHtml(item.codigo || 'Sem código')}</small></span>
+                    <span><small>${item.ultima_versao == null ? 'Sem versão publicada' : `v${escapeHtml(item.ultima_versao)}`}</small><small>${item.tipo === 'SABOR' ? 'Por sabor' : 'Padrão legado'} · ${item.ativa === true ? 'Ativa' : 'Inativa'}</small></span>
+                </button>
+            `;
+        }).join('')}`;
+    }
+
+    function htmlPreviaFichaSelecionada() {
+        if (!estado.fichaSelecionadaId) {
+            return '<p class="text-muted mb-0">Selecione uma ficha nos resultados para consultar as versões e a composição-base.</p>';
+        }
+        if (estado.versaoCarregando) {
+            return '<p class="text-muted mb-0">Carregando ficha, composição e versões disponíveis...</p>';
+        }
+        if (estado.origemFichaSelecionada === 'TRADICIONAL') {
+            return htmlPreviaFichaTradicional(estado.fichaTradicionalSelecionada);
+        }
+        const ficha = estado.fichaSelecionada;
+        if (!ficha) return '<p class="text-muted mb-0">Não foi possível carregar os dados da ficha selecionada.</p>';
+        const versoes = ficha.versoes.filter((item) => item.estado === 'PUBLICADA');
+        const versao = versoes.find((item) => Number(item.id) === Number(estado.versaoSelecionadaId));
+        const componentes = versao?.componentes || [];
+        return `
+            <div class="produto-ficha-previa">
+                <div class="d-flex align-items-start justify-content-between gap-2 flex-wrap mb-3">
+                    <div>
+                        <h6 class="mb-1">Prévia da ficha selecionada</h6>
+                        <div><strong>${escapeHtml(ficha.nome)}</strong></div>
+                        <small class="text-muted">${escapeHtml(ficha.codigo || 'Sem código')} · ${ficha.ativa ? 'Ativa' : 'Inativa'}</small>
+                    </div>
+                    <div class="produto-ficha-previa-versao">
+                        <label class="form-label mb-1" for="ft-produto-ficha-versao">Versão publicada</label>
+                        <select class="form-select" id="ft-produto-ficha-versao" data-ft-produto-ficha-versao ${!versoes.length || estado.ocupado ? 'disabled' : ''}>
+                            ${versoes.length
+                                ? versoes.map((item) => `<option value="${escapeHtml(item.id)}" ${Number(item.id) === Number(estado.versaoSelecionadaId) ? 'selected' : ''}>v${escapeHtml(item.numero_versao)} — ${escapeHtml(item.rendimento_quantidade)} ${escapeHtml(item.rendimento_unidade)}</option>`).join('')
+                                : '<option value="">Nenhuma versão publicada disponível</option>'}
+                        </select>
+                    </div>
+                </div>
+                ${versao ? `
+                    <div class="small text-muted mb-2">Prévia da composição-base · versão publicada v${escapeHtml(versao.numero_versao)}</div>
+                    ${htmlComponentesDaVersao(versao)}
+                ` : '<p class="text-muted mb-2">A ficha selecionada não possui versão publicada para importação.</p>'}
+                <div class="d-flex justify-content-end mt-3">
+                    <button type="button" class="btn btn-success" data-ft-produto-acao="associar" ${estado.ocupado || !ficha.ativa || !versao ? 'disabled' : ''}>Importar ficha técnica</button>
+                </div>
+            </div>
+        `;
+    }
+
+    function htmlPreviaFichaTradicional(ficha) {
+        if (!ficha) return '<p class="text-muted mb-0">Não foi possível carregar a ficha tradicional selecionada.</p>';
+        const componentes = ficha.componentes || [];
+        const etapas = ficha.etapas || [];
+        return `
+            <div class="produto-ficha-previa">
+                <div class="d-flex align-items-start justify-content-between gap-2 flex-wrap mb-3">
+                    <div>
+                        <h6 class="mb-1">Prévia da ficha selecionada</h6>
+                        <div><strong>${escapeHtml(ficha.nome)}</strong></div>
+                        <small class="text-muted">${escapeHtml(ficha.codigo || 'Sem código')} · Tradicional · ${ficha.ativa ? 'Ativa' : 'Inativa'}</small>
+                    </div>
+                    <div class="small text-muted">
+                        Rendimento: ${escapeHtml(ficha.rendimento_quantidade ?? 'Não informado')}
+                        ${escapeHtml(ficha.rendimento_unidade || '')}
+                    </div>
+                </div>
+                <div class="small text-muted mb-2">Composição da ficha tradicional · a ficha será vinculada diretamente, sem conversão.</div>
+                ${htmlComponentesTradicionais(componentes)}
+                ${etapas.length ? `
+                    <div class="mt-3">
+                        <strong>Etapas</strong>
+                        <ol class="mb-0 mt-1">${etapas.map((item) => `<li>${escapeHtml(item.titulo)}${item.descricao ? ` — ${escapeHtml(item.descricao)}` : ''}</li>`).join('')}</ol>
+                    </div>
+                ` : ''}
+                ${!ficha.ativa ? '<div class="alert alert-warning mt-3 mb-0">Ficha tradicional inativa: não pode ser disponibilizada nem vinculada.</div>' : ''}
+                <div class="d-flex justify-content-end mt-3">
+                    <button type="button" class="btn btn-success" data-ft-produto-acao="associar" ${estado.ocupado || !ficha.ativa || (ficha.produto_id != null && Number(ficha.produto_id) !== Number(produtoId)) ? 'disabled' : ''}>Vincular ficha técnica</button>
+                </div>
+            </div>
+        `;
+    }
+
+    function htmlComponentesTradicionais(componentes) {
+        if (!componentes.length) return '<p class="text-muted mb-0">A ficha tradicional não possui componentes para exibição.</p>';
+        return `
+            <div class="table-responsive">
+                <table class="table table-sm align-middle mb-0">
+                    <thead><tr><th>Componente</th><th class="text-end">Quantidade</th><th>Unidade</th></tr></thead>
+                    <tbody>${componentes.map((item) => `
+                        <tr>
+                            <td>${escapeHtml(item.descricao || item.texto_legado || 'Componente sem descrição')}${item.vinculo_pendente ? ' · vínculo pendente' : ''}</td>
+                            <td class="text-end">${escapeHtml(item.quantidade ?? '')}</td>
+                            <td>${escapeHtml(item.unidade || '')}</td>
+                        </tr>
+                    `).join('')}</tbody>
+                </table>
+            </div>
+        `;
+    }
+
+    function htmlComponentesDaVersao(versao) {
+        const componentes = versao.componentes || [];
+        if (!componentes.length) return '<p class="text-muted mb-0">A versão não possui componentes disponíveis para exibição.</p>';
+        return `
+            <div class="table-responsive">
+                <table class="table table-sm align-middle mb-0">
+                    <thead><tr><th>Componente da versão-base</th><th class="text-end">Quantidade</th><th>Unidade</th></tr></thead>
+                    <tbody>${componentes.map((item) => `
+                        <tr>
+                            <td>${escapeHtml(item.descricao || `Insumo #${item.produto_id}`)}</td>
+                            <td class="text-end">${escapeHtml(item.quantidade)}</td>
+                            <td>${escapeHtml(item.unidade)}</td>
+                        </tr>
+                    `).join('')}</tbody>
+                </table>
+            </div>
+        `;
+    }
+
+    function atualizarBuscaFicha() {
+        const resultados = conteudo.querySelector('[data-ft-produto-ficha-resultados]');
+        if (resultados) resultados.innerHTML = htmlResultadosBuscaFicha();
+    }
+
+    function atualizarPreviaFicha() {
+        const selecao = conteudo.querySelector('[data-ft-produto-ficha-selecao]');
+        if (selecao) selecao.innerHTML = htmlPreviaFichaSelecionada();
+    }
+
+    function htmlComponentesBase(vinculo) {
+        return vinculo.versao
+            ? htmlComponentesDaVersao(vinculo.versao)
+            : '<p class="text-muted mb-0">A versão não possui componentes disponíveis para exibição.</p>';
+    }
+
+    function htmlAjustes(vinculo) {
+        const linhas = vinculo.ajustes.map((item) => {
+            const base = acharComponenteBase(item.componente_base_id, vinculo.versao);
+            const alvo = item.operacao === 'ADICIONAR'
+                ? `Insumo #${item.produto_id}`
+                : (base?.descricao || `Componente #${item.componente_base_id}`);
+            const detalhe = item.quantidade == null ? '' : ` — ${item.quantidade} ${item.unidade || ''}`;
+            return `
+                <div class="produto-ficha-ajuste">
+                    <div><strong>${escapeHtml(item.operacao)}</strong> · ${escapeHtml(alvo)}${escapeHtml(detalhe)}
+                        ${item.justificativa ? `<div class="small text-muted">${escapeHtml(item.justificativa)}</div>` : ''}
+                    </div>
+                    <div class="d-flex gap-1">
+                        <button type="button" class="btn btn-outline-primary btn-sm" data-ft-produto-acao="editar-ajuste" data-ajuste-id="${escapeHtml(item.id)}" data-vinculo-id="${escapeHtml(vinculo.id)}" ${estado.ocupado ? 'disabled' : ''}>Editar</button>
+                        <button type="button" class="btn btn-outline-danger btn-sm" data-ft-produto-acao="remover-ajuste" data-ajuste-id="${escapeHtml(item.id)}" data-vinculo-id="${escapeHtml(vinculo.id)}" ${estado.ocupado ? 'disabled' : ''}>Remover</button>
+                    </div>
+                </div>
+            `;
+        });
+        const vinculoEditavel = vinculo.ativo && vinculo.versao?.estado === 'PUBLICADA';
+        return `
+            ${linhas.length ? linhas.join('') : '<p class="text-muted mb-2">Nenhum ajuste específico para este produto.</p>'}
+            ${vinculoEditavel ? htmlFormularioAjuste(vinculo) : '<div class="alert alert-warning mt-2 mb-0">Vínculo inativo ou versão não publicada: ajustes disponíveis somente para consulta.</div>'}
+        `;
+    }
+
+    function htmlFormularioAjuste(vinculo) {
+        const sufixo = vinculo.id;
+        const editando = Number(estado.ajusteEditandoVinculoId) === Number(vinculo.id);
+        const ajuste = editando ? estado.ajusteEditando : null;
+        const operacao = editando ? (estado.operacaoAjuste || 'HERDAR') : 'HERDAR';
+        const baseId = editando ? estado.componenteBaseId : '';
+        const produtoId = editando ? estado.produtoAjusteId : '';
+        const produtoNome = editando ? estado.nomeProdutoAjuste : '';
+        const quantidade = editando ? estado.quantidadeAjuste : '';
+        const justificativa = editando ? estado.justificativaAjuste : '';
+        const base = acharComponenteBase(baseId, vinculo.versao);
+        const unidade = operacao === 'SUBSTITUIR'
+            ? (base?.unidade || '')
+            : (ajuste?.unidade || (editando ? estado.unidadeAjuste : ''));
+        const componentes = vinculo.versao?.componentes || [];
+        const options = componentes.map((item) => {
+            const id = Number(item.componente_base_id ?? item.produto_id);
+            const duplicado = vinculo.ajustes.some((atual) =>
+                Number(atual.componente_base_id) === id && Number(atual.id) !== Number(ajuste?.id || 0));
+            const selecionado = Number(id) === Number(baseId);
+            return `<option value="${id}" ${selecionado ? 'selected' : ''} ${duplicado ? 'disabled' : ''}>${escapeHtml(item.descricao || `Insumo #${id}`)} — ${escapeHtml(item.quantidade)} ${escapeHtml(item.unidade)}${duplicado && !selecionado ? ' (já possui ajuste)' : ''}</option>`;
+        }).join('');
+        const operacoes = ['HERDAR', 'SUBSTITUIR', 'ADICIONAR', 'REMOVER'];
+        return `
+            <div class="produto-ficha-ajuste-form" data-ft-produto-ajuste-form data-ajuste-id="${escapeHtml(ajuste?.id || '')}" data-vinculo-id="${escapeHtml(vinculo.id)}">
+                <h6 class="mb-2">${ajuste ? 'Editar ajuste' : 'Novo ajuste'}</h6>
+                <div class="row g-2">
+                    <div class="col-md-4">
+                        <label class="form-label" for="ft-produto-ajuste-operacao-${sufixo}">Operação</label>
+                        <select class="form-select" id="ft-produto-ajuste-operacao-${sufixo}" data-ft-produto-ajuste-operacao ${estado.ocupado ? 'disabled' : ''}>
+                            ${operacoes.map((item) => `<option value="${item}" ${item === operacao ? 'selected' : ''}>${item}</option>`).join('')}
+                        </select>
+                    </div>
+                    <div class="col-md-8" data-ft-produto-ajuste-base ${operacao === 'ADICIONAR' ? 'hidden' : ''}>
+                        <label class="form-label" for="ft-produto-ajuste-componente-${sufixo}">Componente da versão-base</label>
+                        <select class="form-select" id="ft-produto-ajuste-componente-${sufixo}" data-ft-produto-ajuste-componente ${estado.ocupado ? 'disabled' : ''}>
+                            <option value="">Selecione um componente</option>${options}
+                        </select>
+                    </div>
+                    <div class="col-md-8" data-ft-produto-ajuste-adicional ${operacao !== 'ADICIONAR' ? 'hidden' : ''}>
+                        <label class="form-label" for="ft-produto-ajuste-insumo-${sufixo}">Insumo adicional</label>
+                        <div class="input-group">
+                            <input class="form-control" id="ft-produto-ajuste-insumo-${sufixo}" data-ft-produto-ajuste-insumo placeholder="Nome ou código do insumo" value="${escapeHtml(produtoNome)}" ${estado.ocupado ? 'disabled' : ''}>
+                            <button type="button" class="btn btn-outline-secondary" data-ft-produto-acao="buscar-insumo" ${estado.ocupado || estado.buscandoInsumos ? 'disabled' : ''}>Buscar</button>
+                        </div>
+                        <input type="hidden" data-ft-produto-ajuste-insumo-id value="${escapeHtml(produtoId || '')}">
+                        <div class="mt-2" data-ft-produto-ajuste-resultados></div>
+                    </div>
+                    <div class="col-md-4" data-ft-produto-ajuste-quantidade ${operacao !== 'ADICIONAR' && operacao !== 'SUBSTITUIR' ? 'hidden' : ''}>
+                        <label class="form-label" for="ft-produto-ajuste-qtd-${sufixo}">Quantidade</label>
+                        <input class="form-control" id="ft-produto-ajuste-qtd-${sufixo}" data-ft-produto-ajuste-qtd inputmode="decimal" value="${escapeHtml(quantidade ?? '')}" ${estado.ocupado ? 'disabled' : ''}>
+                    </div>
+                    <div class="col-md-4" data-ft-produto-ajuste-unidade ${operacao !== 'ADICIONAR' && operacao !== 'SUBSTITUIR' ? 'hidden' : ''}>
+                        <label class="form-label" for="ft-produto-ajuste-un-${sufixo}">Unidade</label>
+                        <input class="form-control" id="ft-produto-ajuste-un-${sufixo}" data-ft-produto-ajuste-un value="${escapeHtml(unidade)}" ${operacao === 'SUBSTITUIR' ? 'readonly' : ''} ${estado.ocupado ? 'disabled' : ''}>
+                        ${operacao === 'SUBSTITUIR' ? '<small class="text-muted">Deve ser a mesma unidade da versão-base.</small>' : ''}
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label" for="ft-produto-ajuste-justificativa-${sufixo}">Justificativa (opcional)</label>
+                        <input class="form-control" id="ft-produto-ajuste-justificativa-${sufixo}" data-ft-produto-ajuste-justificativa maxlength="500" value="${escapeHtml(ajuste?.justificativa || justificativa)}" ${estado.ocupado ? 'disabled' : ''}>
+                    </div>
+                    <div class="col-12 d-flex justify-content-end gap-2">
+                        ${ajuste ? '<button type="button" class="btn btn-outline-secondary btn-sm" data-ft-produto-acao="cancelar-ajuste">Cancelar edição</button>' : ''}
+                        <button type="button" class="btn btn-primary btn-sm" data-ft-produto-acao="salvar-ajuste" ${estado.ocupado ? 'disabled' : ''}>${ajuste ? 'Salvar ajuste' : 'Adicionar ajuste'}</button>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    function htmlAtualizacoes(vinculo) {
+        const pendentes = vinculo.revisoes.filter((item) => item.estado === 'PENDENTE');
+        if (!pendentes.length) return '<p class="text-muted mb-0">Nenhuma atualização individual pendente.</p>';
+        return pendentes.map((item) => `
+            <div class="produto-ficha-atualizacao">
+                <div>
+                    <strong>Versão atual ${formatarVersao({ numero_versao: item.versao_anterior })} → proposta ${formatarVersao({ numero_versao: item.versao_nova })}</strong>
+                    <div class="small text-muted">A decisão afeta somente este produto.</div>
+                </div>
+                <div class="d-flex gap-2 flex-wrap">
+                    <button type="button" class="btn btn-success btn-sm" data-ft-produto-acao="decidir" data-vinculo-id="${escapeHtml(vinculo.id)}" data-revisao-id="${escapeHtml(item.id)}" data-decisao="APROVAR" ${estado.ocupado || !vinculo.ativo ? 'disabled' : ''}>Aprovar</button>
+                    <button type="button" class="btn btn-outline-secondary btn-sm" data-ft-produto-acao="decidir" data-vinculo-id="${escapeHtml(vinculo.id)}" data-revisao-id="${escapeHtml(item.id)}" data-decisao="MANTER_ANTERIOR" ${estado.ocupado || !vinculo.ativo ? 'disabled' : ''}>Rejeitar (manter versão atual)</button>
+                </div>
+            </div>
+        `).join('');
+    }
+
+    function htmlFichaVinculada(vinculo) {
+        const ficha = vinculo.ficha;
+        const versao = vinculo.versao;
+        return `
+            <section class="produto-ficha-vinculo-resumo mb-4" data-ft-produto-vinculo-card data-vinculo-id="${escapeHtml(vinculo.id)}">
+                <div class="d-flex align-items-start justify-content-between gap-2">
+                    <div>
+                        <div class="produto-ficha-secao">${escapeHtml(ficha.codigo || 'Ficha técnica')} · ${vinculo.tipo === 'SABOR' ? 'Por sabor' : 'Padrão legado'}</div>
+                        <strong>${escapeHtml(ficha.nome || 'Ficha técnica')}</strong>
+                        <div class="small text-muted mt-1">Versão associada: ${formatarVersao(versao)} · ${vinculo.ativo ? 'Vínculo ativo' : 'Vínculo inativo'}</div>
+                        <div class="small text-muted">Atualização: ${escapeHtml(vinculo.estado_atualizacao || '—')}</div>
+                    </div>
+                    <button type="button" class="btn btn-outline-danger btn-sm" data-ft-produto-acao="remover-vinculo" data-vinculo-id="${escapeHtml(vinculo.id)}" ${estado.ocupado || !vinculo.ativo ? 'disabled' : ''}>Remover vínculo</button>
+                </div>
+                <div class="mt-3">
+                    <h6 class="mb-2">Composição da versão-base</h6>
+                    <p class="small text-muted">A composição utilizada pelo produto corresponde à versão publicada associada.</p>
+                    ${htmlComponentesBase(vinculo)}
+                </div>
+                <div class="mt-4">
+                    <h6 class="mb-2">Atualizações pendentes</h6>
+                    ${htmlAtualizacoes(vinculo)}
+                </div>
+            </section>
+        `;
+    }
+
+    function renderizar() {
+        feedback.textContent = estado.mensagem;
+        feedback.className = `alert alert-${estado.tipoMensagem} mb-3`;
+        feedback.hidden = !estado.mensagem;
+        if (estado.carregando) {
+            conteudo.innerHTML = '<p class="text-muted mb-0">Carregando vínculo e dados da ficha padrão...</p>';
+            return;
+        }
+        if (estado.erroCarga) {
+            conteudo.innerHTML = '<button type="button" class="btn btn-outline-primary btn-sm" data-ft-produto-acao="tentar-novamente">Tentar novamente</button>';
+            return;
+        }
+        if (estado.conflitoVinculos) {
+            conteudo.innerHTML = '<div class="alert alert-danger mb-0">Foi encontrado mais de um vínculo ativo para a mesma ficha deste produto. Nenhuma alteração foi disponibilizada.</div>';
+            return;
+        }
+        conteudo.innerHTML = htmlAssociacao();
+    }
+
+    function validarLista(resposta, chave) {
+        return resposta && resposta.success === true && Array.isArray(resposta[chave])
+            ? resposta[chave]
+            : null;
+    }
+
+    function carregarVinculosDaFicha(fichas, indice, encontrados) {
+        if (indice >= fichas.length) {
+            estado.vinculos = encontrados;
+            const ativos = encontrados.filter((item) => item.ativo === true);
+            const fichasAtivas = new Set();
+            if (ativos.some((item) => {
+                const fichaId = Number(item.ficha_id);
+                if (fichasAtivas.has(fichaId)) return true;
+                fichasAtivas.add(fichaId);
+                return false;
+            })) {
+                estado.conflitoVinculos = true;
+                estado.carregando = false;
+                estado.carregado = true;
+                renderizar();
+                return;
+            }
+            if (!ativos.length) {
+                estado.vinculosAtivos = [];
+                estado.carregando = false;
+                estado.carregado = true;
+                renderizar();
+                return;
+            }
+            carregarDetalhesVinculos(ativos, 0, []);
+            return;
+        }
+
+        const ficha = fichas[indice];
+        ftApi('GET', `/fabrica-loja/fichas-padrao/${encodeURIComponent(ficha.id)}/vinculos`)
+            .done((resposta) => {
+                const vinculos = validarLista(resposta, 'vinculos');
+                if (!vinculos) {
+                    falhaCarga(null, 'A lista de vínculos retornada pela API é inválida.');
+                    return;
+                }
+                vinculos
+                    .filter((item) => Number(item.produto_id) === produtoId)
+                    .forEach((item) => encontrados.push({
+                        ...item,
+                        ficha_id: Number(ficha.id),
+                        ficha_codigo: ficha.codigo,
+                        ficha_nome: ficha.nome
+                    }));
+                carregarVinculosDaFicha(fichas, indice + 1, encontrados);
+            })
+            .fail((xhr) => falhaCarga(xhr, 'Não foi possível consultar os vínculos do produto.'));
+    }
+
+    function carregarDetalhesVinculos(vinculos, indice, carregados) {
+        if (indice >= vinculos.length) {
+            estado.vinculosAtivos = carregados;
+            estado.carregando = false;
+            estado.carregado = true;
+            estado.erroCarga = false;
+            renderizar();
+            return;
+        }
+        const vinculo = vinculos[indice];
+        ftApi('GET', `/fabrica-loja/fichas-padrao/${encodeURIComponent(vinculo.ficha_id)}`)
+            .done((resposta) => {
+                const ficha = resposta?.success === true ? resposta.ficha : null;
+                if (!ficha || !Array.isArray(ficha.versoes) || !Array.isArray(ficha.vinculos)) {
+                    falhaCarga(null, 'Os detalhes da ficha padrão retornados pela API são inválidos.');
+                    return;
+                }
+                const vinculoAtual = ficha.vinculos.find((item) => Number(item.id) === Number(vinculo.id));
+                if (!vinculoAtual) {
+                    falhaCarga(null, 'O vínculo do produto não foi encontrado nos detalhes da ficha.');
+                    return;
+                }
+                const versao = ficha.versoes.find((item) => Number(item.id) === Number(vinculoAtual.versao_id)) || null;
+                if (!versao) {
+                    falhaCarga(null, 'A versão vinculada não foi encontrada na ficha padrão.');
+                    return;
+                }
+                        ftApi('GET', `/fabrica-loja/fichas-padrao/${encodeURIComponent(vinculo.ficha_id)}/atualizacoes`)
+                            .done((respostaAtualizacoes) => {
+                                const revisoes = validarLista(respostaAtualizacoes, 'atualizacoes');
+                                if (!revisoes) {
+                                    falhaCarga(null, 'A lista de atualizações retornada pela API é inválida.');
+                                    return;
+                                }
+                                carregados.push({
+                                    ...vinculo,
+                                    ...vinculoAtual,
+                                    ficha_id: Number(vinculo.ficha_id),
+                                    ficha_codigo: ficha.codigo,
+                                    ficha_nome: ficha.nome,
+                                    ficha,
+                                    versao,
+                                    revisoes: revisoes.filter((item) =>
+                                        Number(item.produto_id) === produtoId
+                                        && Number(item.vinculo_id) === Number(vinculo.id))
+                                });
+                                carregarDetalhesVinculos(vinculos, indice + 1, carregados);
+                            })
+                            .fail((xhr) => falhaCarga(xhr, 'Não foi possível consultar as atualizações pendentes.'));
+            })
+            .fail((xhr) => falhaCarga(xhr, 'Não foi possível carregar os detalhes da ficha padrão.'));
+    }
+
+    function carregarEstadoInicial() {
+        if (estado.carregando || estado.carregado) return;
+        estado.carregando = true;
+        estado.erroCarga = false;
+        renderizar();
+        ftApi('GET', `/fabrica-loja/fichas/produtos/${encodeURIComponent(produtoId)}/tradicionais`)
+            .done((respostaTradicionais) => {
+                const tradicionais = validarLista(respostaTradicionais, 'fichas');
+                if (!tradicionais) {
+                    falhaCarga(null, 'A lista de fichas tradicionais vinculadas retornada pela API é inválida.');
+                    return;
+                }
+                estado.fichasTradicionaisAtivas = tradicionais;
+                carregarCatalogoFichasPadrao();
+            })
+            .fail((xhr) => falhaCarga(xhr, 'Não foi possível carregar as fichas tradicionais vinculadas.'));
+    }
+
+    function carregarCatalogoFichasPadrao() {
+        ftApi('GET', '/fabrica-loja/fichas-padrao?incluir_inativas=1')
+            .done((resposta) => {
+                const fichas = validarLista(resposta, 'fichas');
+                if (!fichas) {
+                    falhaCarga(null, 'A lista de fichas padrão retornada pela API é inválida.');
+                    return;
+                }
+                estado.fichas = fichas;
+                if (!fichas.length) {
+                    estado.vinculos = [];
+                    estado.vinculosAtivos = [];
+                    estado.carregando = false;
+                    estado.carregado = true;
+                    renderizar();
+                    return;
+                }
+                carregarVinculosDaFicha(fichas, 0, []);
+            })
+            .fail((xhr) => falhaCarga(xhr, 'Não foi possível carregar as fichas padrão.'));
+    }
+
+    function buscarFichasPorTermo(termo) {
+        estado.buscaFicha = termo;
+        estado.fichaRequestId += 1;
+        estado.fichaSelecionadaId = null;
+        estado.origemFichaSelecionada = null;
+        estado.fichaSelecionada = null;
+        estado.fichaTradicionalSelecionada = null;
+        estado.versaoSelecionadaId = null;
+        estado.versaoCarregando = false;
+        atualizarPreviaFicha();
+
+        if (estado.buscaFichaTimer) window.clearTimeout(estado.buscaFichaTimer);
+        const requestId = ++estado.buscaFichaRequestId;
+        const busca = termo.trim();
+        estado.resultadosBuscaFicha = [];
+        estado.erroBuscaFicha = '';
+        estado.buscaFichaCarregando = Boolean(busca);
+        atualizarBuscaFicha();
+        if (!busca) return;
+
+        estado.buscaFichaTimer = window.setTimeout(() => {
+            estado.buscaFichaTimer = null;
+            let fichasPadrao = [];
+            let fichasTradicionais = [];
+            let erroPadrao = '';
+            let erroTradicional = '';
+            let concluido = 0;
+            const finalizarBusca = () => {
+                concluido += 1;
+                if (concluido < 2 || requestId !== estado.buscaFichaRequestId) return;
+                estado.buscaFichaCarregando = false;
+                estado.erroBuscaFicha = [
+                    erroPadrao ? `Catálogo padrão indisponível: ${erroPadrao}` : '',
+                    erroTradicional ? `Catálogo tradicional indisponível: ${erroTradicional}` : ''
+                ].filter(Boolean).join(' ');
+                estado.resultadosBuscaFicha = [
+                    ...fichasPadrao.map((item) => ({ ...item, tipo: 'PADRAO' })),
+                    ...fichasTradicionais.map((item) => ({ ...item, tipo: 'TRADICIONAL' }))
+                ].sort((a, b) => String(a.nome || '').localeCompare(String(b.nome || ''), 'pt-BR'));
+                atualizarBuscaFicha();
+            };
+            const query = encodeURIComponent(busca);
+            ftApi('GET', `/fabrica-loja/fichas-padrao?busca=${query}&incluir_inativas=1`)
+                .done((resposta) => {
+                    if (requestId !== estado.buscaFichaRequestId) return;
+                    const fichas = validarLista(resposta, 'fichas');
+                    if (!fichas) {
+                        erroPadrao = 'a lista retornada pela API é inválida.';
+                    } else {
+                        fichasPadrao = fichas;
+                    }
+                    finalizarBusca();
+                })
+                .fail((xhr) => {
+                    if (requestId !== estado.buscaFichaRequestId) return;
+                    erroPadrao = mensagemErro(xhr, 'não foi possível pesquisar as fichas padrão.');
+                    finalizarBusca();
+                });
+            ftApi('GET', `/fabrica-loja/fichas?busca=${query}&incluir_inativas=1`)
+                .done((resposta) => {
+                    if (requestId !== estado.buscaFichaRequestId) return;
+                    const fichas = validarLista(resposta, 'fichas');
+                    if (!fichas) {
+                        erroTradicional = 'a lista retornada pela API é inválida.';
+                    } else {
+                        fichasTradicionais = fichas;
+                    }
+                    finalizarBusca();
+                })
+                .fail((xhr) => {
+                    if (requestId !== estado.buscaFichaRequestId) return;
+                    erroTradicional = mensagemErro(xhr, 'não foi possível pesquisar as fichas tradicionais.');
+                    finalizarBusca();
+                });
+        }, 250);
+    }
+
+    function carregarFichaSelecionada(fichaId, origem = 'PADRAO') {
+        estado.fichaSelecionadaId = Number(fichaId) || null;
+        estado.origemFichaSelecionada = origem;
+        estado.fichaSelecionada = null;
+        estado.fichaTradicionalSelecionada = null;
+        estado.versaoSelecionadaId = null;
+        estado.versaoCarregando = Boolean(estado.fichaSelecionadaId);
+        const requestId = ++estado.fichaRequestId;
+        renderizar();
+        if (!estado.fichaSelecionadaId) return;
+        const endpoint = origem === 'TRADICIONAL'
+            ? `/fabrica-loja/fichas/${encodeURIComponent(estado.fichaSelecionadaId)}`
+            : `/fabrica-loja/fichas-padrao/${encodeURIComponent(estado.fichaSelecionadaId)}`;
+        ftApi('GET', endpoint)
+            .done((resposta) => {
+                if (requestId !== estado.fichaRequestId) return;
+                const ficha = resposta?.success === true ? resposta.ficha : null;
+                if (origem === 'TRADICIONAL') {
+                    if (!ficha
+                        || Number(ficha.id) !== estado.fichaSelecionadaId
+                        || !Array.isArray(ficha.componentes)
+                        || !Array.isArray(ficha.etapas)
+                        || !Array.isArray(ficha.informacoes)) {
+                        estado.versaoCarregando = false;
+                        definirMensagem('Os dados da ficha tradicional retornados pela API são inválidos.', 'danger');
+                        renderizar();
+                        return;
+                    }
+                    estado.fichaTradicionalSelecionada = ficha;
+                    estado.versaoCarregando = false;
+                    renderizar();
+                    return;
+                }
+                if (!ficha || !Array.isArray(ficha.versoes)) {
+                    estado.versaoCarregando = false;
+                    definirMensagem('Os dados da ficha selecionada retornados pela API são inválidos.', 'danger');
+                    renderizar();
+                    return;
+                }
+                if (ficha.ativa !== true) {
+                    estado.fichaSelecionadaId = null;
+                    estado.versaoCarregando = false;
+                    definirMensagem('A ficha selecionada não está ativa e não pode ser importada.', 'warning');
+                    renderizar();
+                    return;
+                }
+                estado.fichaSelecionada = ficha;
+                const publicada = ficha.versoes.find((item) => item.estado === 'PUBLICADA');
+                estado.versaoSelecionadaId = publicada ? Number(publicada.id) : null;
+                estado.versaoCarregando = false;
+                renderizar();
+            })
+            .fail((xhr) => {
+                if (requestId !== estado.fichaRequestId) return;
+                estado.versaoCarregando = false;
+                const reserva = origem === 'TRADICIONAL'
+                    ? 'Não foi possível carregar a ficha tradicional.'
+                    : 'Não foi possível carregar as versões da ficha.';
+                definirMensagem(mensagemErro(xhr, reserva), 'danger');
+                renderizar();
+            });
+    }
+
+    function enviarVinculoFichaPadrao(fichaPadraoId, versaoId, mensagemSucesso, mensagemFalha) {
+        if (estado.vinculosAtivos.some((item) => Number(item.ficha_id) === Number(fichaPadraoId))) {
+            estado.ocupado = false;
+            definirMensagem('Esta ficha já possui um vínculo ativo com o produto.', 'warning');
+            renderizar();
+            return;
+        }
+        ftApi('POST', `/fabrica-loja/fichas-padrao/${encodeURIComponent(fichaPadraoId)}/vinculos`, {
+            produto_id: produtoId,
+            versao_id: versaoId
+        })
+            .done((resposta) => {
+                const vinculo = resposta?.success === true ? resposta.vinculo : null;
+                if (!vinculo
+                    || Number(vinculo.produto_id) !== produtoId
+                    || Number(vinculo.ficha_padrao_id) !== Number(fichaPadraoId)
+                    || Number(vinculo.versao_id) !== Number(versaoId)
+                    || vinculo.ativo !== true) {
+                    estado.ocupado = false;
+                    definirMensagem('A API não confirmou o vínculo esperado. Atualize os dados antes de tentar novamente.', 'danger');
+                    renderizar();
+                    return;
+                }
+                estado.ocupado = false;
+                definirMensagem(mensagemSucesso, 'success');
+                estado.carregado = false;
+                carregarEstadoInicial();
+            })
+            .fail((xhr) => {
+                estado.ocupado = false;
+                const detalhe = mensagemErro(xhr, 'Falha de comunicação com o servidor.');
+                definirMensagem(typeof mensagemFalha === 'function' ? mensagemFalha(detalhe) : detalhe, 'danger');
+                renderizar();
+            });
+    }
+
+    function vincularFichaTradicional() {
+        if (estado.ocupado) return;
+        const ficha = estado.fichaTradicionalSelecionada;
+        if (!ficha || !estado.fichaSelecionadaId) return;
+        if (!ficha.ativa) {
+            definirMensagem('Ficha tradicional inativa não pode ser vinculada.', 'warning');
+            return;
+        }
+        if (ficha.produto_id != null && Number(ficha.produto_id) !== Number(produtoId)) {
+            definirMensagem('Esta ficha tradicional já está vinculada a outro produto.', 'warning');
+            return;
+        }
+        if (!window.confirm(`Vincular a ficha tradicional "${ficha.nome}" a este produto? A ficha e seus dados originais não serão convertidos nem alterados.`)) return;
+        estado.ocupado = true;
+        renderizar();
+        ftApi('POST', `/fabrica-loja/fichas/${encodeURIComponent(estado.fichaSelecionadaId)}/produto`, {
+            produto_id: produtoId
+        })
+            .done((resposta) => {
+                const fichaVinculada = resposta?.success === true ? resposta.ficha : null;
+                if (!fichaVinculada
+                    || Number(fichaVinculada.id) !== Number(estado.fichaSelecionadaId)
+                    || Number(fichaVinculada.produto_id) !== Number(produtoId)) {
+                    estado.ocupado = false;
+                    definirMensagem('A API não confirmou o vínculo da ficha tradicional com este produto.', 'danger');
+                    renderizar();
+                    return;
+                }
+                estado.ocupado = false;
+                definirMensagem('Ficha tradicional vinculada ao produto sem conversão ou alteração da origem.', 'success');
+                estado.carregado = false;
+                carregarEstadoInicial();
+            })
+            .fail((xhr) => {
+                estado.ocupado = false;
+                definirMensagem(mensagemErro(xhr, 'Não foi possível vincular a ficha tradicional.'), 'danger');
+                renderizar();
+            });
+    }
+
+    function visualizarFichaTradicional(fichaId) {
+        const id = Number(fichaId);
+        if (estado.fichaTradicionalExpandidaId === id) {
+            estado.fichaTradicionalExpandidaId = null;
+            renderizar();
+            return;
+        }
+        estado.fichaTradicionalExpandidaId = id;
+        const existente = estado.detalhesFichasTradicionais[id];
+        if (existente) {
+            renderizar();
+            return;
+        }
+        ftApi('GET', `/fabrica-loja/fichas/${encodeURIComponent(id)}`)
+            .done((resposta) => {
+                const ficha = resposta?.success === true ? resposta.ficha : null;
+                if (!ficha || Number(ficha.id) !== id || !Array.isArray(ficha.componentes) || !Array.isArray(ficha.etapas)) {
+                    definirMensagem('A composição da ficha tradicional retornada pela API é inválida.', 'danger');
+                    renderizar();
+                    return;
+                }
+                estado.detalhesFichasTradicionais[id] = ficha;
+                renderizar();
+            })
+            .fail((xhr) => {
+                estado.fichaTradicionalExpandidaId = null;
+                definirMensagem(mensagemErro(xhr, 'Não foi possível carregar a composição da ficha tradicional.'), 'danger');
+                renderizar();
+            });
+    }
+
+    function removerFichaTradicional(fichaId) {
+        const ficha = estado.fichasTradicionaisAtivas.find((item) => Number(item.id) === Number(fichaId));
+        if (estado.ocupado || !ficha) return;
+        if (!window.confirm(`Desvincular "${ficha.nome}" deste produto? A ficha tradicional e seus dados não serão excluídos.`)) return;
+        estado.ocupado = true;
+        renderizar();
+        ftApi('DELETE', `/fabrica-loja/fichas/${encodeURIComponent(ficha.id)}/produto/${encodeURIComponent(produtoId)}`)
+            .done((resposta) => {
+                if (resposta?.success !== true
+                    || Number(resposta.ficha_id) !== Number(ficha.id)
+                    || Number(resposta.produto_id) !== Number(produtoId)
+                    || resposta.removido !== true) {
+                    estado.ocupado = false;
+                    definirMensagem('A API não confirmou a remoção deste vínculo tradicional.', 'danger');
+                    renderizar();
+                    return;
+                }
+                estado.ocupado = false;
+                definirMensagem('Ficha tradicional desvinculada; a ficha original foi preservada.', 'success');
+                estado.carregado = false;
+                carregarEstadoInicial();
+            })
+            .fail((xhr) => {
+                estado.ocupado = false;
+                definirMensagem(mensagemErro(xhr, 'Não foi possível desvincular a ficha tradicional.'), 'danger');
+                renderizar();
+            });
+    }
+
+    function recarregarVinculoAtual(mensagem) {
+        estado.carregado = false;
+        estado.carregando = false;
+        estado.erroCarga = false;
+        if (mensagem) definirMensagem(mensagem, 'success');
+        carregarEstadoInicial();
+    }
+
+    function salvarAssociacao(form) {
+        if (estado.ocupado || !form || !estado.fichaSelecionadaId) return;
+        if (estado.origemFichaSelecionada === 'TRADICIONAL') {
+            vincularFichaTradicional();
+            return;
+        }
+        if (estado.origemFichaSelecionada !== 'PADRAO' || !estado.fichaSelecionada?.ativa) return;
+        const versaoId = Number(form.querySelector('[data-ft-produto-ficha-versao]')?.value);
+        const versao = estado.fichaSelecionada.versoes.find((item) =>
+            Number(item.id) === versaoId && item.estado === 'PUBLICADA');
+        if (!Number.isInteger(versaoId) || versaoId <= 0 || !versao) {
+            definirMensagem('Selecione uma versão publicada válida.', 'warning');
+            return;
+        }
+        const nomeFicha = estado.fichaSelecionada.nome || 'ficha selecionada';
+        if (!window.confirm(`Importar a ficha técnica "${nomeFicha}", versão ${versao.numero_versao}, para este produto?`)) return;
+        estado.ocupado = true;
+        renderizar();
+        enviarVinculoFichaPadrao(
+            estado.fichaSelecionadaId,
+            versaoId,
+            'Ficha técnica importada e vinculada ao produto.',
+            (detalhe) => `Não foi possível associar a ficha padrão: ${detalhe}`
+        );
+    }
+
+    function atualizarCamposAjuste(form) {
+        if (!form) return;
+        const operacao = form.querySelector('[data-ft-produto-ajuste-operacao]').value;
+        const adicionar = operacao === 'ADICIONAR';
+        const substituir = operacao === 'SUBSTITUIR';
+        form.querySelector('[data-ft-produto-ajuste-base]').hidden = adicionar;
+        form.querySelector('[data-ft-produto-ajuste-adicional]').hidden = !adicionar;
+        form.querySelector('[data-ft-produto-ajuste-quantidade]').hidden = !adicionar && !substituir;
+        form.querySelector('[data-ft-produto-ajuste-unidade]').hidden = !adicionar && !substituir;
+        const unidade = form.querySelector('[data-ft-produto-ajuste-un]');
+        unidade.readOnly = substituir;
+        if (substituir) {
+            const vinculo = estado.vinculosAtivos.find((item) => Number(item.id) === Number(form.dataset.vinculoId));
+            const base = acharComponenteBase(
+                form.querySelector('[data-ft-produto-ajuste-componente]').value,
+                vinculo?.versao
+            );
+            unidade.value = base?.unidade || '';
+        }
+    }
+
+    function buscarInsumosAjuste(form) {
+        if (estado.ocupado || estado.buscandoInsumos) return;
+        const vinculo = obterVinculoCarregado(form.dataset.vinculoId);
+        if (!vinculo) {
+            definirMensagem('O vínculo deste ajuste não está mais disponível. Atualize os dados.', 'warning');
+            return;
+        }
+        const busca = form.querySelector('[data-ft-produto-ajuste-insumo]');
+        const termo = String(busca.value || '').trim();
+        if (termo.length < 2) {
+            definirMensagem('Informe ao menos dois caracteres para pesquisar insumos.', 'warning');
+            return;
+        }
+        estado.buscandoInsumos = true;
+        const botao = form.querySelector('[data-ft-produto-acao="buscar-insumo"]');
+        botao.disabled = true;
+        ftApi('GET', `/fabrica-loja/insumos?q=${encodeURIComponent(termo)}`)
+            .done((resposta) => {
+                const insumos = validarLista(resposta, 'insumos');
+                if (!insumos) {
+                    definirMensagem('A lista de insumos retornada pela API é inválida.', 'danger');
+                    return;
+                }
+                const ajusteId = Number(form.dataset.ajusteId || 0);
+                const baseIds = new Set((vinculo.versao?.componentes || []).map((item) =>
+                    Number(item.componente_base_id ?? item.produto_id)));
+                const ajusteIds = new Set(vinculo.ajustes
+                    .filter((item) => Number(item.id) !== ajusteId)
+                    .map((item) => Number(item.produto_id)));
+                estado.insumos = insumos.filter((item) =>
+                    !baseIds.has(Number(item.id)) && !ajusteIds.has(Number(item.id)));
+                const destino = form.querySelector('[data-ft-produto-ajuste-resultados]');
+                destino.innerHTML = estado.insumos.length
+                    ? `<select class="form-select form-select-sm" data-ft-produto-ajuste-insumo-select><option value="">Selecione um insumo</option>${estado.insumos.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.codigo ? `${item.codigo} — ` : '')}${escapeHtml(item.nome)}${item.unidade ? ` (${escapeHtml(item.unidade)})` : ''}</option>`).join('')}</select>`
+                    : '<small class="text-muted">Nenhum insumo disponível sem duplicar componentes ou ajustes.</small>';
+            })
+            .fail((xhr) => definirMensagem(mensagemErro(xhr, 'Não foi possível pesquisar insumos.'), 'danger'))
+            .always(() => {
+                estado.buscandoInsumos = false;
+                const atual = form.querySelector('[data-ft-produto-acao="buscar-insumo"]');
+                if (atual) atual.disabled = estado.ocupado;
+            });
+    }
+
+    function salvarAjuste(form) {
+        if (estado.ocupado) return;
+        const vinculoId = Number(form.dataset.vinculoId);
+        const vinculo = obterVinculoCarregado(vinculoId);
+        if (!vinculo || !vinculo.ativo) {
+            definirMensagem('O vínculo deste ajuste não está ativo. Atualize os dados antes de continuar.', 'warning');
+            return;
+        }
+        const operacao = form.querySelector('[data-ft-produto-ajuste-operacao]').value;
+        const justificativa = String(form.querySelector('[data-ft-produto-ajuste-justificativa]').value || '').trim();
+        const dados = { operacao, justificativa };
+        const ajusteId = Number(form.dataset.ajusteId || 0);
+        const quantidadeTexto = String(form.querySelector('[data-ft-produto-ajuste-qtd]')?.value || '').trim().replace(',', '.');
+        const quantidade = Number(quantidadeTexto);
+        if (operacao === 'ADICIONAR') {
+            const produtoAjusteId = Number(form.querySelector('[data-ft-produto-ajuste-insumo-id]').value);
+            const unidade = String(form.querySelector('[data-ft-produto-ajuste-un]').value || '').trim();
+            if (!Number.isInteger(produtoAjusteId) || produtoAjusteId <= 0 || !Number.isFinite(quantidade) || quantidade <= 0 || !unidade) {
+                definirMensagem('Selecione um insumo e informe quantidade e unidade válidas.', 'warning');
+                return;
+            }
+            if ((vinculo.versao?.componentes || []).some((item) =>
+                Number(item.componente_base_id ?? item.produto_id) === produtoAjusteId)
+                || vinculo.ajustes.some((item) => Number(item.produto_id) === produtoAjusteId && Number(item.id) !== ajusteId)) {
+                definirMensagem('Este insumo já está na versão-base ou possui outro ajuste neste vínculo.', 'warning');
+                return;
+            }
+            dados.produto_id = produtoAjusteId;
+            dados.quantidade = quantidade;
+            dados.unidade = unidade;
+        } else {
+            const componenteBaseId = Number(form.querySelector('[data-ft-produto-ajuste-componente]').value);
+            const base = acharComponenteBase(componenteBaseId, vinculo.versao);
+            if (!base) {
+                definirMensagem('Selecione um componente da versão-base.', 'warning');
+                return;
+            }
+            if (vinculo.ajustes.some((item) => Number(item.componente_base_id) === componenteBaseId && Number(item.id) !== ajusteId)) {
+                definirMensagem('Este componente já possui outro ajuste para este produto.', 'warning');
+                return;
+            }
+            dados.componente_base_id = componenteBaseId;
+            if (operacao === 'SUBSTITUIR') {
+                if (!Number.isFinite(quantidade) || quantidade <= 0) {
+                    definirMensagem('Informe uma quantidade válida para a substituição.', 'warning');
+                    return;
+                }
+                dados.quantidade = quantidade;
+                dados.unidade = base.unidade;
+            }
+        }
+
+        estado.ocupado = true;
+        renderizar();
+        const url = `/fabrica-loja/fichas-padrao/vinculos/${encodeURIComponent(vinculoId)}/ajustes${ajusteId ? `/${encodeURIComponent(ajusteId)}` : ''}`;
+        ftApi(ajusteId ? 'PUT' : 'POST', url, dados)
+            .done((resposta) => {
+                const ajuste = resposta?.success === true ? resposta.ajuste : null;
+                if (!ajuste || Number(ajuste.id) <= 0 || ajuste.operacao !== operacao) {
+                    estado.ocupado = false;
+                    definirMensagem('A API não confirmou o ajuste esperado. Atualize os dados antes de continuar.', 'danger');
+                    renderizar();
+                    return;
+                }
+                estado.ocupado = false;
+                estado.ajusteEditando = null;
+                estado.ajusteEditandoVinculoId = null;
+                estado.operacaoAjuste = 'HERDAR';
+                estado.componenteBaseId = '';
+                estado.produtoAjusteId = '';
+                estado.nomeProdutoAjuste = '';
+                estado.quantidadeAjuste = '';
+                estado.unidadeAjuste = '';
+                estado.justificativaAjuste = '';
+                recarregarVinculoAtual('Ajuste salvo e confirmado pelo servidor.');
+            })
+            .fail((xhr) => {
+                estado.ocupado = false;
+                definirMensagem(mensagemErro(xhr, 'Não foi possível salvar o ajuste.'), 'danger');
+                renderizar();
+            });
+    }
+
+    function removerAjuste(id, vinculoId) {
+        if (estado.ocupado || !window.confirm('Remover este ajuste específico do produto?')) return;
+        estado.ocupado = true;
+        renderizar();
+        ftApi('DELETE', `/fabrica-loja/fichas-padrao/vinculos/${encodeURIComponent(vinculoId)}/ajustes/${encodeURIComponent(id)}`)
+            .done((resposta) => {
+                if (resposta?.success !== true || resposta.removido !== true) {
+                    estado.ocupado = false;
+                    definirMensagem('A API não confirmou a remoção do ajuste.', 'danger');
+                    renderizar();
+                    return;
+                }
+                estado.ocupado = false;
+                recarregarVinculoAtual('Ajuste removido e confirmado pelo servidor.');
+            })
+            .fail((xhr) => {
+                estado.ocupado = false;
+                definirMensagem(mensagemErro(xhr, 'Não foi possível remover o ajuste.'), 'danger');
+                renderizar();
+            });
+    }
+
+    function decidirAtualizacao(botao) {
+        if (estado.ocupado) return;
+        const vinculo = obterVinculoCarregado(botao.dataset.vinculoId);
+        const revisaoId = Number(botao.dataset.revisaoId);
+        const decisao = botao.dataset.decisao;
+        const revisao = vinculo?.revisoes.find((item) =>
+            Number(item.id) === revisaoId
+            && Number(item.vinculo_id) === Number(vinculo.id)
+            && Number(item.produto_id) === produtoId
+            && item.estado === 'PENDENTE');
+        if (!revisao || !['APROVAR', 'MANTER_ANTERIOR'].includes(decisao)) {
+            definirMensagem('A atualização não está mais pendente para este produto. Atualize os dados.', 'warning');
+            return;
+        }
+        const texto = decisao === 'APROVAR'
+            ? `Aprovar a versão ${revisao.versao_nova} somente para este produto?`
+            : `Manter a versão ${revisao.versao_anterior} somente para este produto?`;
+        if (!window.confirm(texto)) return;
+        estado.ocupado = true;
+        renderizar();
+        ftApi('PUT', `/fabrica-loja/fichas-padrao/atualizacoes/${encodeURIComponent(revisaoId)}`, {
+            decisao,
+            justificativa: ''
+        })
+            .done((resposta) => {
+                const resultado = resposta?.success === true ? resposta.revisao : null;
+                const esperado = decisao === 'APROVAR' ? 'APROVADO' : 'MANTER_ANTERIOR';
+                if (!resultado || Number(resultado.revisao_id) !== revisaoId || resultado.estado !== esperado) {
+                    estado.ocupado = false;
+                    definirMensagem('A API não confirmou a decisão individual esperada.', 'danger');
+                    renderizar();
+                    return;
+                }
+                estado.ocupado = false;
+                recarregarVinculoAtual(decisao === 'APROVAR'
+                    ? 'Atualização aprovada somente para este produto.'
+                    : 'Versão anterior mantida somente para este produto.');
+            })
+            .fail((xhr) => {
+                estado.ocupado = false;
+                definirMensagem(mensagemErro(xhr, 'Não foi possível registrar a decisão.'), 'danger');
+                renderizar();
+            });
+    }
+
+    function removerVinculo(vinculoId) {
+        const vinculo = obterVinculoCarregado(vinculoId);
+        if (estado.ocupado || !vinculo || !vinculo.ativo) return;
+        const nome = vinculo.ficha?.nome || vinculo.ficha_nome || 'esta ficha técnica';
+        if (!window.confirm(`Remover o vínculo de "${nome}" deste produto? A ficha técnica será preservada.`)) return;
+        estado.ocupado = true;
+        renderizar();
+        ftApi('PUT', `/fabrica-loja/fichas-padrao/vinculos/${encodeURIComponent(vinculo.id)}`, { ativo: false })
+            .done((resposta) => {
+                const resultado = resposta?.success === true ? resposta.vinculo : null;
+                if (!resultado
+                    || Number(resultado.id) !== Number(vinculo.id)
+                    || Number(resultado.produto_id) !== produtoId
+                    || resultado.ativo !== false) {
+                    estado.ocupado = false;
+                    definirMensagem('A API não confirmou a remoção deste vínculo. Atualize os dados antes de continuar.', 'danger');
+                    renderizar();
+                    return;
+                }
+                estado.ocupado = false;
+                recarregarVinculoAtual('Vínculo desativado; a ficha técnica foi preservada.');
+            })
+            .fail((xhr) => {
+                estado.ocupado = false;
+                definirMensagem(mensagemErro(xhr, 'Não foi possível remover o vínculo.'), 'danger');
+                renderizar();
+            });
+    }
+
+    pane.addEventListener('input', (event) => {
+        if (event.target.matches('[data-ft-produto-ficha-busca]')) {
+            buscarFichasPorTermo(event.target.value);
+            return;
+        }
+        const form = event.target.closest('[data-ft-produto-ajuste-form]');
+        if (!form) return;
+        if (event.target.matches('[data-ft-produto-ajuste-qtd]')) estado.quantidadeAjuste = event.target.value;
+        if (event.target.matches('[data-ft-produto-ajuste-un]')) estado.unidadeAjuste = event.target.value;
+        if (event.target.matches('[data-ft-produto-ajuste-justificativa]')) estado.justificativaAjuste = event.target.value;
+        if (event.target.matches('[data-ft-produto-ajuste-insumo]')) estado.nomeProdutoAjuste = event.target.value;
+    });
+
+    pane.addEventListener('change', (event) => {
+        const alvo = event.target;
+        if (alvo.matches('[data-ft-produto-ficha-versao]')) {
+            estado.versaoSelecionadaId = Number(alvo.value) || null;
+            atualizarPreviaFicha();
+        } else if (alvo.matches('[data-ft-produto-ajuste-operacao]')) {
+            estado.operacaoAjuste = alvo.value;
+            atualizarCamposAjuste(alvo.closest('[data-ft-produto-ajuste-form]'));
+        } else if (alvo.matches('[data-ft-produto-ajuste-componente]')) {
+            estado.componenteBaseId = alvo.value;
+            if (estado.operacaoAjuste === 'SUBSTITUIR') {
+                const form = alvo.closest('[data-ft-produto-ajuste-form]');
+                const vinculo = obterVinculoCarregado(form?.dataset.vinculoId);
+                estado.unidadeAjuste = acharComponenteBase(alvo.value, vinculo?.versao)?.unidade || '';
+                atualizarCamposAjuste(form);
+            }
+        } else if (alvo.matches('[data-ft-produto-ajuste-insumo-select]')) {
+            estado.produtoAjusteId = alvo.value;
+            const insumo = estado.insumos.find((item) => String(item.id) === String(alvo.value));
+            estado.nomeProdutoAjuste = insumo ? `${insumo.codigo ? `${insumo.codigo} — ` : ''}${insumo.nome}` : '';
+            const form = alvo.closest('[data-ft-produto-ajuste-form]');
+            const produtoSelecionado = form?.querySelector('[data-ft-produto-ajuste-insumo-id]');
+            if (produtoSelecionado) produtoSelecionado.value = estado.produtoAjusteId;
+        }
+    });
+
+    pane.addEventListener('click', (event) => {
+        const botao = event.target.closest('[data-ft-produto-acao]');
+        if (!botao) return;
+        const acao = botao.dataset.ftProdutoAcao;
+        if (acao === 'tentar-novamente') {
+            estado.erroCarga = false;
+            carregarEstadoInicial();
+        } else if (acao === 'associar') {
+            salvarAssociacao(botao.closest('[data-ft-produto-associacao]'));
+        } else if (acao === 'selecionar-ficha') {
+            const ficha = estado.resultadosBuscaFicha.find((item) =>
+                item.tipo === 'PADRAO'
+                && Number(item.id) === Number(botao.dataset.fichaId)
+                && item.ativa === true
+                && item.ultima_versao_id != null);
+            if (!ficha) {
+                definirMensagem('A ficha selecionada não está ativa ou não possui versão publicada. Faça uma nova pesquisa.', 'warning');
+                return;
+            }
+            estado.buscaFicha = `${ficha.codigo || 'Sem código'} — ${ficha.nome} (#${ficha.id})`;
+            carregarFichaSelecionada(ficha.id);
+        } else if (acao === 'selecionar-ficha-tradicional') {
+            const ficha = estado.resultadosBuscaFicha.find((item) =>
+                item.tipo === 'TRADICIONAL'
+                && Number(item.id) === Number(botao.dataset.fichaId)
+                && (item.produto_id == null || Number(item.produto_id) === Number(produtoId)));
+            if (!ficha) {
+                definirMensagem('A ficha tradicional não está disponível para este produto. Atualize a pesquisa.', 'warning');
+                return;
+            }
+            estado.buscaFicha = `${ficha.codigo || 'Sem código'} — ${ficha.nome} (#${ficha.id})`;
+            carregarFichaSelecionada(ficha.id, 'TRADICIONAL');
+        } else if (acao === 'visualizar-ficha-tradicional') {
+            visualizarFichaTradicional(botao.dataset.fichaId);
+        } else if (acao === 'remover-ficha-tradicional') {
+            removerFichaTradicional(botao.dataset.fichaId);
+        } else if (acao === 'salvar-ajuste') {
+            salvarAjuste(botao.closest('[data-ft-produto-ajuste-form]'));
+        } else if (acao === 'buscar-insumo') {
+            buscarInsumosAjuste(botao.closest('[data-ft-produto-ajuste-form]'));
+        } else if (acao === 'editar-ajuste') {
+            const vinculoId = Number(botao.dataset.vinculoId);
+            const vinculo = obterVinculoCarregado(vinculoId);
+            const ajuste = vinculo?.ajustes.find((item) => Number(item.id) === Number(botao.dataset.ajusteId));
+            if (ajuste) {
+                estado.ajusteEditando = ajuste;
+                estado.ajusteEditandoVinculoId = vinculoId;
+                estado.operacaoAjuste = ajuste.operacao;
+                estado.componenteBaseId = ajuste.componente_base_id || '';
+                estado.produtoAjusteId = ajuste.operacao === 'ADICIONAR' ? ajuste.produto_id : '';
+                estado.nomeProdutoAjuste = ajuste.operacao === 'ADICIONAR' ? `Insumo #${ajuste.produto_id}` : '';
+                estado.quantidadeAjuste = ajuste.quantidade ?? '';
+                estado.unidadeAjuste = ajuste.unidade || '';
+                estado.justificativaAjuste = ajuste.justificativa || '';
+                renderizar();
+            }
+        } else if (acao === 'cancelar-ajuste') {
+            estado.ajusteEditando = null;
+            estado.ajusteEditandoVinculoId = null;
+            estado.operacaoAjuste = 'HERDAR';
+            estado.componenteBaseId = '';
+            estado.produtoAjusteId = '';
+            estado.nomeProdutoAjuste = '';
+            estado.quantidadeAjuste = '';
+            estado.unidadeAjuste = '';
+            estado.justificativaAjuste = '';
+            renderizar();
+        } else if (acao === 'remover-ajuste') {
+            removerAjuste(botao.dataset.ajusteId, botao.dataset.vinculoId);
+        } else if (acao === 'remover-vinculo') {
+            removerVinculo(botao.dataset.vinculoId);
+        } else if (acao === 'decidir') {
+            decidirAtualizacao(botao);
+        }
+    });
+
+    if (!isEdit || !produtoId) {
+        definirMensagem('Salve o produto primeiro. Depois, reabra o cadastro para associar uma ficha técnica padrão.', 'info');
+        conteudo.innerHTML = '<p class="text-muted mb-0">O vínculo exige um produto cadastrado e classificado como PRODUZIDO.</p>';
+        estado.carregado = true;
+        return;
+    }
+    root._carregarFichaTecnicaProduto = carregarEstadoInicial;
+    carregarEstadoInicial();
+}
+
+function abrirFichaVinculada(id) {
+    window._ftAbrirId = id;
+    const modal = document.getElementById('produtoModal');
+    if (modal && window.bootstrap && window.bootstrap.Modal) {
+        const instancia = window.bootstrap.Modal.getInstance(modal);
+        if (instancia) instancia.hide();
+    }
+    if (typeof loadPage === 'function') loadPage('fichas-tecnicas');
+}
+window.abrirFichaVinculada = abrirFichaVinculada;
+
+function abrirFichasTecnicas() {
+    window._ftAbrirId = null;
+    const modal = document.getElementById('produtoModal');
+    if (modal && window.bootstrap && window.bootstrap.Modal) {
+        const instancia = window.bootstrap.Modal.getInstance(modal);
+        if (instancia) instancia.hide();
+    }
+    if (typeof loadPage === 'function') loadPage('fichas-tecnicas');
+}
+window.abrirFichasTecnicas = abrirFichasTecnicas;
 
 function cabecalhoDominioProduto(icone, titulo, badgeHtml = '') {
     return `
@@ -2508,8 +4254,8 @@ function showProdutoModal(produto = null) {
     const modalHtml = `
         <div class="modal fade" id="produtoModal" tabindex="-1" aria-hidden="true"
              data-bs-backdrop="static" data-bs-keyboard="true">
-            <div class="modal-dialog modal-lg modal-dialog-scrollable">
-                <div class="modal-content">
+            <div class="modal-dialog modal-xl modal-dialog-scrollable produto-ficha-dialog">
+                <div class="modal-content produto-ficha">
                     <div class="modal-header d-flex align-items-center justify-content-between">
                         <h5 class="modal-title mb-0">${title}</h5>
                         <div class="d-flex gap-2">
@@ -2535,6 +4281,35 @@ function showProdutoModal(produto = null) {
                                                 <div class="col-md-8 mb-3">
                                                     <label for="nome" class="form-label">Nome / Descrição *</label>
                                                     <input type="text" class="form-control" id="nome" required value="${isEdit ? escapeHtml(produto.nome || '') : ''}">
+                                                </div>
+                                                <div class="col-md-4 mb-3">
+                                                    <label for="natureza_cadastro_produto" class="form-label">Natureza do cadastro</label>
+                                                    <select id="natureza_cadastro_produto" class="form-select" onchange="atualizarNaturezaCadastroProduto()">
+                                                        <option value="">Não classificar agora</option>
+                                                        <option value="COMERCIAL" ${isEdit && produto?.natureza_cadastro === 'COMERCIAL' ? 'selected' : ''}>Comercial</option>
+                                                        <option value="PRODUZIDO" ${isEdit && produto?.natureza_cadastro === 'PRODUZIDO' ? 'selected' : ''}>Produzido</option>
+                                                        <option value="INSUMO" ${isEdit && produto?.natureza_cadastro === 'INSUMO' ? 'selected' : ''}>Insumo</option>
+                                                    </select>
+                                                    <small class="text-muted">A descrição da nota não define esta classificação.</small>
+                                                </div>
+                                                <div class="col-md-4 mb-3 ${isEdit && produto?.natureza_cadastro === 'INSUMO' ? 'd-none' : ''}" id="linha_produtos_produto_wrap">
+                                                    <label for="linha_produtos_produto" class="form-label">
+                                                        Linha de Produtos
+                                                        <i class="fas fa-info-circle text-muted ms-1" data-bs-toggle="tooltip"
+                                                           title="Agrupa produtos físicos da Fábrica (ex.: sabores de uma linha de picolé). Não define preço nem estoque."></i>
+                                                    </label>
+                                                    <input type="hidden" id="linha_produtos_id_produto" value="${isEdit ? (produto.linha_produtos_id || '') : ''}">
+                                                    <input type="search" class="form-control form-control-sm mb-1" id="linha_produtos_busca" placeholder="Pesquisar linha..." autocomplete="off">
+                                                    <select id="linha_produtos_produto" class="form-select">
+                                                        <option value="">Sem Linha</option>
+                                                    </select>
+                                                    <small class="text-muted">Diferente da Linha de Precificação (aba Comercial).</small>
+                                                </div>
+                                                <div class="col-md-4 mb-3 ${isEdit && produto?.natureza_cadastro === 'INSUMO' ? '' : 'd-none'}" id="grupo_insumo_produto_wrap">
+                                                    <label for="grupo_insumo_produto" class="form-label">Grupo de Insumo</label>
+                                                    <select id="grupo_insumo_produto" class="form-select" data-grupo-atual="${isEdit ? (produto.grupo_insumo_id || '') : ''}">
+                                                        <option value="">Sem grupo</option>
+                                                    </select>
                                                 </div>
                                                 <div class="col-12 mb-3" id="areaCodigoBarrasEan13">
                                                     <label for="codigo_barras" class="form-label">Código de barras</label>
@@ -3098,7 +4873,7 @@ function showProdutoModal(produto = null) {
 
                     <div class="modal-footer">
                         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
-                        <button type="button" class="btn btn-primary" onclick="saveProduto()">Salvar</button>
+                        <button type="button" class="btn btn-primary" onclick="saveProduto()">Salvar produto</button>
                     </div>
                 </div>
             </div>
@@ -3106,6 +4881,9 @@ function showProdutoModal(produto = null) {
     `;
 
     $('#modal-container').html(modalHtml);
+    organizarFichaOperacionalProduto(produto, isEdit);
+    if (typeof atualizarNaturezaCadastroProduto === 'function') atualizarNaturezaCadastroProduto();
+    $('#produtoForm').on('input change', '#nome, #codigo, #categoria_id', atualizarResumoInteligenteProduto);
 
     // Electron: backdrop static evita fechar ao clicar em lista/select nativo
     const produtoModalEl = document.getElementById('produtoModal');
@@ -3874,6 +5652,25 @@ async function saveProduto() {
         data_validade_inicial: ($('#data_validade_inicial').val() || '').trim() || null
     };
 
+    if ($('#observacoes').length) {
+        data.observacoes = $('#observacoes').val() || '';
+    }
+
+    if ($('#natureza_cadastro_produto').length && $('#natureza_cadastro_produto').val()) {
+        data.natureza_cadastro = $('#natureza_cadastro_produto').val();
+        if (data.natureza_cadastro === 'INSUMO' && $('#grupo_insumo_produto_wrap').data('carregado')) {
+            const grupoSelecionado = $('#grupo_insumo_produto').val();
+            data.grupo_insumo_id = grupoSelecionado ? Number(grupoSelecionado) : null;
+        }
+    }
+
+    if ($('#linha_produtos_produto_wrap').data('carregado')) {
+        const linhaProdutos = $('#linha_produtos_id_produto').val();
+        data.linha_produtos_id = $('#natureza_cadastro_produto').val() === 'INSUMO' || !linhaProdutos
+            ? null
+            : Number(linhaProdutos);
+    }
+
     if ($('#saldo_fiscal_inicial').length) {
         data.saldo_fiscal_inicial = saldosIniciais.saldo_fiscal_inicial;
         data.saldo_nao_fiscal_inicial = saldosIniciais.saldo_nao_fiscal_inicial;
@@ -3953,6 +5750,7 @@ async function saveProduto() {
 
     const url = id ? `${API_URL}/produtos/${id}` : `${API_URL}/produtos`;
     const method = id ? 'PUT' : 'POST';
+    const estadoUi = capturarEstadoTelaProdutos();
 
     $.ajax({
         url: url,
@@ -3963,6 +5761,11 @@ async function saveProduto() {
         },
         data: JSON.stringify(data),
         success: function (produtoSalvo) {
+            const callbackCompra = window._aposSalvarProdutoCompra;
+            window._aposSalvarProdutoCompra = null;
+            if (typeof callbackCompra === 'function') {
+                try { callbackCompra(produtoSalvo); } catch (erroVinculo) { console.error(erroVinculo); }
+            }
             const eraCriacao = !id;
             // CP-E1: suspende cálculos/validações antes de fechar/limpar o modal
             window._cpe1SuspenderCalculosProduto = true;
@@ -3988,10 +5791,10 @@ async function saveProduto() {
                     }
 
                     if (typeof renderProdutos === 'function') {
-                        renderProdutos(window.produtosList);
+                        renderProdutos(window.produtosList, estadoUi);
                     }
                 } else {
-                    loadProdutos();
+                    loadProdutos(estadoUi);
                 }
             };
 
@@ -4208,6 +6011,7 @@ function alterarStatusAtivoProdutoUi(id, ativo) {
     const msgConfirm = habilitar
         ? 'Reabilitar este produto? Ele voltará a aparecer no PDV e nas buscas.'
         : 'Desabilitar este produto?\n\nA linha ficará cinza/desabilitada e o produto deixará de aparecer no PDV e nas buscas. Você poderá reabilitar depois.';
+    const estadoUi = capturarEstadoTelaProdutos(id, ativo);
 
     if (!confirm(msgConfirm)) {
         return;
@@ -4224,7 +6028,7 @@ function alterarStatusAtivoProdutoUi(id, ativo) {
                 resp?.message || (habilitar ? 'Produto reabilitado.' : 'Produto desabilitado.'),
                 'success'
             );
-            loadProdutos();
+            loadProdutos(estadoUi);
         },
         error: function (xhr) {
             const erro = xhr.responseJSON?.error || 'Erro desconhecido';
@@ -4311,7 +6115,7 @@ function editProduto(id) {
 window.editProduto = editProduto;
 
 
-function abrirModalAjustarEstoque(produtoId) {
+function abrirModalAjustarEstoque(produtoId, opcoes = {}) {
     if (!podeAjustarEstoque()) {
         showNotification('Acesso restrito: apenas ADMIN ou SUPER_ADMIN podem ajustar estoque.', 'warning');
         return;
@@ -4334,6 +6138,7 @@ function abrirModalAjustarEstoque(produtoId) {
             const stepAjuste = obterStepEstoqueProduto(unidade, opcoesFormato.produtoFracionado);
             const controlaValidade = Number(produto.controlar_validade || 0) === 1;
             const usaFisica = Number(produto.utiliza_conversao_fisica || 0) === 1;
+            const referenciaAjusteId = Date.now() * 1000 + Math.floor(Math.random() * 1000);
 
             const camposFiscal = modoFiscal ? `
                 <div class="col-md-6 mb-3">
@@ -4394,10 +6199,18 @@ function abrirModalAjustarEstoque(produtoId) {
                             <div class="modal-body">
                                 <form id="ajustarEstoqueForm">
                                     <input type="hidden" id="ajuste_produto_id" value="${produtoId}">
+                                    <input type="hidden" id="ajuste_referencia_id" value="${referenciaAjusteId}">
                                     <input type="hidden" id="ajuste_controla_validade" value="${controlaValidade ? 1 : 0}">
                                     <input type="hidden" id="ajuste_unidade_base" value="${escapeHtml(unidade)}">
                                     <input type="hidden" id="ajuste_utiliza_fisica" value="${usaFisica ? 1 : 0}">
                                     <div class="row">
+                                        <div class="col-md-6 mb-3">
+                                            <label for="ajuste_local" class="form-label">Local do estoque *</label>
+                                            <select class="form-select" id="ajuste_local">
+                                                <option value="FABRICA">Fábrica</option>
+                                                <option value="LOJA" selected>Loja</option>
+                                            </select>
+                                        </div>
                                         <div class="col-md-6 mb-3">
                                             <label for="ajuste_unidade_origem" class="form-label">Unidade do Ajuste *</label>
                                             <select class="form-select" id="ajuste_unidade_origem">
@@ -4447,6 +6260,7 @@ function abrirModalAjustarEstoque(produtoId) {
             const host = document.body || document.getElementById('modal-container');
             host.insertAdjacentHTML('beforeend', modalHtml);
             const modalEl = document.getElementById('ajustarEstoqueModal');
+            modalEl.onAjusteEstoqueSalvo = typeof opcoes.onSaved === 'function' ? opcoes.onSaved : null;
             modalEl.style.zIndex = '2060';
             const confirmar = document.getElementById('btnConfirmarAjusteEstoque');
             if (confirmar) {
@@ -4479,7 +6293,7 @@ function abrirModalAjustarEstoque(produtoId) {
                 atualizarPreviewAjusteEstoque();
             });
 
-            $('#ajuste_fiscal, #ajuste_nao_fiscal, #ajuste_unidade_origem').off('input.ajusteMcc change.ajusteMcc')
+            $('#ajuste_fiscal, #ajuste_nao_fiscal, #ajuste_unidade_origem, #ajuste_local').off('input.ajusteMcc change.ajusteMcc')
                 .on('input.ajusteMcc change.ajusteMcc', () => atualizarPreviewAjusteEstoque());
         },
         error: function () {
@@ -4539,6 +6353,7 @@ function atualizarPreviewAjusteEstoque() {
         if (!produtoId) return;
         const modoFiscal = typeof isModoFiscalVisualizacaoAtivo === 'function' && isModoFiscalVisualizacaoAtivo();
         const payload = {
+            local: $('#ajuste_local').val() || 'LOJA',
             unidade_origem: $('#ajuste_unidade_origem').val(),
             quantidade_fiscal: parseFloat($('#ajuste_fiscal').val()) || 0,
             quantidade_nao_fiscal: modoFiscal ? 0 : (parseFloat($('#ajuste_nao_fiscal').val()) || 0)
@@ -4588,12 +6403,16 @@ function avisoAjusteEstoque(mensagem, foco) {
 }
 
 function salvarAjusteEstoque() {
+    const confirmar = document.getElementById('btnConfirmarAjusteEstoque');
+    if (confirmar && confirmar.disabled) return;
+
     const produtoId = $('#ajuste_produto_id').val();
     const motivo = ($('#ajuste_motivo').val() || '').trim();
     const ajusteFiscal = parseFloat($('#ajuste_fiscal').val()) || 0;
     const ajusteNaoFiscal = parseFloat($('#ajuste_nao_fiscal').val()) || 0;
     const controlaValidade = $('#ajuste_controla_validade').val() === '1';
     const modoFiscal = typeof isModoFiscalVisualizacaoAtivo === 'function' && isModoFiscalVisualizacaoAtivo();
+    const local = ($('#ajuste_local').val() || '').trim().toUpperCase();
     const unidadeOrigem = ($('#ajuste_unidade_origem').val() || '').trim();
     const caixa = document.getElementById('ajuste_erro_local');
     if (caixa) caixa.classList.add('d-none');
@@ -4613,6 +6432,11 @@ function salvarAjusteEstoque() {
         return;
     }
 
+    if (!['FABRICA', 'LOJA'].includes(local)) {
+        avisoAjusteEstoque('Selecione um local válido para o estoque.', 'ajuste_local');
+        return;
+    }
+
     const ajustePositivo = Math.max(0, ajusteFiscal) + Math.max(0, (modoFiscal ? 0 : ajusteNaoFiscal));
     if (controlaValidade && ajustePositivo > 0 && !($('#ajuste_data_validade').val() || '').trim()) {
         showNotification('Informe a data de validade para ajuste positivo em produto com controle de validade.', 'warning');
@@ -4621,6 +6445,8 @@ function salvarAjusteEstoque() {
     }
 
     const payload = {
+        local,
+        referencia_id: Number($('#ajuste_referencia_id').val()),
         unidade_origem: unidadeOrigem,
         ajuste_fiscal: ajusteFiscal,
         ajuste_nao_fiscal: modoFiscal ? 0 : ajusteNaoFiscal,
@@ -4633,6 +6459,7 @@ function salvarAjusteEstoque() {
         payload.data_validade = ($('#ajuste_data_validade').val() || '').trim() || undefined;
     }
 
+    if (confirmar) confirmar.disabled = true;
     $.ajax({
         url: `${API_URL}/produtos/${produtoId}/ajustar-estoque`,
         method: 'POST',
@@ -4644,11 +6471,16 @@ function salvarAjusteEstoque() {
         success: function () {
             $('#ajustarEstoqueModal').modal('hide');
             showNotification('Estoque ajustado com sucesso!', 'success');
-            loadProdutos();
+            const modalEl = document.getElementById('ajustarEstoqueModal');
+            const onSaved = modalEl && modalEl.onAjusteEstoqueSalvo;
+            if (modalEl) modalEl.onAjusteEstoqueSalvo = null;
+            if (typeof onSaved === 'function') onSaved();
+            else loadProdutos();
         },
         error: function (xhr) {
             const erro = xhr.responseJSON?.error || 'Erro desconhecido';
             showNotification('Erro ao ajustar estoque: ' + erro, 'danger');
+            if (confirmar) confirmar.disabled = false;
         }
     });
 }

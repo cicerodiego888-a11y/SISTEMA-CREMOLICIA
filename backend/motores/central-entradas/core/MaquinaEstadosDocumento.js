@@ -6,7 +6,11 @@
  * @module motores/central-entradas/core/MaquinaEstadosDocumento
  */
 
-const { DocumentoFiscalStatus, isTerminal } = require('./DocumentoFiscalStatus');
+const {
+  DocumentoFiscalStatus,
+  STATUS_XML_COMPLETO_LEGADO,
+  isTerminal
+} = require('./DocumentoFiscalStatus');
 
 const TRANSICOES_PERMITIDAS = Object.freeze({
   [DocumentoFiscalStatus.RECEBIDA]: [
@@ -39,6 +43,10 @@ const TRANSICOES_PERMITIDAS = Object.freeze({
     DocumentoFiscalStatus.DUPLICADA,
     DocumentoFiscalStatus.ERRO
   ],
+  [STATUS_XML_COMPLETO_LEGADO]: [
+    DocumentoFiscalStatus.AGUARDANDO_XML,
+    DocumentoFiscalStatus.EM_PROCESSAMENTO
+  ],
   [DocumentoFiscalStatus.EM_PROCESSAMENTO]: [
     DocumentoFiscalStatus.AGUARDANDO_REVISAO,
     DocumentoFiscalStatus.REVISADA,
@@ -53,19 +61,23 @@ const TRANSICOES_PERMITIDAS = Object.freeze({
   ],
   [DocumentoFiscalStatus.REVISADA]: [
     DocumentoFiscalStatus.PRONTA_PARA_COMPRA,
+    DocumentoFiscalStatus.AGUARDANDO_REVISAO,
     DocumentoFiscalStatus.SINCRONIZADA,
     DocumentoFiscalStatus.DESCARTADA
   ],
   [DocumentoFiscalStatus.PRONTA_PARA_COMPRA]: [
     DocumentoFiscalStatus.EM_COMPRA,
+    DocumentoFiscalStatus.AGUARDANDO_REVISAO,
     DocumentoFiscalStatus.SINCRONIZADA,
     DocumentoFiscalStatus.DESCARTADA
   ],
   [DocumentoFiscalStatus.EM_COMPRA]: [
     DocumentoFiscalStatus.GRAVADA,
-    DocumentoFiscalStatus.PRONTA_PARA_COMPRA
+    DocumentoFiscalStatus.PRONTA_PARA_COMPRA,
+    DocumentoFiscalStatus.AGUARDANDO_REVISAO
   ],
   [DocumentoFiscalStatus.ERRO]: [
+    DocumentoFiscalStatus.EM_PROCESSAMENTO,
     DocumentoFiscalStatus.SINCRONIZADA,
     DocumentoFiscalStatus.AGUARDANDO_XML
   ],

@@ -15,6 +15,7 @@ class MovimentacaoEstoque {
     );
     this.operacao = String(props.operacao || '').toUpperCase();
     this.origem = String(props.origem || OrigemEstoque.OUTROS).toUpperCase();
+    this.local = props.local == null ? null : String(props.local).trim().toUpperCase();
     this.loteId = props.loteId != null
       ? Number(props.loteId)
       : (props.lote_id != null ? Number(props.lote_id) : null);
@@ -63,6 +64,7 @@ class MovimentacaoEstoque {
       quantidade_nao_fiscal: this.quantidadeNaoFiscal,
       operacao: this.operacao,
       origem: this.origem,
+      local: this.local,
       lote_id: this.loteId,
       referencia_tipo: this.referenciaTipo,
       referencia_id: this.referenciaId,

@@ -15,8 +15,15 @@ const DEFAULT = {
   modo_confirmacao_fiscal: 'TEF',
   midp_ativado: false,
   // Persistido sempre como PRESERVAR_DINHEIRO (3.8D.3.2). LEGADO só em leituras antigas.
-  midp_politica: 'PRESERVAR_DINHEIRO'
+  midp_politica: 'PRESERVAR_DINHEIRO',
+  // Instalações existentes continuam vendendo só por produto até o administrador ativar a Linha.
+  comercializacao: Object.freeze({
+    permitirVendaPorLinha: false,
+    permitirVendaPorProduto: true
+  })
 };
+
+const CHAVES_COMERCIALIZACAO = ['permitirVendaPorLinha', 'permitirVendaPorProduto'];
 
 const TIPOS = ['ERP_SEM_FISCAL', 'ERP_FISCAL', 'ERP_MULTICAIXA'];
 const MODOS = ['LOCAL', 'CLIENTE_SERVIDOR'];
@@ -184,6 +191,30 @@ function migrarMidpPolitica(valor) {
   return nome === 'PRESERVAR_DINHEIRO' ? nome : DEFAULT.midp_politica;
 }
 
+/** true/false, 1/0 e 'true'/'false'/'1'/'0'; qualquer outro valor → undefined. */
+function lerBooleano(valor) {
+  if (valor === true || valor === 1) return true;
+  if (valor === false || valor === 0) return false;
+  const texto = String(valor ?? '').trim().toLowerCase();
+  if (texto === 'true' || texto === '1') return true;
+  if (texto === 'false' || texto === '0') return false;
+  return undefined;
+}
+
+function normalizeComercializacao(obj) {
+  const fonte = obj && typeof obj === 'object' ? obj : {};
+  const resultado = {};
+  CHAVES_COMERCIALIZACAO.forEach((chave) => {
+    const valor = lerBooleano(fonte[chave]);
+    resultado[chave] = valor === undefined ? DEFAULT.comercializacao[chave] : valor;
+  });
+  return resultado;
+}
+
+function getComercializacao(cfg) {
+  return normalizeComercializacao((cfg || readConfig()).comercializacao);
+}
+
 function normalizeConfig(obj) {
   return {
     tipoImplantacao: String(obj?.tipoImplantacao || DEFAULT.tipoImplantacao).toUpperCase(),
@@ -197,7 +228,8 @@ function normalizeConfig(obj) {
     midp_politica: obj?.midp_politica === undefined
       ? DEFAULT.midp_politica
       : normalizeMidpPolitica(obj.midp_politica),
-    ...normalizePadraoFiscal(obj)
+    ...normalizePadraoFiscal(obj),
+    comercializacao: normalizeComercializacao(obj?.comercializacao)
   };
 }
 
@@ -493,6 +525,35 @@ function savePadraoFiscal(obj) {
   return toSave;
 }
 
+/** Grava só as chaves informadas; as ausentes mantêm o valor atual. */
+function saveComercializacao(obj) {
+  const entrada = obj && typeof obj === 'object' ? obj : {};
+  const erros = [];
+  const informado = {};
+  CHAVES_COMERCIALIZACAO.forEach((chave) => {
+    if (!Object.prototype.hasOwnProperty.call(entrada, chave)) return;
+    const valor = lerBooleano(entrada[chave]);
+    if (valor === undefined) erros.push(`${chave} deve ser verdadeiro ou falso`);
+    else informado[chave] = valor;
+  });
+  if (erros.length) {
+    const error = new Error(erros.join('; '));
+    error.details = erros;
+    throw error;
+  }
+
+  const current = readConfig();
+  const toSave = {
+    ...current,
+    comercializacao: { ...getComercializacao(current), ...informado }
+  };
+
+  ensureConfigFile();
+  fs.writeFileSync(getConfigPath(), JSON.stringify(toSave, null, 2), 'utf8');
+  reloadGlobalConfig();
+  return toSave.comercializacao;
+}
+
 function recursoHabilitado(nomeRecurso) {
   const recursos = getRecursos().recursos;
   return recursos[nomeRecurso] === true;
@@ -562,6 +623,10 @@ module.exports = {
   savePadraoFiscal,
   getPadraoFiscal,
   normalizePadraoFiscal,
+  CHAVES_COMERCIALIZACAO,
+  getComercializacao,
+  normalizeComercializacao,
+  saveComercializacao,
   validateConfig,
   ensureConfigFile,
   getRecursos,

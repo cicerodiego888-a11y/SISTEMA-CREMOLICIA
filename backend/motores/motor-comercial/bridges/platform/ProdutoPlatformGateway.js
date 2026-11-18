@@ -10,6 +10,10 @@
 const { dbGet } = require('./dbHelpers');
 const { assegurarBancoNoGateway } = require('./platformGatewayGuards');
 const ComercialPrecoResolver = require('../../../../modules/comercial/preco/ComercialPrecoResolver');
+const {
+  MENSAGEM_PRODUTO_LINHA_CONVERTIDO,
+  listarProdutosLinhaConvertidos
+} = require('../../../../modules/fabrica-loja/produtoLinhaConvertido');
 
 class ProdutoPlatformGateway {
   /**
@@ -95,6 +99,19 @@ class ProdutoPlatformGateway {
     if (Number(row.ativo) !== 1) return false;
     if (row.categoria_id != null && Number(row.categoria_ativa) !== 1) return false;
     return true;
+  }
+
+  /**
+   * Motivo que impede o produto de entrar em nova operação (ex.: produto-linha convertido).
+   * Não se aplica a itens de consignações já existentes.
+   * @param {string|number} produtoId
+   * @returns {Promise<string|null>}
+   */
+  async motivoBloqueioComercial(produtoId) {
+    assegurarBancoNoGateway(this, 'motivoBloqueioComercial');
+    if (produtoId == null) return null;
+    const convertidos = await listarProdutosLinhaConvertidos(this._db, [produtoId]);
+    return convertidos.length ? MENSAGEM_PRODUTO_LINHA_CONVERTIDO : null;
   }
 
   /**

@@ -10,9 +10,13 @@ class NfeItemParseadoDTO {
    */
   constructor(dados = {}) {
     this.produtoNome = dados.produtoNome ?? dados.produto_nome ?? '';
+    this.numeroItemXml = dados.numeroItemXml ?? dados.numero_item_xml ?? null;
     this.codigoFornecedor = dados.codigoFornecedor ?? dados.codigo_fornecedor ?? '';
     this.codigoBarras = dados.codigoBarras ?? dados.codigo_barras ?? '';
     this.ncm = dados.ncm ?? '';
+    this.cfopXml = dados.cfopXml ?? dados.cfop_xml ?? '';
+    this.cstCsosnXml = dados.cstCsosnXml ?? dados.cst_csosn_xml ?? '';
+    this.origXml = dados.origXml ?? dados.orig_xml ?? '';
     this.unidade = dados.unidade ?? 'UN';
     this.quantidade = Number(dados.quantidade ?? 0);
     this.precoUnitario = Number(dados.precoUnitario ?? dados.preco_unitario ?? 0);
@@ -44,9 +48,13 @@ class NfeItemParseadoDTO {
   toJSON() {
     const json = {
       produto_nome: this.produtoNome,
+      numero_item_xml: this.numeroItemXml,
       codigo_fornecedor: this.codigoFornecedor,
       codigo_barras: this.codigoBarras,
       ncm: this.ncm,
+      cfop_xml: this.cfopXml,
+      cst_csosn_xml: this.cstCsosnXml,
+      orig_xml: this.origXml,
       unidade: this.unidade,
       quantidade: this.quantidade,
       preco_unitario: this.precoUnitario,

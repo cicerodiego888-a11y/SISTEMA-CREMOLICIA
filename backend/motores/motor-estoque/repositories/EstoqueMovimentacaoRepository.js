@@ -23,8 +23,8 @@ function inserirMovimentacao(db, mov) {
           operacao, origem, lote_id,
           referencia_tipo, referencia_id,
           saldo_antes, saldo_depois,
-          usuario_id, motivo, motor, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+          usuario_id, motivo, motor, local, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
       `,
       [
         m.produtoId,
@@ -40,7 +40,8 @@ function inserirMovimentacao(db, mov) {
         m.saldoDepois,
         m.usuarioId,
         m.motivo,
-        m.motor || MOTOR_ESTOQUE_NOME
+        m.motor || MOTOR_ESTOQUE_NOME,
+        m.local
       ],
       function onInsert(err) {
         if (err) return reject(err);

@@ -1228,6 +1228,10 @@ function renderConfiguracoesAvancadas(config) {
     const ipServidor = config.ipServidor || '';
     const porta = Number(config.porta) > 0 ? Number(config.porta) : 3001;
     const clienteServidorDisponivel = tipo === 'ERP_MULTICAIXA';
+    const comercializacao = {
+        permitirVendaPorLinha: config.comercializacao?.permitirVendaPorLinha === true,
+        permitirVendaPorProduto: config.comercializacao?.permitirVendaPorProduto !== false
+    };
 
     const html = `
         <div class="card">
@@ -1414,11 +1418,35 @@ function renderConfiguracoesAvancadas(config) {
 
                     <hr>
 
+                    <div id="secaoComercializacao">
+                        <h6 class="fw-bold text-uppercase"><i class="fas fa-store"></i> Comercialização</h6>
+                        <p class="mb-1 fw-semibold">Como sua empresa vende?</p>
+                        <p class="text-muted small mb-3">Você pode vender seus produtos individualmente, por linha, ou das duas formas.</p>
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="checkbox" id="cfgVendaPorProduto" ${comercializacao.permitirVendaPorProduto ? 'checked' : ''}>
+                            <label class="form-check-label fw-bold" for="cfgVendaPorProduto">Permitir venda por Produto</label>
+                            <small class="text-muted d-block">Venda cada produto separadamente.</small>
+                        </div>
+                        <div class="form-check mb-3">
+                            <input class="form-check-input" type="checkbox" id="cfgVendaPorLinha" ${comercializacao.permitirVendaPorLinha ? 'checked' : ''}>
+                            <label class="form-check-label fw-bold" for="cfgVendaPorLinha">Permitir venda por Linha</label>
+                            <small class="text-muted d-block">Escolha uma linha e depois distribua a quantidade entre seus produtos.</small>
+                        </div>
+                        <div id="avisoComercializacao" class="alert alert-warning py-2 small" style="display:none;">
+                            Nenhuma forma de venda está habilitada.
+                        </div>
+                        <button type="button" class="btn btn-success btn-sm" onclick="salvarComercializacao()">
+                            <i class="fas fa-save"></i> Salvar
+                        </button>
+                    </div>
+
+                    <hr>
+
                     <div class="d-flex flex-wrap gap-2">
                         <button type="button" class="btn btn-primary" onclick="salvarConfiguracoesAvancadas()">
                             <i class="fas fa-save"></i> Salvar Configurações
                         </button>
-                        <button type="button" class="btn btn-secondary" onclick="loadPage('pdv')">
+                        <button type="button" class="btn btn-secondary" onclick="window.location.assign('/pdv')">
                             <i class="fas fa-times"></i> Fechar
                         </button>
                     </div>
@@ -1430,6 +1458,7 @@ function renderConfiguracoesAvancadas(config) {
     $('#page-content').html(html);
     configurarFormConfigAvancadas();
     aplicarEstadoFormConfigAvancadas();
+    atualizarAvisoComercializacao();
     carregarStatusPixAutomatico();
 
     document
@@ -1632,6 +1661,62 @@ async function salvarConfiguracoesAvancadas() {
 }
 
 $(document).on('change', 'input[name="tipoImplantacao"], input[name="modoOperacao"]', aplicarEstadoFormConfigAvancadas);
+
+function lerComercializacaoTela() {
+    return {
+        permitirVendaPorLinha: $('#cfgVendaPorLinha').is(':checked'),
+        permitirVendaPorProduto: $('#cfgVendaPorProduto').is(':checked')
+    };
+}
+
+function atualizarAvisoComercializacao() {
+    const atual = lerComercializacaoTela();
+    $('#avisoComercializacao').toggle(!atual.permitirVendaPorLinha && !atual.permitirVendaPorProduto);
+}
+
+$(document).on('change', '#cfgVendaPorLinha, #cfgVendaPorProduto', atualizarAvisoComercializacao);
+
+async function salvarComercializacao() {
+    if (!isSuperAdminUser()) {
+        showNotification('Acesso negado.', 'danger');
+        return;
+    }
+
+    try {
+        const response = await fetch(`${API_URL}/configuracoes-avancadas/comercializacao`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${localStorage.getItem('token')}`
+            },
+            body: JSON.stringify(lerComercializacaoTela())
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            throw new Error(data.error || 'Erro ao salvar a comercialização.');
+        }
+
+        const salvo = data.comercializacao || {};
+        if (window.configuracaoAvancadaServidor) {
+            window.configuracaoAvancadaServidor.comercializacao = {
+                permitirVendaPorLinha: salvo.permitirVendaPorLinha === true,
+                permitirVendaPorProduto: salvo.permitirVendaPorProduto === true
+            };
+        }
+        $('#cfgVendaPorLinha').prop('checked', salvo.permitirVendaPorLinha === true);
+        $('#cfgVendaPorProduto').prop('checked', salvo.permitirVendaPorProduto === true);
+        atualizarAvisoComercializacao();
+
+        if (salvo.aviso) {
+            showNotification(`Comercialização salva. ${salvo.aviso}`, 'warning');
+        } else {
+            showNotification(data.message || 'Comercialização salva.', 'success');
+        }
+    } catch (err) {
+        console.error(err);
+        showNotification(err.message || 'Erro ao salvar a comercialização.', 'danger');
+    }
+}
 
 async function salvarPadraoFiscalEmpresa() {
     if (!isSuperAdminUser()) {

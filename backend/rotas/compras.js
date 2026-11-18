@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const crypto = require('node:crypto');
 const db = require('../database');
 const moment = require('moment');
 const { gravarAuditoria } = require('../services/auditoria');
@@ -26,8 +27,48 @@ const {
 } = require('../lib/entradaProducaoPropria');
 const mcc = require('../motores/motor-conversao-comercial');
 const MotorEstoque = require('../motores/motor-estoque');
+const {
+  resolverProdutoItemCompra,
+  itemPodeEntrarEstoque,
+  MENSAGEM_PRODUTO_NAO_CADASTRADO,
+  CODIGO_PRODUTO_NAO_CADASTRADO,
+  MOTIVO_PRODUTO_INATIVO,
+  MENSAGEM_PRODUTO_INATIVO,
+  MOTIVO_PRODUTO_NAO_INSUMO,
+  MENSAGEM_PRODUTO_NAO_INSUMO,
+  produtoPodeSerInsumoCompra
+} = require('../modules/compras/resolverProdutoItem');
+const { confirmarProdutoItemCompra } = require('../modules/compras/confirmarProdutoItem');
+const {
+  STATUS: STATUS_FISCAL_ENTRADA,
+  itemEhUsoEConsumo,
+  resolverFiscalEntrada,
+  resolverBloqueioOrigem,
+  carregarEmpresaFiscal
+} = require('../modules/compras/resolverFiscalEntrada');
+const { carregarContextoFiscalConfiavel, localizarItemXml } = require('../modules/compras/contextoFiscalConfiavel');
+const {
+  resolverDestinoItemCompra,
+  vincularUnidadeDestino
+} = require('../modules/compras/destinoEstoqueItem');
 const { publicarEventoCompraApMfe } = require('../motores/motor-financeiro/adapters');
 const { obterMotor, FeatureFlag } = require('../motores/motor-financeiro');
+
+const comprasIdempotentesEmProcessamento = new Map();
+
+function serializarConteudoCanonico(valor) {
+  if (Array.isArray(valor)) return `[${valor.map(serializarConteudoCanonico).join(',')}]`;
+  if (valor && typeof valor === 'object') {
+    return `{${Object.keys(valor).sort().map((chave) => (
+      `${JSON.stringify(chave)}:${serializarConteudoCanonico(valor[chave])}`
+    )).join(',')}}`;
+  }
+  return JSON.stringify(valor);
+}
+
+function hashConteudoCompra(valor) {
+  return crypto.createHash('sha256').update(serializarConteudoCanonico(valor)).digest('hex');
+}
 
 const itemCompraEhFracionado = itemCompraUsaConversaoUnidades;
 
@@ -144,16 +185,6 @@ function addMonths(date, months) {
 
 function digitsOnly(value) {
   return String(value || '').replace(/\D/g, '');
-}
-
-function createSlugCodigo(nome = '') {
-  return String(nome)
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-zA-Z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 40)
-    .toUpperCase();
 }
 
 function calcularRateioItens(itens, totais = {}) {
@@ -459,88 +490,112 @@ function criarFinanceiroCompra(compra, callback) {
   });
 }
 
-function ensureProductForItemLegado(item, callback) {
-  const codigo = item.codigo_barras || createSlugCodigo(item.produto_nome || 'PRODUTO-IMPORTADO');
-  const nome = item.produto_nome || `Produto ${codigo}`;
-  const qtds = resolverQuantidadesCompraItem(item);
-  const itemFiscal = qtds.quantidade_fiscal > 0 ? 1 : 0;
-
-  db.get(
-    'SELECT id FROM produtos WHERE codigo = ? OR codigo_barras = ? OR nome = ? LIMIT 1',
-    [codigo, codigo, nome],
-    (findErr, existente) => {
-      if (findErr) return callback(findErr);
-      if (existente) return callback(null, existente.id);
-
-      const precosCadastro = resolverPrecosCadastroAposCompra(item);
-
-      db.run(`
-        INSERT INTO produtos (
-          codigo, codigo_barras, nome, unidade, preco_compra, preco_venda,
-          lucro_percentual, estoque_atual, estoque_minimo, fornecedor, ncm,
-          saldo_fiscal, saldo_nao_fiscal, item_fiscal, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, 0, 0, ?, CURRENT_TIMESTAMP)
-      `, [
-        codigo,
-        item.codigo_barras || codigo,
-        nome,
-        item.unidade || 'UN',
-        precosCadastro.precoCompra,
-        precosCadastro.precoVenda ?? precosCadastro.precoCompra,
-        precosCadastro.lucroPercentual,
-        item.fornecedor || null,
-        item.ncm || null,
-        itemFiscal
-      ], function(insertErr) {
-        if (insertErr) return callback(insertErr);
-        callback(null, this.lastID);
-      });
-    }
-  );
+function ensureProductForItem(item, callback) {
+  confirmarProdutoItemCompra(db, item, {
+    miip: MiipService,
+    contexto: { origem: 'compra', ponto: 'ensureProductForItem' }
+  })
+    .then((resultado) => {
+      if (!itemPodeEntrarEstoque(resultado)) {
+        const err = new Error(MENSAGEM_PRODUTO_NAO_CADASTRADO);
+        err.status = 409;
+        err.codigo = CODIGO_PRODUTO_NAO_CADASTRADO;
+        err.item = resultado;
+        return callback(err);
+      }
+      if (!produtoPodeSerInsumoCompra(resultado)) {
+        const err = new Error(MENSAGEM_PRODUTO_NAO_INSUMO);
+        err.status = 400;
+        err.codigo = MOTIVO_PRODUTO_NAO_INSUMO;
+        err.item = resultado;
+        return callback(err);
+      }
+      callback(null, resultado.produtoId);
+    })
+    .catch((err) => callback(err));
 }
 
-function ensureProductForItem(item, callback) {
-  if (item.produto_id) {
-    return callback(null, Number(item.produto_id));
-  }
+function resolverItensAntesDeGravar(itens) {
+  const resultados = [];
+  let indice = 0;
 
-  if (!MiipService.estaHabilitado()) {
-    MiipService.registrarIntegracao({
-      evento: 'legado_feature_flag',
-      item,
-      motivo: 'usarMiip=false — fluxo legado imediato'
-    });
-    return ensureProductForItemLegado(item, callback);
-  }
-
-  MiipService.identificar(item, { origem: 'compra', ponto: 'ensureProductForItem' })
-    .then((miip) => {
-      if (miip?.desabilitado) {
-        return ensureProductForItemLegado(item, callback);
+  return new Promise((resolve, reject) => {
+    const passo = () => {
+      if (indice >= itens.length) return resolve(resultados);
+      const item = itens[indice];
+      if (itemEhUsoEConsumo(item)) {
+        // Uso e consumo não passa pelo vínculo de insumo/estoque; o produto foi validado no resolvedor fiscal.
+        resultados.push({ situacao: 'VINCULADO', produtoId: Number(item.produto_id) || null });
+        indice += 1;
+        return passo();
       }
-
-      if (miip?.produtoId) {
-        return callback(null, Number(miip.produtoId));
-      }
-
-      MiipService.registrarIntegracao({
-        evento: 'miip_fallback_legado',
-        item,
-        resultado: miip?.resultado ?? null,
-        motivo: 'MIIP não encontrou produto — executando ensureProductForItemLegado'
+      ensureProductForItem(item, (err, produtoId) => {
+        if (err && err.codigo === CODIGO_PRODUTO_NAO_CADASTRADO) {
+          resultados.push({
+            ...(err.item || {}),
+            situacao: CODIGO_PRODUTO_NAO_CADASTRADO,
+            produtoId: null
+          });
+          indice += 1;
+          return passo();
+        }
+        if (err) return reject(err);
+        resultados.push({ situacao: 'VINCULADO', produtoId: Number(produtoId) });
+        indice += 1;
+        return passo();
       });
+    };
+    passo();
+  });
+}
 
-      return ensureProductForItemLegado(item, callback);
-    })
-    .catch((miipErr) => {
-      MiipService.registrarIntegracao({
-        evento: 'miip_erro_fallback_legado',
-        item,
-        erro: miipErr?.message || String(miipErr),
-        motivo: 'erro MIIP — executando ensureProductForItemLegado'
-      });
-      ensureProductForItemLegado(item, callback);
-    });
+/** Uso e consumo: grava só o item com a classificação fiscal; sem MCC, estoque ou alteração do produto. */
+function inserirItemUsoConsumoCompra(compraId, item, cb) {
+  const fiscal = item.fiscal_entrada;
+  if (!fiscal || fiscal.status !== STATUS_FISCAL_ENTRADA.APLICAVEL) {
+    const err = new Error('Item de uso e consumo sem classificação fiscal validada.');
+    err.status = 422;
+    err.codigo = 'FISCAL_ENTRADA_PENDENTE';
+    return cb(err);
+  }
+  const quantidade = Number(item.quantidade || 0);
+  const subtotal = moeda(item.subtotal ?? quantidade * Number(item.preco_unitario || 0));
+  const xml = fiscal.dados_xml_originais || {};
+  db.run(`
+    INSERT INTO compras_itens (
+      compra_id, produto_id, quantidade, preco_unitario, subtotal,
+      descricao_produto, codigo_barras, unidade, ncm,
+      frete_rateado, desconto_rateado, outras_despesas_rateado, custo_unitario_final,
+      atualizar_preco_venda, item_fiscal, quantidade_fiscal, quantidade_nao_fiscal,
+      destino_estoque, finalidade_item, cfop_xml, cst_csosn_xml, orig_xml,
+      cfop_entrada, regra_fiscal_entrada, origem_regra_fiscal, justificativa_fiscal,
+      numero_item_xml, central_documento_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `, [
+    compraId,
+    Number(item.produto_id) || null,
+    quantidade,
+    Number(item.preco_unitario || 0),
+    subtotal,
+    item.produto_nome || null,
+    item.codigo_barras || null,
+    item.unidade || 'UN',
+    item.ncm || null,
+    Number(item.frete_rateado || 0),
+    Number(item.desconto_rateado || 0),
+    Number(item.outras_despesas_rateado || 0),
+    quantidade > 0 ? moeda(subtotal / quantidade) : 0,
+    fiscal.finalidade,
+    xml.cfop || null,
+    xml.cst_csosn || null,
+    xml.orig || null,
+    fiscal.cfop_entrada,
+    fiscal.regra,
+    fiscal.origem_regra,
+    String(item.justificativa_fiscal || '').trim() || null,
+    fiscal.numero_item_xml ?? null,
+    fiscal.central_documento_id ?? null
+  ], (err) => cb(err || null));
 }
 
 function processarItensCompra(compraId, itens, fornecedor, opcoes, done) {
@@ -551,14 +606,52 @@ function processarItensCompra(compraId, itens, fornecedor, opcoes, done) {
 
   const fornecedorCnpj = opcoes?.fornecedor_cnpj || null;
   let index = 0;
+  let finalizado = false;
+  let itemEmAndamento = false;
+  let unidadesCarregadas = false;
+
+  db.all(`SELECT id, codigo, tipo FROM unidades_negocio WHERE COALESCE(ativa, 1) = 1`, [], (errUnidade, unidades) => {
+    if (finalizado || unidadesCarregadas) return;
+    unidadesCarregadas = true;
+    if (errUnidade && !/no such table/i.test(errUnidade.message || '')) return finalizar(errUnidade);
+    opcoes = { ...(opcoes || {}), unidades: unidades || [] };
+    next();
+  });
+
+  function finalizar(err) {
+    if (finalizado) return;
+    finalizado = true;
+    done(err || null);
+  }
 
   function next() {
+    if (finalizado || itemEmAndamento) return;
     if (index >= itens.length) {
-      done(null);
-      return;
+      return finalizar(null);
     }
 
     const item = itens[index++];
+    itemEmAndamento = true;
+    let itemFinalizado = false;
+    const finalizarItem = (err) => {
+      if (itemFinalizado || finalizado) return;
+      itemFinalizado = true;
+      itemEmAndamento = false;
+      if (err) return finalizar(err);
+      next();
+    };
+    if (itemEhUsoEConsumo(item)) {
+      return inserirItemUsoConsumoCompra(compraId, item, finalizarItem);
+    }
+    let destino;
+    try {
+      destino = vincularUnidadeDestino(
+        resolverDestinoItemCompra(item, { legadoSemLocal: !!opcoes.legadoSemLocal }),
+        opcoes.unidades || []
+      );
+    } catch (destinoErr) {
+      return finalizarItem(destinoErr);
+    }
 
     const itemComContexto = {
       ...item,
@@ -567,8 +660,11 @@ function processarItensCompra(compraId, itens, fornecedor, opcoes, done) {
       mcc_entrada: 1
     };
 
+    let produtoResolvido = false;
     ensureProductForItem(itemComContexto, (prodErr, produtoId) => {
-      if (prodErr) return done(prodErr);
+      if (produtoResolvido || itemFinalizado || finalizado) return;
+      produtoResolvido = true;
+      if (prodErr) return finalizarItem(prodErr);
 
       entradaMcc.processarItemOperacional(db, {
         compraId,
@@ -609,8 +705,9 @@ function processarItensCompra(compraId, itens, fornecedor, opcoes, done) {
             frete_rateado, desconto_rateado, outras_despesas_rateado, custo_unitario_final,
             vendido_por_peso, peso_total_compra, custo_por_kg, atualizar_preco_venda, item_fiscal,
             quantidade_fiscal, quantidade_nao_fiscal,
-            compra_em, quantidade_embalagens, quantidade_por_embalagem, valor_total_embalagem
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            compra_em, quantidade_embalagens, quantidade_por_embalagem, valor_total_embalagem,
+            destino_estoque, local_id
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `, [
           compraId,
           produtoId,
@@ -637,9 +734,12 @@ function processarItensCompra(compraId, itens, fornecedor, opcoes, done) {
           itemProcessado.compra_em || itemProcessado.unidade_comercial || null,
           Number(itemProcessado.quantidade_embalagens || itemProcessado.quantidade_comercial || 0),
           Number(itemProcessado.quantidade_por_embalagem || 0),
-          Number(itemProcessado.valor_total_embalagem || itemProcessado.subtotal || subtotalGravar || 0)
+          Number(itemProcessado.valor_total_embalagem || itemProcessado.subtotal || subtotalGravar || 0),
+          destino.local,
+          destino.local_id
         ], (insertErr) => {
-          if (insertErr) return done(insertErr);
+          if (itemFinalizado || finalizado) return;
+          if (insertErr) return finalizarItem(insertErr);
 
           // MCC-04 — estoque somente via MotorEstoque (quantidade base já convertida pelo MCC)
           MotorEstoque.entrar(db, {
@@ -648,6 +748,7 @@ function processarItensCompra(compraId, itens, fornecedor, opcoes, done) {
             quantidadeFiscal: qtdFiscal,
             quantidadeNaoFiscal: qtdNaoFiscal,
             origem: MotorEstoque.OrigemEstoque.COMPRA,
+            local: destino.local,
             loteId: resultadoMcc.lote?.id || null,
             referenciaTipo: 'compra',
             referenciaId: compraId,
@@ -662,7 +763,7 @@ function processarItensCompra(compraId, itens, fornecedor, opcoes, done) {
                 lucro_percentual = CASE WHEN ? = 1 THEN ? ELSE lucro_percentual END,
                 fornecedor = COALESCE(?, fornecedor),
                 ncm = COALESCE(?, ncm),
-                codigo_barras = COALESCE(?, codigo_barras),
+                codigo_barras = CASE WHEN COALESCE(TRIM(codigo_barras), '') = '' THEN COALESCE(?, codigo_barras) ELSE codigo_barras END,
                 unidade = COALESCE(?, unidade),
                 produto_fracionado = CASE WHEN ? = 1 THEN 1 ELSE COALESCE(produto_fracionado, 0) END,
                 vendido_por_peso = CASE WHEN ? = 1 THEN 1 ELSE COALESCE(vendido_por_peso, 0) END,
@@ -676,13 +777,16 @@ function processarItensCompra(compraId, itens, fornecedor, opcoes, done) {
               precosCadastro.lucroPercentual,
               fornecedor || null,
               itemProcessado.ncm || null,
-              itemProcessado.codigo_barras || null,
+              /^\d{8,14}$/.test(String(itemProcessado.codigo_barras || '').trim())
+                ? String(itemProcessado.codigo_barras).trim()
+                : null,
               itemProcessado.unidade || 'UN',
               Number(itemProcessado.produto_fracionado ?? itemProcessado.vendido_por_peso ?? 0),
               Number(itemProcessado.produto_fracionado ?? itemProcessado.vendido_por_peso ?? 0),
               produtoId
             ], (upErr) => {
-              if (upErr) return done(upErr);
+              if (itemFinalizado || finalizado) return;
+              if (upErr) return finalizarItem(upErr);
 
               const precoCompraNovo = precosCadastro.precoCompra;
               const precoVendaNovo = precosCadastro.atualizarVenda
@@ -695,16 +799,19 @@ function processarItensCompra(compraId, itens, fornecedor, opcoes, done) {
                   INSERT INTO produtos_preco_historico (
                     produto_id, preco_compra_anterior, preco_compra_novo, preco_venda_anterior, preco_venda_novo
                   ) VALUES (?, ?, ?, ?, ?)
-                `, [produtoId, antigo.preco_compra, precoCompraNovo, antigo.preco_venda, precoVendaNovo], () => next());
+                `, [produtoId, antigo.preco_compra, precoCompraNovo, antigo.preco_venda, precoVendaNovo], (historyErr) => {
+                  if (historyErr) return finalizarItem(historyErr);
+                  finalizarItem(null);
+                });
               } else {
-                next();
+                finalizarItem(null);
               }
             });
           }).catch((estErr) => {
             const err = new Error(estErr?.message || String(estErr));
             err.status = estErr?.status || 500;
             err.codigo = estErr?.codigo;
-            done(err);
+            finalizarItem(err);
           });
         });
       }).catch((mccErr) => {
@@ -712,12 +819,10 @@ function processarItensCompra(compraId, itens, fornecedor, opcoes, done) {
         const err = new Error(mccErr?.message || String(mccErr));
         err.status = status;
         err.code = mccErr?.code;
-        done(err);
+        finalizarItem(err);
       });
     });
   }
-
-  next();
 }
 
 function garantirTabelaDevolucoesCompra(callback) {
@@ -808,6 +913,13 @@ router.post('/:id/devolver', validarCaixaAberto, (req, res) => {
             if (!item) {
               db.run('ROLLBACK');
               return res.status(404).json({ error: 'Item da compra não encontrado.' });
+            }
+
+            if (String(item.finalidade_item || '').toUpperCase() === 'USO_E_CONSUMO') {
+              db.run('ROLLBACK');
+              return res.status(400).json({
+                error: `O item "${item.produto_nome}" é de uso e consumo e não possui estoque para devolução por este fluxo.`
+              });
             }
 
             const qtdComprada = Number(item.quantidade || 0);
@@ -1023,7 +1135,206 @@ router.get('/:id', (req, res) => {
   });
 });
 
-router.post('/', (req, res) => {
+router.post('/resolver-itens', (req, res) => {
+  const itens = Array.isArray(req.body?.itens) ? req.body.itens : [];
+  Promise.all(itens.map((item) => resolverProdutoItemCompra(db, item)))
+    .then((resultados) => {
+      res.json({
+        itens: resultados,
+        pendentes: resultados.filter((item) => item.situacao === CODIGO_PRODUTO_NAO_CADASTRADO).length
+      });
+    })
+    .catch((err) => {
+      console.error('Erro ao resolver itens da compra:', err);
+      res.status(500).json({ error: err.message });
+    });
+});
+
+function buscarNaturezaProdutoCompra(produtoId) {
+  return new Promise((resolve, reject) => {
+    if (!produtoId) return resolve({ encontrado: false, natureza: null });
+    db.get('SELECT natureza_cadastro FROM produtos WHERE id = ?', [produtoId], (err, row) => {
+      if (err) return reject(err);
+      resolve({ encontrado: !!row, natureza: row?.natureza_cadastro || null });
+    });
+  });
+}
+
+/**
+ * Resolve a classificação fiscal de entrada dos itens de uso e consumo (itens sem a finalidade ficam inalterados).
+ * UF, CFOP, CST/CSOSN, origem, CRT e destinatário vêm exclusivamente do XML original persistido no backend,
+ * localizado por central_documento_id; os campos fiscais do corpo da requisição são ignorados.
+ */
+async function resolverFiscalEntradaItensCompra(body, usuarioId) {
+  const itens = Array.isArray(body?.itens) ? body.itens : [];
+  if (!itens.some(itemEhUsoEConsumo)) return itens.map(() => null);
+
+  const empresa = await carregarEmpresaFiscal(db);
+  const contexto = await carregarContextoFiscalConfiavel(db, {
+    centralDocumentoId: body.central_documento_id,
+    chaveAcessoInformada: body.chave_acesso
+  });
+
+  return Promise.all(itens.map(async (item) => {
+    if (!itemEhUsoEConsumo(item)) return null;
+    const base = { finalidade_item: item.finalidade_item };
+    if (!contexto.ok) return resolverBloqueioOrigem(base, contexto.motivo);
+
+    const { itemXml, erro } = localizarItemXml(contexto.itensXml, item);
+    if (erro) return resolverBloqueioOrigem(base, erro);
+
+    const produto = await buscarNaturezaProdutoCompra(item.produto_id);
+    if (!produto.encontrado) {
+      return resolverBloqueioOrigem(base, 'Vincule o item a um produto cadastrado antes de classificá-lo como uso e consumo.');
+    }
+
+    const resolucao = resolverFiscalEntrada({
+      item: {
+        finalidade_item: item.finalidade_item,
+        cfop_xml: itemXml.cfop_xml,
+        cst_csosn_xml: itemXml.cst_csosn_xml,
+        orig_xml: itemXml.orig_xml,
+        produto_natureza: produto.natureza,
+        cfop_entrada_manual: item.cfop_entrada_manual,
+        justificativa_fiscal: item.justificativa_fiscal
+      },
+      documento: contexto.documento,
+      empresa,
+      usuarioId
+    });
+
+    const divergentes = [['cfop_xml', 'CFOP'], ['cst_csosn_xml', 'CST/CSOSN'], ['orig_xml', 'origem']]
+      .filter(([campo]) => item[campo] != null && String(item[campo]).trim() !== '' && String(item[campo]).trim() !== String(itemXml[campo] ?? '').trim())
+      .map(([, rotulo]) => rotulo);
+    const confiavelPorCampo = {
+      fornecedor_uf: contexto.documento.emitente_uf,
+      fornecedor_crt: contexto.documento.emitente_crt,
+      destinatario_uf: contexto.documento.destinatario_uf,
+      destinatario_cnpj: contexto.documento.destinatario_cnpj
+    };
+    const clienteDivergente = Object.entries(confiavelPorCampo).some(([campo, valor]) => (
+      String(body[campo] ?? '').trim() !== '' && normalizarFiscal(body[campo]) !== normalizarFiscal(valor)
+    ));
+    if (divergentes.length || clienteDivergente) {
+      resolucao.alertas.push('Dados fiscais enviados pelo navegador divergem do XML original e foram ignorados; prevalece o XML armazenado.');
+    }
+
+    resolucao.numero_item_xml = itemXml.numero_item_xml;
+    resolucao.central_documento_id = contexto.centralDocumentoId;
+    resolucao.destinatario_confiavel = {
+      cnpj: contexto.documento.destinatario_cnpj,
+      uf: contexto.documento.destinatario_uf
+    };
+    return resolucao;
+  }));
+}
+
+const normalizarFiscal = (v) => String(v ?? '').trim().toUpperCase().replace(/[.\-/]/g, '');
+
+function resumirResolucaoFiscal(item, indice, resolucao) {
+  return {
+    indice,
+    produto_nome: item?.produto_nome || null,
+    status: resolucao.status,
+    finalidade: resolucao.finalidade,
+    cfop_entrada: resolucao.cfop_entrada,
+    regra: resolucao.regra,
+    origem_regra: resolucao.origem_regra,
+    escopo: resolucao.escopo,
+    mensagens: resolucao.mensagens,
+    alertas: resolucao.alertas,
+    dados_xml_originais: resolucao.dados_xml_originais
+  };
+}
+
+// Pré-visualização do tratamento fiscal proposto; não grava nada.
+router.post('/validar-fiscal-entrada', (req, res) => {
+  resolverFiscalEntradaItensCompra(req.body, req.user?.id)
+    .then((resultados) => {
+      const itens = Array.isArray(req.body?.itens) ? req.body.itens : [];
+      res.json({
+        itens: resultados.map((r, i) => (r ? resumirResolucaoFiscal(itens[i], i, r) : null))
+      });
+    })
+    .catch((err) => {
+      console.error('Erro ao validar tratamento fiscal de entrada:', err);
+      res.status(500).json({ error: err.message });
+    });
+});
+
+function validarFiscalEntradaCompra(req, res, next) {
+  const itens = req.body?.itens;
+  if (Number(req.body?.nota_fiscal_avulsa) === 1 || !Array.isArray(itens)) return next();
+
+  // O resultado do servidor é a única fonte confiável; descarta qualquer valor enviado pelo cliente.
+  itens.forEach((item) => {
+    if (item && typeof item === 'object') delete item.fiscal_entrada;
+  });
+
+  resolverFiscalEntradaItensCompra(req.body, req.user?.id)
+    .then((resultados) => {
+      const pendentes = [];
+      resultados.forEach((resolucao, indice) => {
+        if (!resolucao) return;
+        if (resolucao.status === STATUS_FISCAL_ENTRADA.APLICAVEL) {
+          itens[indice].fiscal_entrada = resolucao;
+          if (resolucao.destinatario_confiavel) {
+            req.body.destinatario_cnpj = resolucao.destinatario_confiavel.cnpj;
+            req.body.destinatario_uf = resolucao.destinatario_confiavel.uf;
+          }
+        } else {
+          pendentes.push(resumirResolucaoFiscal(itens[indice], indice, resolucao));
+        }
+      });
+      if (pendentes.length) {
+        return res.status(422).json({
+          error: 'Classificação fiscal de uso e consumo pendente ou inconsistente. Corrija os itens indicados antes de concluir a compra.',
+          codigo: 'FISCAL_ENTRADA_PENDENTE',
+          itens: pendentes
+        });
+      }
+      next();
+    })
+    .catch((err) => {
+      console.error('Erro ao validar tratamento fiscal de entrada:', err);
+      res.status(500).json({ error: err.message });
+    });
+}
+
+router.post('/', validarFiscalEntradaCompra, (req, res) => {
+  let respostaEnviada = false;
+  let reservaIdempotencia = null;
+  const jsonOriginal = res.json.bind(res);
+  res.json = (payload) => {
+    if (reservaIdempotencia && !reservaIdempotencia.finalizada) {
+      reservaIdempotencia.finalizada = true;
+      if (comprasIdempotentesEmProcessamento.get(reservaIdempotencia.chave) === reservaIdempotencia) {
+        comprasIdempotentesEmProcessamento.delete(reservaIdempotencia.chave);
+      }
+      reservaIdempotencia.resolver({ status: res.statusCode, payload });
+    }
+    return jsonOriginal(payload);
+  };
+  const responderCompra = (status, payload) => {
+    if (respostaEnviada || res.headersSent) return;
+    respostaEnviada = true;
+    res.status(status).json(payload);
+  };
+  const confirmarTransacao = (aoConfirmar) => {
+    let commitConcluido = false;
+    db.run('COMMIT', (commitErr) => {
+      if (commitConcluido) return;
+      commitConcluido = true;
+      if (!commitErr) return aoConfirmar();
+
+      console.error('Erro ao confirmar transação da compra:', commitErr);
+      db.run('ROLLBACK', (rollbackErr) => {
+        if (rollbackErr) console.error('Erro ao desfazer transação após falha no COMMIT da compra:', rollbackErr);
+        responderCompra(500, { error: commitErr.message });
+      });
+    });
+  };
+
   const {
     data_compra,
     data_emissao,
@@ -1095,6 +1406,23 @@ router.post('/', (req, res) => {
     return res.status(400).json({ error: 'A chave de acesso da NF deve ter 44 dígitos.' });
   }
 
+  const compraManualSemNfe = !chaveLimpa && !isNotaAvulsa && !isProducaoPropria && !centralDocumentoId;
+  const chaveIdempotenciaRecebida = String(
+    req.get('Idempotency-Key') || req.body?.idempotency_key || ''
+  ).trim();
+  const chaveIdempotencia = compraManualSemNfe ? chaveIdempotenciaRecebida : '';
+  let hashConteudoIdempotencia = null;
+  if (compraManualSemNfe) {
+    if (!chaveIdempotencia || chaveIdempotencia.length > 128) {
+      return responderCompra(400, {
+        error: 'Informe uma chave de idempotência válida para registrar a compra manual.'
+      });
+    }
+    const conteudoCompra = { ...req.body };
+    delete conteudoCompra.idempotency_key;
+    hashConteudoIdempotencia = hashConteudoCompra(conteudoCompra);
+  }
+
   let totalItensCalculado;
   let totalCalculadoComAjustes;
   let diferencaTotal;
@@ -1124,25 +1452,76 @@ router.post('/', (req, res) => {
     });
   }
 
+  if (chaveIdempotencia) {
+    const emProcessamento = comprasIdempotentesEmProcessamento.get(chaveIdempotencia);
+    if (emProcessamento) {
+      if (emProcessamento.hash !== hashConteudoIdempotencia) {
+        return responderCompra(409, {
+          error: 'A chave de idempotência já está sendo usada com conteúdo diferente.'
+        });
+      }
+      emProcessamento.resultado.then(({ status, payload }) => responderCompra(status, payload));
+      return;
+    }
+
+    let resolverResultado;
+    const resultado = new Promise((resolve) => {
+      resolverResultado = resolve;
+    });
+    reservaIdempotencia = {
+      chave: chaveIdempotencia,
+      hash: hashConteudoIdempotencia,
+      resultado,
+      resolver: resolverResultado,
+      finalizada: false
+    };
+    comprasIdempotentesEmProcessamento.set(chaveIdempotencia, reservaIdempotencia);
+  }
+
   const condicao = isProducaoPropria ? 'avista' : (condicao_pagamento || 'avista');
   const qtdParcelas = Math.max(1, Number(parcelas) || 1);
   const formaPagamentoFinal = isProducaoPropria ? null : (forma_pagamento || null);
   const cnpjFornecedorFinal = isProducaoPropria ? null : (fornecedor_cnpj || null);
 
-  const continuarGravacao = () => {
-    db.serialize(() => {
-      db.run('BEGIN IMMEDIATE');
+  const payloadCompraRepetida = (compraId) => ({
+    id: compraId,
+    message: 'Compra registrada com sucesso e integrada ao estoque/financeiro.',
+    tipo_entrada: entrada.tipo_entrada,
+    financeiro_gerado: true,
+    conferencia: {
+      total_xml: totalCalculadoComAjustes,
+      total_itens_calculado: totalItensCalculado,
+      diferenca_total: diferencaTotal
+    }
+  });
+  const responderCompraIdempotente = (existente) => {
+    if (existente.idempotency_payload_hash !== hashConteudoIdempotencia) {
+      return responderCompra(409, {
+        error: 'A chave de idempotência já foi usada com conteúdo diferente.'
+      });
+    }
+    return responderCompra(200, payloadCompraRepetida(existente.id));
+  };
 
-      db.run(`
+  const continuarGravacao = () => {
+    const gravarCompra = () => {
+    db.serialize(() => {
+        db.run('BEGIN IMMEDIATE', (beginErr) => {
+          if (beginErr) {
+            console.error('Erro ao iniciar transação da compra:', beginErr);
+            return responderCompra(500, { error: beginErr.message });
+          }
+
+          db.run(`
         INSERT INTO compras (
           data_compra, data_emissao, data_entrada, fornecedor, fornecedor_cnpj,
-          numero_nf, serie_nf, modelo_nf, chave_acesso,
+          numero_nf, serie_nf, modelo_nf, chave_acesso, idempotency_key, idempotency_payload_hash,
           valor_produtos, valor_desconto, valor_frete, valor_outras_despesas,
           valor_total_nota, total, total_xml, total_itens_calculado, diferenca_total,
           status, condicao_pagamento, forma_pagamento, data_vencimento,
           parcelas, valor_entrada, observacao, nota_fiscal_avulsa,
-          tipo_entrada, origem_movimentacao, tipo_movimentacao
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'concluida', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          tipo_entrada, origem_movimentacao, tipo_movimentacao, destinatario_cnpj, destinatario_uf
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'concluida', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         data_compra,
         data_emissao || null,
@@ -1153,6 +1532,8 @@ router.post('/', (req, res) => {
         serie_nf || null,
         modelo_nf || null,
         chaveLimpa || null,
+        chaveIdempotencia || null,
+        hashConteudoIdempotencia,
         Number(valor_produtos) || 0,
         Number(valor_desconto) || 0,
         Number(valor_frete) || 0,
@@ -1171,54 +1552,73 @@ router.post('/', (req, res) => {
         isNotaAvulsa ? 1 : 0,
         entrada.tipo_entrada,
         entrada.origem_movimentacao,
-        entrada.tipo_movimentacao
+        entrada.tipo_movimentacao,
+        digitsOnly(req.body.destinatario_cnpj || '') || null,
+        String(req.body.destinatario_uf || '').trim().toUpperCase() || null
       ], function(err) {
         if (err) {
+          if (chaveIdempotencia && /UNIQUE constraint failed: compras\.idempotency_key/i.test(err.message || '')) {
+            return db.run('ROLLBACK', (rollbackErr) => {
+              if (rollbackErr) console.error('Erro ao desfazer compra duplicada por idempotência:', rollbackErr);
+              db.get(
+                'SELECT id, idempotency_payload_hash FROM compras WHERE idempotency_key = ? LIMIT 1',
+                [chaveIdempotencia],
+                (lookupErr, existente) => {
+                  if (lookupErr) return responderCompra(500, { error: lookupErr.message });
+                  if (existente) return responderCompraIdempotente(existente);
+                  return responderCompra(500, { error: err.message });
+                }
+              );
+            });
+          }
+
           db.run('ROLLBACK');
 
           if (String(err.message || '').includes('UNIQUE') || String(err.message || '').includes('compras.chave_acesso')) {
-            return res.status(400).json({ error: 'Esta nota já foi lançada. A chave de acesso já existe no sistema.' });
+            return responderCompra(400, { error: 'Esta nota já foi lançada. A chave de acesso já existe no sistema.' });
           }
 
-          return res.status(500).json({ error: err.message });
+          return responderCompra(500, { error: err.message });
         }
 
         const compraId = this.lastID;
 
         const finalizarSemFinanceiro = (acaoAuditoria, mensagem, extras = {}) => {
-          db.run('COMMIT');
-
-          gravarAuditoria({
-            usuario_id: req.user?.id || null,
-            usuario_nome: req.user?.nome || req.user?.username || null,
-            modulo: 'compras',
-            acao: acaoAuditoria,
-            referencia_tipo: 'compra',
-            referencia_id: compraId,
-            detalhes: {
-              total: totalCalculadoComAjustes,
-              fornecedor: fornecedorFinal,
+          confirmarTransacao(() => {
+            const payloadResposta = {
+              id: compraId,
+              message: mensagem,
               tipo_entrada: entrada.tipo_entrada,
               origem_movimentacao: entrada.origem_movimentacao,
               tipo_movimentacao: entrada.tipo_movimentacao,
               financeiro_gerado: false,
               ...extras
-            },
-            ip_requisicao: req.ip || null
-          }).catch((auditErr) => console.error('Erro ao gravar auditoria de entrada:', auditErr));
+            };
 
-          const payloadResposta = {
-            id: compraId,
-            message: mensagem,
-            tipo_entrada: entrada.tipo_entrada,
-            origem_movimentacao: entrada.origem_movimentacao,
-            tipo_movimentacao: entrada.tipo_movimentacao,
-            financeiro_gerado: false,
-            ...extras
-          };
-
-          vincularDocumentoCentralAposCompra(centralDocumentoId, compraId, req.user?.id)
-            .finally(() => res.json(payloadResposta));
+            gravarAuditoria({
+              usuario_id: req.user?.id || null,
+              usuario_nome: req.user?.nome || req.user?.username || null,
+              modulo: 'compras',
+              acao: acaoAuditoria,
+              referencia_tipo: 'compra',
+              referencia_id: compraId,
+              detalhes: {
+                total: totalCalculadoComAjustes,
+                fornecedor: fornecedorFinal,
+                tipo_entrada: entrada.tipo_entrada,
+                origem_movimentacao: entrada.origem_movimentacao,
+                tipo_movimentacao: entrada.tipo_movimentacao,
+                financeiro_gerado: false,
+                ...extras
+              },
+              ip_requisicao: req.ip || null
+            })
+              .catch((auditErr) => console.error('Erro ao gravar auditoria de entrada:', auditErr))
+              .finally(() => {
+                vincularDocumentoCentralAposCompra(centralDocumentoId, compraId, req.user?.id)
+                  .finally(() => responderCompra(200, payloadResposta));
+              });
+          });
         };
 
         if (isNotaAvulsa) {
@@ -1236,36 +1636,40 @@ router.post('/', (req, res) => {
             observacao: observacaoFinal
           }, (finErr) => {
             if (finErr) {
-              db.run('ROLLBACK');
-              return res.status(500).json({ error: finErr.message });
+              return db.run('ROLLBACK', (rollbackErr) => {
+                if (rollbackErr) console.error('Erro ao desfazer compra após falha financeira:', rollbackErr);
+                responderCompra(500, { error: finErr.message });
+              });
             }
 
-            db.run('COMMIT');
+            confirmarTransacao(() => {
+              const payloadResposta = {
+                id: compraId,
+                message: 'Nota Fiscal Avulsa registrada com sucesso.',
+                nota_fiscal_avulsa: true
+              };
 
-            gravarAuditoria({
-              usuario_id: req.user?.id || null,
-              usuario_nome: req.user?.nome || req.user?.username || null,
-              modulo: 'compras',
-              acao: 'criar_nota_fiscal_avulsa',
-              referencia_tipo: 'compra',
-              referencia_id: compraId,
-              detalhes: {
-                total: totalCalculadoComAjustes,
-                fornecedor: fornecedorFinal,
-                nota_fiscal_avulsa: true,
-                tipo_entrada: entrada.tipo_entrada
-              },
-              ip_requisicao: req.ip || null
-            }).catch((auditErr) => console.error('Erro ao gravar auditoria de nota fiscal avulsa:', auditErr));
-
-            const payloadResposta = {
-              id: compraId,
-              message: 'Nota Fiscal Avulsa registrada com sucesso.',
-              nota_fiscal_avulsa: true
-            };
-
-            vincularDocumentoCentralAposCompra(centralDocumentoId, compraId, req.user?.id)
-              .finally(() => res.json(payloadResposta));
+              gravarAuditoria({
+                usuario_id: req.user?.id || null,
+                usuario_nome: req.user?.nome || req.user?.username || null,
+                modulo: 'compras',
+                acao: 'criar_nota_fiscal_avulsa',
+                referencia_tipo: 'compra',
+                referencia_id: compraId,
+                detalhes: {
+                  total: totalCalculadoComAjustes,
+                  fornecedor: fornecedorFinal,
+                  nota_fiscal_avulsa: true,
+                  tipo_entrada: entrada.tipo_entrada
+                },
+                ip_requisicao: req.ip || null
+              })
+                .catch((auditErr) => console.error('Erro ao gravar auditoria de nota fiscal avulsa:', auditErr))
+                .finally(() => {
+                  vincularDocumentoCentralAposCompra(centralDocumentoId, compraId, req.user?.id)
+                    .finally(() => responderCompra(200, payloadResposta));
+                });
+            });
           });
         } else {
           // Entrada com itens: estoque + (financeiro só se compra de fornecedor)
@@ -1276,18 +1680,21 @@ router.post('/', (req, res) => {
             fornecedorFinal,
             {
               fornecedor_cnpj: cnpjFornecedorFinal,
-              loteOrigem: entrada.lote_origem
+              loteOrigem: entrada.lote_origem,
+              legadoSemLocal: isProducaoPropria
             },
             (itensErr) => {
             if (itensErr) {
               console.error('Erro ao processar itens da compra:', itensErr);
-              db.run('ROLLBACK');
               const status = Number(itensErr.status) >= 400 && Number(itensErr.status) < 600
                 ? Number(itensErr.status)
                 : 500;
-              return res.status(status).json({
-                error: itensErr.message,
-                codigo: itensErr.codigo || itensErr.code || undefined
+              return db.run('ROLLBACK', (rollbackErr) => {
+                if (rollbackErr) console.error('Erro ao desfazer compra após falha nos itens:', rollbackErr);
+                responderCompra(status, {
+                  error: itensErr.message,
+                  codigo: itensErr.codigo || itensErr.code || undefined
+                });
               });
             }
 
@@ -1318,63 +1725,126 @@ router.post('/', (req, res) => {
               observacao: observacaoFinal
             }, (finErr) => {
               if (finErr) {
-                db.run('ROLLBACK');
-                return res.status(500).json({ error: finErr.message });
+                return db.run('ROLLBACK', (rollbackErr) => {
+                  if (rollbackErr) console.error('Erro ao desfazer compra após falha financeira:', rollbackErr);
+                  responderCompra(500, { error: finErr.message });
+                });
               }
 
-              db.run('COMMIT');
-
-              gravarAuditoria({
-                usuario_id: req.user?.id || null,
-                usuario_nome: req.user?.nome || req.user?.username || null,
-                modulo: 'compras',
-                acao: 'criar_compra',
-                referencia_tipo: 'compra',
-                referencia_id: compraId,
-                detalhes: {
-                  total: totalCalculadoComAjustes,
-                  fornecedor: fornecedorFinal,
+              confirmarTransacao(() => {
+                const payloadResposta = {
+                  id: compraId,
+                  message: 'Compra registrada com sucesso e integrada ao estoque/financeiro.',
                   tipo_entrada: entrada.tipo_entrada,
-                  financeiro_gerado: true
-                },
-                ip_requisicao: req.ip || null
-              }).catch((auditErr) => console.error('Erro ao gravar auditoria de criação de compra:', auditErr));
+                  financeiro_gerado: true,
+                  conferencia: {
+                    total_xml: totalCalculadoComAjustes,
+                    total_itens_calculado: totalItensCalculado,
+                    diferenca_total: diferencaTotal
+                  }
+                };
 
-              const payloadResposta = {
-                id: compraId,
-                message: 'Compra registrada com sucesso e integrada ao estoque/financeiro.',
-                tipo_entrada: entrada.tipo_entrada,
-                financeiro_gerado: true,
-                conferencia: {
-                  total_xml: totalCalculadoComAjustes,
-                  total_itens_calculado: totalItensCalculado,
-                  diferenca_total: diferencaTotal
-                }
-              };
-
-              vincularDocumentoCentralAposCompra(centralDocumentoId, compraId, req.user?.id)
-                .finally(() => res.json(payloadResposta));
+                gravarAuditoria({
+                  usuario_id: req.user?.id || null,
+                  usuario_nome: req.user?.nome || req.user?.username || null,
+                  modulo: 'compras',
+                  acao: 'criar_compra',
+                  referencia_tipo: 'compra',
+                  referencia_id: compraId,
+                  detalhes: {
+                    total: totalCalculadoComAjustes,
+                    fornecedor: fornecedorFinal,
+                    tipo_entrada: entrada.tipo_entrada,
+                    financeiro_gerado: true
+                  },
+                  ip_requisicao: req.ip || null
+                })
+                  .catch((auditErr) => console.error('Erro ao gravar auditoria de criação de compra:', auditErr))
+                  .finally(() => {
+                    vincularDocumentoCentralAposCompra(centralDocumentoId, compraId, req.user?.id)
+                      .finally(() => responderCompra(200, payloadResposta));
+                  });
+              });
             });
           });
         }
+        });
       });
     });
-  }
+    };
 
-  if (chaveLimpa) {
-    db.get('SELECT id, status FROM compras WHERE chave_acesso = ? LIMIT 1', [chaveLimpa], (dupErr, existente) => {
-      if (dupErr) return res.status(500).json({ error: dupErr.message });
+    if (isNotaAvulsa || !Array.isArray(itensComRateio) || itensComRateio.length === 0) {
+      return gravarCompra();
+    }
 
-      if (existente) {
-        return res.status(400).json({
-          error: `Esta nota já foi lançada na compra #${existente.id}. Não é permitido lançar a mesma chave de acesso duas vezes.` 
+    resolverItensAntesDeGravar(itensComRateio)
+      .then((resultados) => {
+        const pendentes = resultados.filter((item) => item.situacao === CODIGO_PRODUTO_NAO_CADASTRADO);
+        if (pendentes.length) {
+          return responderProdutoNaoCadastrado(res, resultados);
+        }
+        resultados.forEach((resultado, indice) => {
+          if (resultado.produtoId) itensComRateio[indice].produto_id = resultado.produtoId;
         });
-      }
+        if (!isProducaoPropria) {
+          for (const item of itensComRateio) {
+            if (itemEhUsoEConsumo(item)) continue;
+            try {
+              resolverDestinoItemCompra(item);
+            } catch (destinoErr) {
+              return res.status(destinoErr.status || 400).json({
+                error: destinoErr.message,
+                codigo: destinoErr.codigo
+              });
+            }
+          }
+        }
+        return gravarCompra();
+      })
+      .catch((err) => {
+        console.error('Erro ao resolver produtos da compra:', err);
+        if (!res.headersSent) {
+          const status = Number(err.status) >= 400 && Number(err.status) < 600 ? Number(err.status) : 500;
+          res.status(status).json({
+            error: err.message,
+            codigo: err.codigo || err.code || undefined
+          });
+        }
+      });
+  };
 
-      if (isProducaoPropria) {
-        return continuarGravacao();
-      }
+  const iniciarFluxoGravacao = () => {
+    if (chaveLimpa) {
+      db.get('SELECT id, status FROM compras WHERE chave_acesso = ? LIMIT 1', [chaveLimpa], (dupErr, existente) => {
+        if (dupErr) return res.status(500).json({ error: dupErr.message });
 
+        if (existente) {
+          return res.status(400).json({
+            error: `Esta nota já foi lançada na compra #${existente.id}. Não é permitido lançar a mesma chave de acesso duas vezes.`
+          });
+        }
+
+        if (isProducaoPropria) {
+          return continuarGravacao();
+        }
+
+        garantirFornecedorCompra({
+          fornecedor: fornecedorFinal,
+          fornecedor_cnpj: cnpjFornecedorFinal,
+          fornecedor_rua,
+          fornecedor_numero,
+          fornecedor_bairro,
+          fornecedor_cidade,
+          fornecedor_uf,
+          fornecedor_cep
+        }, (fornErr) => {
+          if (fornErr) return res.status(500).json({ error: fornErr.message });
+          continuarGravacao();
+        });
+      });
+    } else if (isProducaoPropria) {
+      continuarGravacao();
+    } else {
       garantirFornecedorCompra({
         fornecedor: fornecedorFinal,
         fornecedor_cnpj: cnpjFornecedorFinal,
@@ -1388,25 +1858,29 @@ router.post('/', (req, res) => {
         if (fornErr) return res.status(500).json({ error: fornErr.message });
         continuarGravacao();
       });
-    });
-  } else if (isProducaoPropria) {
-    continuarGravacao();
-  } else {
-    garantirFornecedorCompra({
-      fornecedor: fornecedorFinal,
-      fornecedor_cnpj: cnpjFornecedorFinal,
-      fornecedor_rua,
-      fornecedor_numero,
-      fornecedor_bairro,
-      fornecedor_cidade,
-      fornecedor_uf,
-      fornecedor_cep
-    }, (fornErr) => {
-      if (fornErr) return res.status(500).json({ error: fornErr.message });
-      continuarGravacao();
-    });
-  }
+    }
+  };
+
+  if (!chaveIdempotencia) return iniciarFluxoGravacao();
+  db.get(
+    'SELECT id, idempotency_payload_hash FROM compras WHERE idempotency_key = ? LIMIT 1',
+    [chaveIdempotencia],
+    (lookupErr, existente) => {
+      if (lookupErr) return responderCompra(500, { error: lookupErr.message });
+      if (existente) return responderCompraIdempotente(existente);
+      iniciarFluxoGravacao();
+    }
+  );
 });
+
+function responderProdutoNaoCadastrado(res, resultados) {
+  const inativo = resultados.some((item) => item.motivo === MOTIVO_PRODUTO_INATIVO);
+  return res.status(409).json({
+    error: inativo ? MENSAGEM_PRODUTO_INATIVO : MENSAGEM_PRODUTO_NAO_CADASTRADO,
+    codigo: inativo ? MOTIVO_PRODUTO_INATIVO : CODIGO_PRODUTO_NAO_CADASTRADO,
+    itens: resultados
+  });
+}
 
 router.post('/:id/cancelar', (req, res) => {
   const { id } = req.params;
@@ -1431,11 +1905,13 @@ router.post('/:id/cancelar', (req, res) => {
         return res.status(400).json({ error: 'Esta compra já está cancelada.' });
       }
 
-      db.all('SELECT * FROM compras_itens WHERE compra_id = ?', [id], (itensErr, itens) => {
+      db.all('SELECT * FROM compras_itens WHERE compra_id = ?', [id], (itensErr, itensTodos) => {
         if (itensErr) {
           db.run('ROLLBACK');
           return res.status(500).json({ error: itensErr.message });
         }
+        // Uso e consumo nunca entrou no estoque: não há o que baixar no cancelamento.
+        const itens = (itensTodos || []).filter((i) => String(i.finalidade_item || '').toUpperCase() !== 'USO_E_CONSUMO');
 
         const validarEstoque = (index = 0) => {
           if (index >= itens.length) return baixarEstoque();

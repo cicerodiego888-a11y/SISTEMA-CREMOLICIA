@@ -6818,7 +6818,7 @@ ${lines.join("\n")}
         "module": "motor-comercial",
         "version": "1.0.3",
         "sprint": "UX-10",
-        "buildTime": "2026-10-05 01:11:18",
+        "buildTime": "2026-10-28 00:55:30",
         "hash": null,
         "ambiente": "development"
       };
@@ -89072,6 +89072,7 @@ Esta a\xE7\xE3o cancelar\xE1 a prepara\xE7\xE3o e a entrega n\xE3o ser\xE1 reali
             return localStorage.getItem("token");
           });
           this.pageSize = options.pageSize || 20;
+          this.contexto = String(options.contexto || "").trim();
           this.cache = /* @__PURE__ */ new Map();
           this.inflight = /* @__PURE__ */ new Map();
           this.requestId = 0;
@@ -89134,6 +89135,7 @@ Esta a\xE7\xE3o cancelar\xE1 a prepara\xE7\xE3o e a entrega n\xE3o ser\xE1 reali
           }
           params.set("offset", String(offset));
           params.set("limite", String(this.pageSize));
+          if (this.contexto) params.set("contexto", this.contexto);
           const headers = { "Content-Type": "application/json" };
           const token = this.getToken();
           if (token) headers.Authorization = `Bearer ${token}`;
@@ -94585,6 +94587,8 @@ A consigna\xE7\xE3o permanecer\xE1 em prepara\xE7\xE3o.`,
           if (!host) return;
           if ((_b2 = this.lipInstance) == null ? void 0 : _b2.destroy) this.lipInstance.destroy();
           this.lipInstance = LIP.create({
+            showHistory: false,
+            searchServiceOptions: { contexto: "pdv" },
             onSelect: (produto, quantidade) => this._onProdutoSelecionado(produto, quantidade)
           });
           this.lipInstance.mount(host);
@@ -97268,15 +97272,23 @@ ${this.itensNovos.length} produto(s) \xB7 ${formatCurrency(totalItensComplementa
         <div class="cds-op-hist-modal-table__head" role="row">
           <span>Forma</span><span>Valor</span><span>Data/Hora</span><span>Operador</span><span>Observa\xE7\xE3o</span>
         </div>
-        ${pagamentos.map((p3) => `
-          <div class="cds-op-hist-modal-table__row" role="row">
-            <span>${safeText(p3.forma)}</span>
-            <strong>${formatCurrency(p3.valor)}</strong>
-            <span>${safeText(formatDateTime(p3.data))}</span>
-            <span>${safeText(p3.operador)}</span>
-            <span>${safeText(p3.observacao || "\u2014")}</span>
-          </div>
-        `).join("")}
+        ${pagamentos.map((p3) => {
+            const forma = String(p3.forma || "\u2014");
+            const formasConhecidas = {
+              CARTAO: "Cart\xE3o",
+              CARTAO_DEBITO: "D\xE9bito",
+              CARTAO_CREDITO: "Cr\xE9dito"
+            };
+            return `
+            <div class="cds-op-hist-modal-table__row" role="row">
+              <span>${safeText(formasConhecidas[forma.toUpperCase()] || forma)}</span>
+              <strong>${formatCurrency(p3.valor)}</strong>
+              <span>${safeText(formatDateTime(p3.data))}</span>
+              <span>${safeText(p3.operador)}</span>
+              <span>${safeText(p3.observacao || "\u2014")}</span>
+            </div>
+          `;
+          }).join("")}
       </div>
     `;
         }
@@ -97321,7 +97333,8 @@ ${this.itensNovos.length} produto(s) \xB7 ${formatCurrency(totalItensComplementa
                 { value: "PIX", label: "PIX" },
                 { value: "TRANSFERENCIA", label: "Transfer\xEAncia" },
                 { value: "CHEQUE", label: "Cheque" },
-                { value: "CARTAO", label: "Cart\xE3o" }
+                { value: "CARTAO_DEBITO", label: "D\xE9bito" },
+                { value: "CARTAO_CREDITO", label: "Cr\xE9dito" }
               ],
               value: draft.formaPagamento || "DINHEIRO",
               onChange: (v3) => ctx.onPagamentoChange("formaPagamento", v3)
@@ -111496,10 +111509,10 @@ if (typeof MotorComercialBundle !== "undefined") { window.MotorComercial = Motor
 /*__CDS_BUILD_INFO_START__*/
 
 (function (global) {
-  var info = {"module":"motor-comercial","version":"1.0.3","sprint":"UX-10","buildTime":"2026-10-05 01:11:18","hash":"A25B08EC901B41C4602804C7770ECE07B71504DD8593E4EF9CB81120E57BA1AC","ambiente":"development"};
+  var info = {"module":"motor-comercial","version":"1.0.3","sprint":"UX-10","buildTime":"2026-10-28 00:55:30","hash":"12ACDA30A280A118CCE67A1EC4D8595A381653F39072C4D0B98A746172EF75AA","ambiente":"development"};
   global.CDS_BUILD = info;
   if (typeof console !== "undefined" && console.info) {
-    console.info("\n================================================\nCDS Sistemas\nMotor Comercial\nSprint\nUX-10\nBuild\n2026-10-05 01:11:18\nHash\nA25B08EC901B41C4602804C7770ECE07B71504DD8593E4EF9CB81120E57BA1AC\n================================================\n");
+    console.info("\n================================================\nCDS Sistemas\nMotor Comercial\nSprint\nUX-10\nBuild\n2026-10-28 00:55:30\nHash\n12ACDA30A280A118CCE67A1EC4D8595A381653F39072C4D0B98A746172EF75AA\n================================================\n");
   }
 })(typeof window !== "undefined" ? window : globalThis);
 

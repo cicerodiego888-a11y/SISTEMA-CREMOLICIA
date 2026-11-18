@@ -17,6 +17,7 @@ const {
 } = require('../domain/enums');
 const ProdutoSaldoRepository = require('../repositories/ProdutoSaldoRepository');
 const EstoqueMovimentacaoRepository = require('../repositories/EstoqueMovimentacaoRepository');
+const saldoLocal = require('../repositories/SaldoLocalRepository');
 
 const CAMPOS_COMERCIAIS_PROIBIDOS = [
   'quantidadeComercial',
@@ -44,6 +45,7 @@ class MotorEstoqueService {
   constructor(deps = {}) {
     this.saldoRepo = deps.saldoRepo || ProdutoSaldoRepository;
     this.movRepo = deps.movRepo || EstoqueMovimentacaoRepository;
+    this.ajustesEmAndamento = new Map();
   }
 
   /**
@@ -148,6 +150,7 @@ class MotorEstoqueService {
     }
 
     const split = this._resolverSplitFiscal(entrada, qtdBase, 1);
+    const localMovimentacao = entrada.local || entrada.localCodigo || entrada.local_codigo || null;
     const antes = await this.saldoRepo.buscarSaldo(db, produtoId);
     const depois = await this.saldoRepo.aplicarDeltaSaldo(db, {
       produtoId,
@@ -155,6 +158,15 @@ class MotorEstoqueService {
       deltaNaoFiscal: split.quantidadeNaoFiscal
     });
 
+    const local = await saldoLocal.refletirMovimento(db, {
+      produtoId,
+      operacao: OperacaoEstoque.ENTRADA,
+      origem: entrada.origem,
+      local: localMovimentacao,
+      deltaFiscal: split.quantidadeFiscal,
+      deltaNaoFiscal: split.quantidadeNaoFiscal,
+      saldoAntes: antes
+    });
     const mov = await this.movRepo.inserirMovimentacao(db, MovimentacaoEstoque.criar({
       produtoId,
       quantidadeBase: split.quantidadeBase,
@@ -162,6 +174,7 @@ class MotorEstoqueService {
       quantidadeNaoFiscal: split.quantidadeNaoFiscal,
       operacao: OperacaoEstoque.ENTRADA,
       origem: String(entrada.origem || OrigemEstoque.COMPRA).toUpperCase(),
+      local: localMovimentacao,
       loteId: entrada.loteId ?? entrada.lote_id ?? null,
       referenciaTipo: entrada.referenciaTipo || entrada.referencia_tipo || null,
       referenciaId: entrada.referenciaId ?? entrada.referencia_id ?? null,
@@ -183,6 +196,7 @@ class MotorEstoqueService {
       quantidadeNaoFiscal: split.quantidadeNaoFiscal,
       loteId: mov.loteId,
       saldo: depois,
+      local,
       movimentacao: mov.toJSON()
     };
   }
@@ -226,6 +240,15 @@ class MotorEstoqueService {
       deltaNaoFiscal: -split.quantidadeNaoFiscal
     });
 
+    const local = await saldoLocal.refletirMovimento(db, {
+      produtoId,
+      operacao: OperacaoEstoque.SAIDA,
+      origem: entrada.origem,
+      local: entrada.local || entrada.localCodigo || entrada.local_codigo,
+      deltaFiscal: -split.quantidadeFiscal,
+      deltaNaoFiscal: -split.quantidadeNaoFiscal,
+      saldoAntes: antes
+    });
     const mov = await this.movRepo.inserirMovimentacao(db, MovimentacaoEstoque.criar({
       produtoId,
       quantidadeBase: split.quantidadeBase,
@@ -254,6 +277,7 @@ class MotorEstoqueService {
       quantidadeNaoFiscal: split.quantidadeNaoFiscal,
       loteId: mov.loteId,
       saldo: depois,
+      local,
       movimentacao: mov.toJSON()
     };
   }
@@ -262,6 +286,43 @@ class MotorEstoqueService {
    * Ajuste por deltas já em unidade base (UI / consignação).
    */
   async ajustar(db, entrada = {}) {
+    const referenciaTipo = entrada.referenciaTipo || entrada.referencia_tipo;
+    const referenciaId = entrada.referenciaId ?? entrada.referencia_id;
+    const chave = String(referenciaTipo || '').toLowerCase() === 'ajuste_estoque'
+      && referenciaId != null
+      ? String(referenciaId)
+      : null;
+    const assinatura = chave ? JSON.stringify([
+      Number(entrada.produtoId ?? entrada.produto_id),
+      String(entrada.local || entrada.localCodigo || entrada.local_codigo || '').trim().toUpperCase(),
+      Number(entrada.deltaFiscal ?? entrada.ajusteFiscal ?? entrada.ajuste_fiscal ?? 0),
+      Number(entrada.deltaNaoFiscal ?? entrada.ajusteNaoFiscal ?? entrada.ajuste_nao_fiscal ?? 0),
+      String(entrada.motivo || '').trim()
+    ]) : null;
+    const emAndamento = chave ? this.ajustesEmAndamento.get(chave) : null;
+    if (emAndamento) {
+      if (emAndamento.assinatura !== assinatura) {
+        const err = new Error('A chave de ajuste já está em uso em outra operação.');
+        err.status = 409;
+        throw err;
+      }
+      return { ...(await emAndamento.promessa), repetida: true };
+    }
+
+    const operacao = this._ajustar(db, entrada);
+    if (!chave) return operacao;
+    const registro = { promessa: operacao, assinatura };
+    this.ajustesEmAndamento.set(chave, registro);
+    try {
+      return await operacao;
+    } finally {
+      if (this.ajustesEmAndamento.get(chave) === registro) {
+        this.ajustesEmAndamento.delete(chave);
+      }
+    }
+  }
+
+  async _ajustar(db, entrada = {}) {
     this._rejeitarCamposComerciais(entrada);
     const produtoId = Number(entrada.produtoId ?? entrada.produto_id);
     const deltaFiscal = Number(entrada.deltaFiscal ?? entrada.ajusteFiscal ?? entrada.ajuste_fiscal ?? 0);
@@ -286,6 +347,56 @@ class MotorEstoqueService {
       throw err;
     }
 
+    const referenciaTipo = entrada.referenciaTipo || entrada.referencia_tipo;
+    const referenciaId = entrada.referenciaId ?? entrada.referencia_id;
+    if (String(referenciaTipo || '').toLowerCase() === 'ajuste_estoque' && referenciaId != null) {
+      const movimentoExistente = await new Promise((resolve, reject) => {
+        db.get(`
+          SELECT * FROM estoque_movimentacoes
+          WHERE referencia_tipo = 'ajuste_estoque' AND referencia_id = ?
+          LIMIT 1
+        `, [referenciaId], (err, row) => (err ? reject(err) : resolve(row || null)));
+      });
+      if (movimentoExistente) {
+        const localSolicitado = String(
+          entrada.local || entrada.localCodigo || entrada.local_codigo || ''
+        ).trim().toUpperCase();
+        const mesmaOperacao = Number(movimentoExistente.produto_id) === produtoId
+          && String(movimentoExistente.local || '') === localSolicitado
+          && round3(Number(movimentoExistente.quantidade_fiscal))
+            === round3(deltaFiscal)
+          && round3(Number(movimentoExistente.quantidade_nao_fiscal))
+            === round3(deltaNaoFiscal)
+          && String(movimentoExistente.motivo || '') === motivo;
+        if (!mesmaOperacao) {
+          const err = new Error('A chave de ajuste já foi utilizada em outra operação.');
+          err.status = 409;
+          throw err;
+        }
+
+        const saldo = await this.saldoRepo.buscarSaldo(db, produtoId);
+        const saldoLocalAtual = localSolicitado
+          ? await saldoLocal.consultarSaldoLocal(db, produtoId, localSolicitado)
+          : null;
+        return {
+          ok: true,
+          motor: MOTOR_ESTOQUE_NOME,
+          operacao: OperacaoEstoque.AJUSTE,
+          produtoId,
+          unidadeBase: saldo.unidadeBase,
+          quantidadeBase: round3(Math.abs(deltaFiscal) + Math.abs(deltaNaoFiscal)),
+          saldo,
+          local: localSolicitado || null,
+          saldo_local: saldoLocalAtual,
+          movimentacao: MovimentacaoEstoque.criar(movimentoExistente).toJSON(),
+          saldo_fiscal: saldo.saldoFiscal,
+          saldo_nao_fiscal: saldo.saldoNaoFiscal,
+          estoque_atual: saldo.estoqueAtual,
+          repetida: true
+        };
+      }
+    }
+
     const antes = await this.saldoRepo.buscarSaldo(db, produtoId);
     const sf = round3(antes.saldoFiscal + deltaFiscal);
     const snf = round3(antes.saldoNaoFiscal + deltaNaoFiscal);
@@ -300,11 +411,53 @@ class MotorEstoqueService {
       throw err;
     }
 
+    const localInformado = entrada.local ?? entrada.localCodigo ?? entrada.local_codigo;
+    let saldoLocalAntes = null;
+    if (localInformado != null && String(localInformado).trim() !== '') {
+      const local = String(localInformado).trim().toUpperCase();
+      if (![saldoLocal.LOCAL_FABRICA, saldoLocal.LOCAL_LOJA].includes(local)) {
+        const err = new Error('Local de estoque inválido.');
+        err.status = 400;
+        throw err;
+      }
+      if (!(await saldoLocal.tabelaPronta(db))) {
+        const err = new Error('O controle de saldo por local não está disponível.');
+        err.status = 500;
+        throw err;
+      }
+      saldoLocalAntes = await saldoLocal.consultarSaldoLocal(db, produtoId, local);
+      if (round3(saldoLocalAntes.saldoFiscal + deltaFiscal) < 0) {
+        const err = new Error('Ajuste fiscal resultaria em saldo fiscal local negativo.');
+        err.status = 400;
+        throw err;
+      }
+      if (round3(saldoLocalAntes.saldoNaoFiscal + deltaNaoFiscal) < 0) {
+        const err = new Error('Ajuste não fiscal resultaria em saldo não fiscal local negativo.');
+        err.status = 400;
+        throw err;
+      }
+    }
+
     const depois = await this.saldoRepo.aplicarDeltaSaldo(db, {
       produtoId,
       deltaFiscal,
       deltaNaoFiscal
     });
+
+    let local = null;
+    let saldoDepoisLocal = null;
+    if (saldoLocalAntes) {
+      local = await saldoLocal.refletirMovimento(db, {
+        produtoId,
+        operacao: OperacaoEstoque.AJUSTE,
+        origem: String(entrada.origem || OrigemEstoque.AJUSTE_MANUAL).toUpperCase(),
+        local: localInformado,
+        deltaFiscal,
+        deltaNaoFiscal,
+        saldoAntes: antes
+      });
+      saldoDepoisLocal = await saldoLocal.consultarSaldoLocal(db, produtoId, localInformado);
+    }
 
     const qtdBase = round3(Math.abs(deltaFiscal) + Math.abs(deltaNaoFiscal));
     const mov = await this.movRepo.inserirMovimentacao(db, MovimentacaoEstoque.criar({
@@ -314,6 +467,7 @@ class MotorEstoqueService {
       quantidadeNaoFiscal: deltaNaoFiscal,
       operacao: OperacaoEstoque.AJUSTE,
       origem: String(entrada.origem || OrigemEstoque.AJUSTE_MANUAL).toUpperCase(),
+      local,
       loteId: entrada.loteId ?? entrada.lote_id ?? null,
       referenciaTipo: entrada.referenciaTipo || entrada.referencia_tipo || null,
       referenciaId: entrada.referenciaId ?? entrada.referencia_id ?? null,
@@ -331,6 +485,8 @@ class MotorEstoqueService {
       unidadeBase: antes.unidadeBase,
       quantidadeBase: qtdBase,
       saldo: depois,
+      local,
+      saldo_local: saldoDepoisLocal,
       movimentacao: mov.toJSON(),
       saldo_fiscal: depois.saldoFiscal,
       saldo_nao_fiscal: depois.saldoNaoFiscal,

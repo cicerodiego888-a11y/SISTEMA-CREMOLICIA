@@ -139,3 +139,54 @@
 .miip-importacao-status i {
   font-size: 0.8rem;
 }
+
+.compra-produto-pendente {
+  margin-top: 0.5rem;
+  padding: 0.75rem 0.85rem;
+  border-radius: 12px;
+  border: 1px solid #f5c2c7;
+  background: #fff5f5;
+  color: #842029;
+}
+
+.compra-produto-pendente-titulo {
+  font-weight: 700;
+  margin-bottom: 0.35rem;
+}
+
+.compra-produto-pendente p {
+  margin: 0.45rem 0;
+}
+
+.compra-produto-sugestoes {
+  margin: 0.5rem 0;
+  padding: 0.5rem 0.65rem;
+  border-radius: 10px;
+  background: #fff;
+  border: 1px solid #f1d5d8;
+  color: #212529;
+}
+
+.compra-produto-sugestoes-titulo {
+  font-weight: 600;
+  font-size: 0.85rem;
+  margin-bottom: 0.35rem;
+}
+
+.compra-produto-sugestao {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.35rem 0;
+  border-top: 1px solid #f3f3f3;
+}
+
+.compra-produto-sugestoes-titulo + .compra-produto-sugestao {
+  border-top: 0;
+}
+
+.compra-produto-sugestao small {
+  display: block;
+  color: #6c757d;
+}

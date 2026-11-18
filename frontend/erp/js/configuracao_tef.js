@@ -1082,10 +1082,7 @@ async function reimprimirComprovanteTEF(transacaoId, tipo) {
         const transacaoData = await transacaoResponse.json().catch(() => ({}));
 
         if (transacaoResponse.ok && transacaoData.venda_id) {
-            // Open the sale before reprinting
-            if (typeof loadPage === 'function') {
-                loadPage('venda', { id: transacaoData.venda_id });
-            }
+            viewVenda(transacaoData.venda_id);
         }
 
         const response = await fetch(`${API_URL}/tef/transacao/${transacaoId}/reimprimir`, {

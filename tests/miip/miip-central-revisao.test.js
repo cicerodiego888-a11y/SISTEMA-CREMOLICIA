@@ -4,7 +4,18 @@
  */
 
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
 const utils = require('../../backend/motores/miip/utils/miipCentralRevisaoUtils');
+
+const miipUiContext = { window: {} };
+vm.createContext(miipUiContext);
+vm.runInContext(
+  fs.readFileSync(path.join(__dirname, '../../frontend/erp/js/miip-central-revisao.js'), 'utf8'),
+  miipUiContext
+);
+const atualizarCandidatoPendencia = miipUiContext.window.MiipCentralRevisao._test.atualizarCandidatoPendencia;
 
 let passou = 0;
 let falhou = 0;
@@ -198,6 +209,121 @@ async function main() {
 
     assert.ok(evidencias.includes('Código de barras'));
     assert.ok(evidencias.includes('Marca'));
+  });
+
+  await test('candidato MIIP recalculado aparece na pendência sem vincular automaticamente', () => {
+    const pendencia = {
+      produtoEncontrado: null,
+      precisaCadastro: true,
+      precisaConfirmacao: false,
+      produtoXML: { produto_id: null }
+    };
+    const resultado = atualizarCandidatoPendencia(pendencia, {
+      encontrado: true,
+      produtoId: 63,
+      produtoNome: 'RECHEIO FORNEÁVEL LEITINHO 1KG - ALISPEC',
+      produtoCodigo: '0063',
+      motor: 'motor_gtin',
+      motorLabel: 'Código de barras',
+      score: 100,
+      confianca: 'ALTA',
+      acao: 'auto_vincular'
+    });
+
+    assert.strictEqual(resultado, true);
+    assert.strictEqual(pendencia.produtoEncontrado.id, 63);
+    assert.strictEqual(pendencia.produtoEncontrado.codigo, '0063');
+    assert.strictEqual(pendencia.precisaConfirmacao, true);
+    assert.strictEqual(pendencia.precisaCadastro, false);
+    assert.strictEqual(pendencia.produtoXML.produto_id, null);
+  });
+
+  await test('resultado MIIP sem candidato confiável mantém indicação de cadastro', () => {
+    const pendencia = {
+      produtoEncontrado: { id: 63, nome: 'Produto anterior' },
+      candidatoSelecionado: { produtoId: 63 },
+      precisaCadastro: false,
+      precisaConfirmacao: true,
+      score: 100,
+      motor: 'motor_gtin'
+    };
+    const resultado = atualizarCandidatoPendencia(pendencia, {
+      encontrado: false,
+      produtoId: null,
+      acao: 'criar_novo'
+    });
+
+    assert.strictEqual(resultado, false);
+    assert.strictEqual(pendencia.produtoEncontrado, null);
+    assert.strictEqual(pendencia.candidatoSelecionado, null);
+    assert.strictEqual(pendencia.score, 0);
+    assert.strictEqual(pendencia.precisaCadastro, true);
+    assert.strictEqual(pendencia.precisaConfirmacao, false);
+  });
+
+  await test('produto recém-cadastrado vira o candidato da pendência para vínculo imediato', () => {
+    const aplicar = miipUiContext.window.MiipCentralRevisao._test.aplicarProdutoRecemCadastrado;
+    const pendencia = {
+      produtoEncontrado: null,
+      candidatoSelecionado: null,
+      precisaCadastro: true,
+      precisaConfirmacao: false,
+      score: 0,
+      produtoXML: { produto_id: null }
+    };
+
+    assert.strictEqual(aplicar(pendencia, { id: 64, nome: 'AÇAI BARRA', codigo: '0064' }), true);
+    assert.strictEqual(pendencia.produtoEncontrado.id, 64);
+    assert.strictEqual(pendencia.precisaCadastro, false);
+    assert.strictEqual(pendencia.precisaConfirmacao, true);
+    assert.strictEqual(pendencia.produtoXML.produto_id, null);
+    assert.strictEqual(aplicar({}, { nome: 'sem id' }), false);
+  });
+
+  await test('candidato exibe código, código de barras e dados do cadastro', () => {
+    const revisao = fs.readFileSync(
+      path.join(__dirname, '../../frontend/erp/js/miip-central-revisao.js'),
+      'utf8'
+    );
+    assert.match(revisao, /\$\{renderInfoProduto\(produto\)\}/);
+    assert.match(revisao, /linhaInfo\('Código de barras', p\.codigo_barras/);
+    assert.match(revisao, /linhaInfo\('NCM', xml\.ncm\)/);
+  });
+
+  await test('produto já cadastrado é sugerido por nome idêntico ou código de barras, sem vincular', () => {
+    const t = miipUiContext.window.MiipCentralRevisao._test;
+    const catalogo = [
+      { id: 66, nome: 'Eskimo Choc Bco 12kg Selecta', codigo: '0066', codigo_barras: '' },
+      { id: 70, nome: 'Outro', codigo: '0070', codigo_barras: '7891234567895' },
+      { id: 71, nome: 'Inativo', codigo: '0071', ativo: 0 },
+      { id: 72, nome: 'DUPLICADO', codigo: '0072' },
+      { id: 73, nome: 'Duplicado', codigo: '0073' }
+    ];
+    const nova = () => ({ produtoEncontrado: null, precisaCadastro: true, precisaConfirmacao: false, produtoXML: { produto_id: null } });
+
+    let p = nova();
+    assert.strictEqual(t.sugerirProdutoCadastrado(p, catalogo, { produto_nome: 'ESKIMO CHOC BCO 12KG SELECTA' }), true);
+    assert.strictEqual(p.produtoEncontrado.id, 66);
+    assert.strictEqual(p.produtoXML.produto_id, null);
+
+    p = nova();
+    assert.strictEqual(t.sugerirProdutoCadastrado(p, catalogo, { produto_nome: 'x', codigo_barras: '7891234567895' }), true);
+    assert.strictEqual(p.produtoEncontrado.id, 70);
+
+    p = nova();
+    assert.strictEqual(t.sugerirProdutoCadastrado(p, catalogo, { produto_nome: 'Inativo' }), false);
+    assert.strictEqual(t.sugerirProdutoCadastrado(p, catalogo, { produto_nome: 'duplicado' }), false);
+    assert.strictEqual(t.sugerirProdutoCadastrado(p, catalogo, { produto_nome: 'Produto parecido 12kg' }), false);
+    assert.strictEqual(p.produtoEncontrado, null);
+  });
+
+  await test('revisão concluída renderiza a tela final pelo handler existente', () => {
+    const revisao = fs.readFileSync(
+      path.join(__dirname, '../../frontend/erp/js/miip-central-revisao.js'),
+      'utf8'
+    );
+    assert.match(revisao, /if \(abertas === 0\) \{\s*renderTelaFinal\(\);\s*\}/);
+    assert.doesNotMatch(revisao, /mostrarTelaFinal/);
   });
 
   console.log(`\nResultado: ${passou} passou, ${falhou} falhou\n`);

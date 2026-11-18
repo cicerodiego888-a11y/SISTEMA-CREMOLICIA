@@ -57,6 +57,10 @@ class AdicionarItemConsignacaoUseCase extends ConsignacaoWriteUseCase {
     if (!produtoAtivo) {
       throw new ProdutoInvalidoError(entrada.produtoId, 'Produto inativo');
     }
+    if (typeof this._produtoBridge.motivoBloqueioComercial === 'function') {
+      const bloqueio = await this._produtoBridge.motivoBloqueioComercial(entrada.produtoId);
+      if (bloqueio) throw new ProdutoInvalidoError(entrada.produtoId, bloqueio);
+    }
 
     const unidadePrevista = String(
       entrada.unidadeComercial

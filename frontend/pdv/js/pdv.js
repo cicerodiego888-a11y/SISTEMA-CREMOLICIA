@@ -344,6 +344,397 @@ function carregarConfigComercialPdv() {
     });
 }
 
+function consultarApiPdv(caminho) {
+    return fetch(`${API_URL}/${caminho}`, {
+        cache: 'no-store',
+        headers: { Authorization: 'Bearer ' + (localStorage.getItem('token') || '') }
+    }).then(function (res) {
+        if (!res.ok) {
+            return res.json().catch(function () { return {}; }).then(function (corpo) {
+                throw new Error((corpo && corpo.error) || ('HTTP ' + res.status));
+            });
+        }
+        return res.json();
+    });
+}
+
+function carregarComercializacaoPdv() {
+    if (!window.PdvComercializacao) return Promise.resolve(null);
+    return window.PdvComercializacao.carregar(consultarApiPdv);
+}
+
+function atualizarOpcaoVendaPorLinhaPdv() {
+    const botao = document.getElementById('btnVenderPorLinhaPdv');
+    if (!botao) return;
+    const visivel = !!window.PdvVendaPorLinha && window.PdvVendaPorLinha.opcaoVisivel(window.PdvComercializacao);
+    botao.classList.toggle('d-none', !visivel);
+}
+
+function abrirVendaPorLinhaPdv() {
+    const VendaPorLinha = window.PdvVendaPorLinha;
+    if (!VendaPorLinha || !VendaPorLinha.opcaoVisivel(window.PdvComercializacao)) return;
+    VendaPorLinha.limpar();
+    $('#modalVendaPorLinhaPdv').remove();
+
+    $('body').append(`
+        <div class="modal fade" id="modalVendaPorLinhaPdv" tabindex="-1">
+          <div class="modal-dialog modal-dialog-scrollable">
+            <div class="modal-content">
+              <div class="modal-header">
+                <h6 class="modal-title"><i class="fas fa-layer-group"></i> Vender por Linha</h6>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+              </div>
+              <div class="modal-body">
+                <div id="etapaBuscaLinhaPdv">
+                  <p class="text-muted small mb-2">Escolha uma linha que contém vários produtos.
+                    Para vender um produto só, use a busca de produto.</p>
+                  <input type="text" id="buscaLinhaPdv" class="form-control mb-2" placeholder="Nome ou código da linha" autocomplete="off">
+                  <div id="listaLinhasPdv" class="list-group pdv-linha-resultados"></div>
+                </div>
+                <div id="etapaProdutosLinhaPdv" class="d-none">
+                  <p class="mb-2">Linha selecionada: <strong id="nomeLinhaSelecionadaPdv"></strong></p>
+                  <div id="listaProdutosLinhaPdv" class="pdv-linha-produtos"></div>
+                  <div id="erroQuantidadeProdutosLinhaPdv" class="text-danger small mt-2" role="alert"></div>
+                </div>
+              </div>
+              <div class="modal-footer pdv-linha-rodape">
+                <div id="totalProdutosLinhaPdv" class="pdv-linha-total d-none" aria-live="polite">
+                  Total: <strong id="somaProdutosLinhaPdv">0</strong>
+                </div>
+                <button type="button" class="btn btn-outline-secondary d-none" id="btnVoltarLinhasPdv">Voltar</button>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fechar</button>
+                <button type="button" class="btn btn-primary d-none" id="btnContinuarLinhaPdv">Continuar</button>
+              </div>
+            </div>
+          </div>
+        </div>`);
+
+    const $modal = $('#modalVendaPorLinhaPdv');
+    const ETAPAS = {
+        busca: '#etapaBuscaLinhaPdv',
+        produtos: '#etapaProdutosLinhaPdv'
+    };
+    let buscaAtual = 0;
+    let etapa = 'busca';
+    let quantidadesPorProduto = {};
+    let adicionando = false;
+
+    const mostrarEtapa = function (nome) {
+        etapa = nome;
+        Object.keys(ETAPAS).forEach(function (chave) { $(ETAPAS[chave]).toggleClass('d-none', chave !== nome); });
+        $('#btnVoltarLinhasPdv').toggleClass('d-none', nome === 'busca');
+        $('#btnContinuarLinhaPdv')
+            .toggleClass('d-none', nome !== 'produtos' || !VendaPorLinha.obterSelecao()?.produtos.length)
+            .text('Continuar');
+        $('#totalProdutosLinhaPdv').toggleClass('d-none', nome !== 'produtos');
+    };
+
+    const mostrarEtapaBusca = function () {
+        VendaPorLinha.limpar();
+        quantidadesPorProduto = {};
+        mostrarEtapa('busca');
+        $('#buscaLinhaPdv').trigger('focus');
+    };
+
+    const atualizarTotalProdutos = function () {
+        const total = Object.values(quantidadesPorProduto).reduce(function (soma, quantidade) {
+            return soma + Math.round(quantidade * 100);
+        }, 0) / 100;
+        $('#somaProdutosLinhaPdv').text(VendaPorLinha.formatarQuantidade(total));
+        return total;
+    };
+
+    const lerQuantidadeProduto = function (valor, produto) {
+        const texto = String(valor ?? '').trim();
+        if (!texto) return { ok: true, quantidade: 0 };
+        const formatoValido = /^(?:\d{1,3}(?:\.\d{3})+|\d+)(?:,\d+)?$|^\d+(?:\.\d+)?$/.test(texto);
+        if (!formatoValido) return { ok: false, mensagem: 'Informe uma quantidade válida.' };
+        const quantidade = parseQuantidadePdv(texto);
+        if (!Number.isFinite(quantidade) || quantidade < 0) {
+            return { ok: false, mensagem: 'Informe uma quantidade válida.' };
+        }
+        if (quantidade === 0) return { ok: true, quantidade: 0 };
+        if (!produto) return { ok: false, mensagem: 'Produto não disponível no PDV. Atualize a lista e tente novamente.' };
+        const normalizada = normalizarQuantidadePdv(quantidade, produto);
+        if (normalizada !== quantidade) {
+            return {
+                ok: false,
+                mensagem: quantidadeUsaDecimaisPdv(produto)
+                    ? `A quantidade de ${produto.nome} aceita no PDV tem até duas casas decimais.`
+                    : `A quantidade de ${produto.nome} deve ser inteira.`
+            };
+        }
+        return { ok: true, quantidade: normalizada };
+    };
+
+    const atualizarQuantidadeProduto = function (campo) {
+        const produtoId = Number($(campo).data('quantidade-produto-id'));
+        const resultado = lerQuantidadeProduto(
+            $(campo).val(),
+            produtosDisponiveis.find(function (produto) { return Number(produto.id) === produtoId; })
+        );
+        $(campo).toggleClass('is-invalid', !resultado.ok);
+        $(campo).siblings('.invalid-feedback').text(resultado.ok ? '' : resultado.mensagem);
+        if (resultado.ok) quantidadesPorProduto[String(produtoId)] = resultado.quantidade;
+        $('#erroQuantidadeProdutosLinhaPdv').text('');
+        atualizarTotalProdutos();
+        return resultado;
+    };
+
+    const adicionarAoCarrinho = function () {
+        if (adicionando || etapa !== 'produtos') return;
+        const $campos = $('#listaProdutosLinhaPdv [data-quantidade-produto-id]');
+        let campoInvalido = false;
+        $campos.each(function () {
+            if (!atualizarQuantidadeProduto(this).ok) campoInvalido = true;
+        });
+        if (campoInvalido) {
+            const $campoInvalido = $('#listaProdutosLinhaPdv .is-invalid').first();
+            const mensagem = $campoInvalido.siblings('.invalid-feedback').text();
+            if (mensagem) showNotification(mensagem, 'danger');
+            $campoInvalido.trigger('focus');
+            return;
+        }
+        const itens = Object.keys(quantidadesPorProduto)
+            .map(function (produtoId) {
+                return { produto_id: Number(produtoId), quantidade: quantidadesPorProduto[produtoId] };
+            })
+            .filter(function (item) { return item.quantidade > 0; });
+        if (!itens.length) {
+            const mensagem = 'Informe uma quantidade para pelo menos um produto.';
+            $('#erroQuantidadeProdutosLinhaPdv').text(mensagem);
+            showNotification(mensagem, 'warning');
+            return;
+        }
+        adicionando = true;
+        $modal.find('.modal-footer button, .btn-close').prop('disabled', true);
+        $('#erroQuantidadeProdutosLinhaPdv').text('');
+        adicionarDistribuicaoLinhaNoCarrinhoPdv({ distribuicao: itens }).then(function (resultado) {
+            adicionando = false;
+            $modal.find('.modal-footer button, .btn-close').prop('disabled', false);
+            if (!resultado.ok) {
+                $('#erroQuantidadeProdutosLinhaPdv').text(resultado.mensagem);
+                showNotification(resultado.mensagem, 'danger');
+                return;
+            }
+            bootstrap.Modal.getOrCreateInstance($modal[0]).hide();
+        });
+    };
+
+    const voltar = function () {
+        mostrarEtapaBusca();
+    };
+
+    const listarLinhas = function () {
+        const termo = String($('#buscaLinhaPdv').val() || '').trim();
+        const consulta = ++buscaAtual;
+        $('#listaLinhasPdv').html('<p class="text-muted small mb-0">Buscando...</p>');
+        VendaPorLinha.buscarLinhas(consultarApiPdv, termo).then(function (linhas) {
+            if (consulta !== buscaAtual) return;
+            if (!linhas.length) {
+                $('#listaLinhasPdv').html(`<p class="text-muted small mb-0">${VendaPorLinha.MENSAGEM_NENHUMA_LINHA}</p>`);
+                return;
+            }
+            $('#listaLinhasPdv').html(linhas.map(function (linha) {
+                return `<button type="button" class="list-group-item list-group-item-action" data-linha-id="${linha.id}">
+                    <span class="fw-semibold">${escapeHtml(linha.nome)}</span>
+                    ${linha.codigo ? `<span class="text-muted small ms-2">${escapeHtml(linha.codigo)}</span>` : ''}
+                  </button>`;
+            }).join(''));
+        }).catch(function (err) {
+            if (consulta !== buscaAtual) return;
+            $('#listaLinhasPdv').html(`<p class="text-danger small mb-0">${escapeHtml(err.message || 'Não foi possível buscar as linhas.')}</p>`);
+        });
+    };
+
+    const mostrarProdutosDaLinha = function (selecao) {
+        $('#nomeLinhaSelecionadaPdv').text(selecao.nome);
+        quantidadesPorProduto = {};
+        $('#listaProdutosLinhaPdv').html(selecao.produtos.length
+            ? selecao.produtos.map(function (produto) {
+                const produtoPDV = produtosDisponiveis.find(function (item) { return Number(item.id) === Number(produto.id); });
+                const inputmode = produtoPDV && quantidadeUsaDecimaisPdv(produtoPDV) ? 'decimal' : 'numeric';
+                quantidadesPorProduto[String(produto.id)] = 0;
+                return `<div class="pdv-linha-produto">
+                    <label for="quantidadeLinhaPdv${produto.id}">${escapeHtml(produto.nome)}</label>
+                    <div>
+                      <input type="text" inputmode="${inputmode}" id="quantidadeLinhaPdv${produto.id}"
+                        class="form-control form-control-sm" data-quantidade-produto-id="${produto.id}"
+                        placeholder="0" autocomplete="off" aria-label="Quantidade de ${escapeHtml(produto.nome)}">
+                      <div class="invalid-feedback"></div>
+                    </div>
+                  </div>`;
+            }).join('')
+            : `<p class="text-muted mb-0">${escapeHtml(selecao.mensagem)}</p>`);
+        $('#erroQuantidadeProdutosLinhaPdv').text('');
+        atualizarTotalProdutos();
+        mostrarEtapa('produtos');
+        if (selecao.produtos.length) $('#listaProdutosLinhaPdv [data-quantidade-produto-id]').first().trigger('focus');
+    };
+
+    let digitacao = null;
+    $modal.on('input', '#buscaLinhaPdv', function () {
+        clearTimeout(digitacao);
+        digitacao = setTimeout(listarLinhas, 250);
+    });
+    $modal.on('click', '[data-linha-id]', function () {
+        const linhaProdutosId = Number($(this).data('linha-id'));
+        const modoFiscal = typeof modoFiscalQueryParam === 'function' ? modoFiscalQueryParam() : '0';
+        VendaPorLinha.selecionarLinha(consultarApiPdv, linhaProdutosId, { modoFiscal })
+            .then(mostrarProdutosDaLinha)
+            .catch(function (err) {
+                showNotification(err.message || 'Não foi possível abrir a linha.', 'warning');
+            });
+    });
+    $modal.on('input', '[data-quantidade-produto-id]', function () { atualizarQuantidadeProduto(this); });
+    $modal.on('keydown', '[data-quantidade-produto-id]', function (e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            adicionarAoCarrinho();
+        }
+    });
+    $modal.on('click', '#btnContinuarLinhaPdv', adicionarAoCarrinho);
+    $modal.on('click', '#btnVoltarLinhasPdv', voltar);
+    $modal.on('shown.bs.modal', function () { $('#buscaLinhaPdv').trigger('focus'); });
+    $modal.on('hidden.bs.modal', function () {
+        VendaPorLinha.limpar();
+        $modal.remove();
+        focarCampoCodigo();
+    });
+
+    listarLinhas();
+    bootstrap.Modal.getOrCreateInstance($modal[0]).show();
+}
+
+/**
+ * Venda por Linha → carrinho. Cada produto_id segue o caminho normal do PDV: preço pelo Resolver
+ * (enriquecerProdutoCanalPdv), unidade UC-01 e adicionarItemNoCarrinho (inclusive a soma em item já existente).
+ * Tudo ou nada: se algum produto não puder entrar, o carrinho volta exatamente ao estado anterior.
+ */
+function adicionarDistribuicaoLinhaNoCarrinhoPdv(distribuicao) {
+    const itens = ((distribuicao && distribuicao.distribuicao) || []).filter(function (item) {
+        return Number(item.quantidade) > 0;
+    });
+    if (!itens.length) {
+        return Promise.resolve({ ok: false, mensagem: 'Nenhum produto com quantidade para adicionar.' });
+    }
+
+    const quantidadeNoCarrinho = function (produtoId, unidadeComercialId) {
+        return carrinho
+            .filter(function (item) {
+                return Number(item.id) === Number(produtoId)
+                    && Number(item.unidade_comercial_id || 0) === Number(unidadeComercialId || 0);
+            })
+            .reduce(function (soma, item) { return soma + Number(item.quantidade || 0); }, 0);
+    };
+
+    const carregarUnidades = function (produto) {
+        return new Promise(function (resolve) {
+            const aplicar = function (lista) {
+                const atualizado = PdvUc ? PdvUc.aplicarUnidadesUc01NoProduto(produto, lista) : produto;
+                Object.assign(produto, { unidades_comerciais: atualizado.unidades_comerciais || [], _fonte_uc01: true });
+                resolve(produto);
+            };
+            if (produto._fonte_uc01 && Array.isArray(produto.unidades_comerciais)) {
+                aplicar(produto.unidades_comerciais);
+                return;
+            }
+            $.get(`${API_URL}/produtos/${produto.id}/unidades-comercializacao`)
+                .done(aplicar)
+                .fail(function () { aplicar([]); });
+        });
+    };
+
+    const preparar = function (item) {
+        const produto = produtosDisponiveis.find(function (p) { return Number(p.id) === Number(item.produto_id); });
+        if (!produto) return Promise.resolve({ erro: 'Produto não encontrado na lista do PDV. Atualize o PDV e tente novamente.' });
+        if (produtoEhInsumoPdv(produto)) return Promise.resolve({ erro: MENSAGEM_PRODUTO_INSUMO_PDV });
+        const quantidade = Number(item.quantidade);
+
+        return new Promise(function (resolve) {
+            enriquecerProdutoCanalPdv(produto, resolve);
+        }).then(carregarUnidades).then(function (produtoCanal) {
+            const nome = produtoCanal.nome;
+            if (produtoEhKitPdv(produtoCanal) || produtoEhCasquinhaPdv(produtoCanal)) {
+                return { erro: `${nome} precisa de montagem. Adicione pela busca de produto.` };
+            }
+            const forma = String(produtoCanal.forma_comercializacao || '').toUpperCase();
+            const porPeso = forma === 'PESO' || forma === 'VOLUME';
+            const unidadeMuc = porPeso ? null : resolverFormaVendaPdv(produtoCanal);
+            if (!porPeso && !unidadeMuc && produtoPermiteEscolhaVendaUnidade(produtoCanal)) {
+                return { erro: `${nome} exige escolher entre Peso e Unidade. Adicione pela busca de produto.` };
+            }
+
+            let produtoParaVenda = produtoCanal;
+            let opcoes;
+            if (unidadeMuc) {
+                const unidadeLabel = String(unidadeMuc.unidade || unidadeMuc.unidade_comercial || 'UN').toUpperCase();
+                produtoParaVenda = {
+                    ...produtoCanal,
+                    unidade: unidadeLabel,
+                    unidade_comercial: unidadeLabel,
+                    preco_venda: Number(produtoCanal.preco_venda || 0) || 0
+                };
+                opcoes = {
+                    tipo_venda: TIPO_VENDA_PESO,
+                    unidade_comercial_id: unidadeMuc.id,
+                    unidade_comercial: unidadeLabel,
+                    codigo_barras_comercial: unidadeMuc.codigo_barras || null
+                };
+            } else {
+                const unidadeComercial = String(
+                    produtoCanal.unidade_comercial || produtoCanal.unidade_venda || produtoCanal.unidade || 'UN'
+                ).toUpperCase();
+                opcoes = {
+                    tipo_venda: TIPO_VENDA_PESO,
+                    forma_comercializacao: forma || null,
+                    unidade_comercial: unidadeComercial,
+                    unidade_rotulo: produtoCanal.unidade_rotulo || rotuloUnidadeComercialPdv(unidadeComercial) || unidadeComercial
+                };
+            }
+
+            if (normalizarQuantidadePdv(quantidade, produtoParaVenda) !== quantidade) {
+                return { erro: `A quantidade de ${nome} deve ser inteira.` };
+            }
+            const preco = Number(produtoParaVenda.preco_venda || 0);
+            if (!(preco > 0)) return { erro: `Não foi possível encontrar o preço de ${nome}.` };
+            const totalPretendido = quantidadeNoCarrinho(produtoParaVenda.id, opcoes.unidade_comercial_id) + quantidade;
+            const estoque = pdvValidarEstoqueVenda(
+                produtoParaVenda,
+                obterQuantidadeEstoqueParaVenda(produtoParaVenda, totalPretendido, TIPO_VENDA_PESO, unidadeMuc ? opcoes : {})
+            );
+            if (!estoque.sucesso) return { erro: estoque.mensagem.replace('Saldo insuficiente.', `Saldo insuficiente para ${nome}.`) };
+
+            return buscarPromocaoAtivaProduto(produtoParaVenda.id).then(function (promocao) {
+                return { produto: produtoParaVenda, quantidade, preco, opcoes, promocao };
+            });
+        });
+    };
+
+    return Promise.all(itens.map(preparar)).then(function (planos) {
+        const recusado = planos.find(function (plano) { return plano.erro; });
+        if (recusado) return { ok: false, mensagem: recusado.erro };
+
+        const anterior = carrinho.map(function (item) { return { ...item }; });
+        for (const plano of planos) {
+            const antes = quantidadeNoCarrinho(plano.produto.id, plano.opcoes.unidade_comercial_id);
+            adicionarItemNoCarrinho(plano.produto, plano.quantidade, plano.preco, '', plano.promocao, plano.opcoes);
+            const depois = quantidadeNoCarrinho(plano.produto.id, plano.opcoes.unidade_comercial_id);
+            if (Math.abs(depois - antes - plano.quantidade) > 0.001) {
+                carrinho = anterior;
+                atualizarCarrinho();
+                return {
+                    ok: false,
+                    mensagem: `Não foi possível adicionar ${plano.produto.nome}. Nenhum produto da linha foi incluído no carrinho.`
+                };
+            }
+        }
+        return { ok: true, itens: planos.length };
+    }).catch(function (err) {
+        return { ok: false, mensagem: (err && err.message) || 'Não foi possível adicionar os produtos da linha.' };
+    });
+}
+
 function montarItensResolverCanalPdv() {
     return (carrinho || []).map(function (item) {
         const produto = produtosDisponiveis.find((p) => Number(p.id) === Number(item.id));
@@ -803,8 +1194,14 @@ async function buscarPromocaoAtivaProduto(produtoId) {
     }
 }
 
+const MENSAGEM_PRODUTO_INSUMO_PDV = 'Este produto é um insumo e não pode ser vendido pelo PDV.';
+
+function produtoEhInsumoPdv(produto) {
+    return PdvResolucaoProduto.produtoEhInsumo(produto);
+}
+
 function normalizarProdutoPdvLista(produtos) {
-    return Array.isArray(produtos) ? produtos.map(p => ({
+    return Array.isArray(produtos) ? produtos.filter(p => !produtoEhInsumoPdv(p)).map(p => ({
         ...p,
         saldo_fiscal: Number(p.saldo_fiscal ?? 0),
         saldo_nao_fiscal: Number(p.saldo_nao_fiscal ?? 0),
@@ -1064,7 +1461,7 @@ function atualizarPreviewVendaUnidadeModal(produto) {
 
 function urlProdutosPdv() {
     const modoFiscal = typeof modoFiscalQueryParam === 'function' ? modoFiscalQueryParam() : '0';
-    return `${API_URL}/produtos?modo_fiscal=${modoFiscal}`;
+    return `${API_URL}/produtos?modo_fiscal=${modoFiscal}&contexto=pdv`;
 }
 
 function loadPDV() {
@@ -1997,6 +2394,11 @@ function fiscalAutorizadaParaImpressao(fiscal) {
     return fiscal.status === 'autorizada' || fiscal.reused === true;
 }
 
+function imprimirComprovanteAntecipado(emitirFiscal, vendaId, venda, total) {
+    if (emitirFiscal || typeof imprimirComprovanteVenda !== 'function') return;
+    return imprimirComprovanteVenda(vendaId, venda, total);
+}
+
 function processarFiscalPosPagamentoPosVenda(vendaId, resultado) {
     pagamentoFiscalAtual = null;
     const fiscal = resultado?.fiscal;
@@ -2066,10 +2468,7 @@ function iniciarFluxoPosVendaComNaoFiscal(vendaId, opcoes = {}) {
                             emitirFiscal
                         );
 
-                        // Comprovante comercial da venda completa (após quitação NF)
-                        if (typeof imprimirComprovanteVenda === 'function') {
-                            imprimirComprovanteVenda(vendaId);
-                        }
+                        imprimirComprovanteAntecipado(emitirFiscal, vendaId);
 
                         processarFiscalPosPagamento(vendaId, resultado);
 
@@ -2247,6 +2646,7 @@ function inicializarPDV() {
     iniciarRelogioPDV();
     bindEventosPDV();
     focarCampoCodigo();
+    carregarComercializacaoPdv().then(atualizarOpcaoVendaPorLinhaPdv);
     carregarConfigComercialPdv().always(function () {
         Promise.resolve(tentarRestaurarRascunhoVendaPdv()).finally(function () {
             finalizarBootstrapRascunhoVendaPdv();
@@ -2489,10 +2889,18 @@ function alternarModoFiscalPdv() {
 }
 
 function focarCampoCodigo() {
-    setTimeout(() => {
-        const input = $('#buscaProdutoPdv');
-        if (input.length) input.trigger('focus');
-    }, 120);
+    const focarQuandoLiberado = () => {
+        if (document.body.classList.contains('modal-open')) {
+            document.addEventListener('hidden.bs.modal', function aoFecharModal() {
+                setTimeout(focarQuandoLiberado, 0);
+            }, { once: true });
+            return;
+        }
+
+        document.getElementById('buscaProdutoPdv')?.focus();
+    };
+
+    setTimeout(focarQuandoLiberado, 120);
 }
 
 
@@ -2564,6 +2972,7 @@ function bindEventosPDV() {
             abrirModalDecisaoFiscal();
         }
         if (e.key === 'Escape') {
+            if ($('#modalVendaPorLinhaPdv').hasClass('show')) return;
             if (window.PdvBuscaProduto && PdvBuscaProduto.estaAberto()) {
                 e.preventDefault();
                 e.stopPropagation();
@@ -2601,6 +3010,7 @@ function bindEventosPDV() {
         });
     }
 
+    $('#btnVenderPorLinhaPdv').off('click').on('click', abrirVendaPorLinhaPdv);
     $('#btnLimparVendaPdv').off('click').on('click', limparCarrinho);
     $('#btnCancelarVendaPdv').off('click').on('click', cancelarVendaAtual);
     $('#btnFinalizarVendaPdv').off('click').on('click', abrirTelaPagamento);
@@ -3024,10 +3434,6 @@ function mostrarDetalhesPrecificacaoPdv(index) {
     }, { once: true });
 }
 
-function codigoEhBalanca(codigo) {
-    return /^2\d{12}$/.test(String(codigo || '').trim());
-}
-
 function unidadeEhKg(produto) {
     return String(produto?.unidade || '').toLowerCase() === 'kg';
 }
@@ -3095,70 +3501,41 @@ function formatarQuantidadePdv(quantidade, produto) {
     return arredondado.toFixed(2).replace('.', ',').replace(/,00$/, '').replace(/(\,\d)0$/, '$1');
 }
 
-// Padrão profissional comum:
-// 2 + 5 dígitos código do produto + 6 dígitos valor total em centavos + dígito verificador
-// Exemplo: 2000010014890
-// Produto: 00001
-// Valor: R$ 14,89
-function interpretarCodigoBalanca(codigo) {
-    const limpo = String(codigo || '').replace(/\D/g, '');
-
-    if (!codigoEhBalanca(limpo)) return null;
-
-    return {
-        codigoProduto: limpo.substring(1, 6),
-        valorTotal: Number(limpo.substring(6, 12)) / 100,
-        codigoOriginal: limpo
-    };
+function garantirProdutoDisponivelPdv(produto) {
+    if (!produto || produto.id == null) return null;
+    const existente = produtosDisponiveis.find(p => Number(p.id) === Number(produto.id));
+    if (existente) return existente;
+    const normalizado = normalizarProdutoPdvLista([produto])[0];
+    if (!normalizado) return null;
+    produtosDisponiveis = produtosDisponiveis.concat([normalizado]);
+    return normalizado;
 }
 
-function normalizarCodigoProduto(codigo) {
-    return String(codigo || '').replace(/\D/g, '').replace(/^0+/, '') || String(codigo || '').trim();
+function resolverProdutoEntradaPdv(termo) {
+    return PdvResolucaoProduto.resolverEntrada(produtosDisponiveis, termo);
 }
 
-function encontrarProdutoPorCodigoExato(termo) {
-    const busca = normalizarTexto(termo);
-    const buscaNumerica = normalizarCodigoProduto(termo);
+function mostrarCandidatosEntradaPdv(termo, resolucao) {
+    const aviso = resolucao.balanca
+        ? `A etiqueta de balança (PLU ${resolucao.balanca.plu}) corresponde a mais de um produto. Selecione o produto.`
+        : `Mais de um produto corresponde a "${termo}". Selecione o produto.`;
+    const aoSelecionar = resolucao.balanca
+        ? (produto) => adicionarProdutoBalancaPdv(produto, resolucao.balanca)
+        : null;
 
-    return produtosDisponiveis.find(p => {
-        const codigo = normalizarTexto(p.codigo);
-        const codigoBarras = normalizarTexto(p.codigo_barras);
-        const codigoNumerico = normalizarCodigoProduto(p.codigo);
-        const barrasNumerico = normalizarCodigoProduto(p.codigo_barras);
-
-        return (
-            (codigo && codigo === busca) ||
-            (codigoBarras && codigoBarras === busca) ||
-            (codigoNumerico && codigoNumerico === buscaNumerica) ||
-            (barrasNumerico && barrasNumerico === buscaNumerica) ||
-            String(p.id) === buscaNumerica
-        );
-    });
-}
-
-function encontrarProdutoPorCodigoOuNome(termo) {
-    const busca = normalizarTexto(termo);
-    const buscaNumerica = normalizarCodigoProduto(termo);
-
-    return produtosDisponiveis.find(p => {
-        const codigo = normalizarTexto(p.codigo);
-        const codigoBarras = normalizarTexto(p.codigo_barras);
-        const nome = normalizarTexto(p.nome);
-
-        const codigoNumerico = normalizarCodigoProduto(p.codigo);
-        const barrasNumerico = normalizarCodigoProduto(p.codigo_barras);
-
-        return (
-            (codigo && codigo === busca) ||
-            (codigoBarras && codigoBarras === busca) ||
-            (codigoNumerico && codigoNumerico === buscaNumerica) ||
-            (barrasNumerico && barrasNumerico === buscaNumerica) ||
-            (nome && nome.includes(busca))
-        );
-    });
+    if (window.PdvBuscaProduto && typeof PdvBuscaProduto.mostrarCandidatos === 'function') {
+        PdvBuscaProduto.mostrarCandidatos(termo, resolucao.candidatos, { aviso, aoSelecionar });
+        return;
+    }
+    const nomes = resolucao.candidatos.map(p => p.nome).join(', ');
+    showNotification(`${aviso} Produtos: ${nomes}.`, 'warning');
 }
 
 function adicionarItemNoCarrinho(produto, quantidade, precoUnitario, mensagemExtra = '', promocao = null, opcoes = {}) {
+    if (produtoEhInsumoPdv(produto)) {
+        showNotification(MENSAGEM_PRODUTO_INSUMO_PDV, 'danger');
+        return;
+    }
     const tipoVenda = normalizarTipoVendaItem(opcoes);
     const muc = opcoes.unidade_comercial_id
         ? {
@@ -4037,71 +4414,68 @@ function iniciarFluxoAdicionarProdutoPdv(produto, promocao) {
     enriquecerProdutoCanalPdv(produto, seguirAposCanal);
 }
 
-function adicionarProdutoPorCodigo(codigo) {
-    if (!codigo || !codigo.trim()) return;
-
-    if (!Array.isArray(produtosDisponiveis) || produtosDisponiveis.length === 0) {
-        showNotification('Nenhum produto disponível para venda.', 'warning');
+function adicionarProdutoBalancaPdv(produtoBalanca, dadosBalanca) {
+    if (!unidadeEhKg(produtoBalanca)) {
+        showNotification(`O produto ${produtoBalanca.nome} não está cadastrado como KG.`, 'warning');
         return;
     }
 
-    const codigoDigitado = String(codigo).trim();
-
-    // 1) Código de balança
-    const dadosBalanca = interpretarCodigoBalanca(codigoDigitado);
-
-    if (dadosBalanca) {
-        const produtoBalanca = encontrarProdutoPorCodigoExato(dadosBalanca.codigoProduto);
-
-        if (!produtoBalanca) {
-            showNotification(`Produto da balança não encontrado. Código interno: ${dadosBalanca.codigoProduto}`, 'danger');
+    // RCM-8.0 — preço da balança via Resolver Oficial
+    enriquecerProdutoCanalPdv(produtoBalanca, (produtoResolvido) => {
+        const precoKg = Number(produtoResolvido.preco_venda || 0);
+        if (precoKg <= 0) {
+            showNotification(`Preço por KG inválido para ${produtoResolvido.nome}.`, 'danger');
             return;
         }
-
-        if (!unidadeEhKg(produtoBalanca)) {
-            showNotification(`O produto ${produtoBalanca.nome} não está cadastrado como KG.`, 'warning');
-            return;
-        }
-
-        // RCM-8.0 — preço da balança via Resolver Oficial
-        enriquecerProdutoCanalPdv(produtoBalanca, (produtoResolvido) => {
-            const precoKg = Number(produtoResolvido.preco_venda || 0);
-            if (precoKg <= 0) {
-                showNotification(`Preço por KG inválido para ${produtoResolvido.nome}.`, 'danger');
-                return;
-            }
-            const peso = dadosBalanca.valorTotal / precoKg;
-            buscarPromocaoAtivaProduto(produtoResolvido.id).then(promocao => {
-                adicionarItemNoCarrinho(
-                    produtoResolvido,
-                    peso,
-                    precoKg,
-                    ` - Peso: ${formatarQuantidadePdv(peso, { unidade: 'kg', produto_fracionado: 1 })} KG - Total: ${formatCurrency(dadosBalanca.valorTotal)}`,
-                    promocao
-                );
-            });
+        const peso = dadosBalanca.valorTotal / precoKg;
+        buscarPromocaoAtivaProduto(produtoResolvido.id).then(promocao => {
+            adicionarItemNoCarrinho(
+                produtoResolvido,
+                peso,
+                precoKg,
+                ` - Peso: ${formatarQuantidadePdv(peso, { unidade: 'kg', produto_fracionado: 1 })} KG - Total: ${formatCurrency(dadosBalanca.valorTotal)}`,
+                promocao
+            );
         });
-        return;
-    }
-
-    // 2) Produto normal — apenas código exato (barras/interno/id)
-    const produto = encontrarProdutoPorCodigoExato(codigoDigitado);
-
-    if (!produto) {
-        showNotification(`Produto não encontrado: ${codigo}`, 'danger');
-        return;
-    }
-
-    const validacaoMinima = pdvValidarEstoqueVenda(produto, 1);
-    if (!validacaoMinima.sucesso) {
-        showNotification(validacaoMinima.mensagem, 'danger');
-        return;
-    }
-
-    // Buscar promoção do produto
-    buscarPromocaoAtivaProduto(produto.id).then(promocao => {
-        iniciarFluxoAdicionarProdutoPdv(produto, promocao);
     });
+}
+
+/**
+ * Entrada digitada/bipada → produto_id.
+ * Retorna 'ADICIONADO', 'SELECAO' (lista aberta para o operador), 'PENDENTE' (consulta à API) ou 'NAO_ENCONTRADO'.
+ */
+function adicionarProdutoPorCodigo(codigo) {
+    const codigoDigitado = String(codigo || '').trim();
+    if (!codigoDigitado) return 'NAO_ENCONTRADO';
+
+    const resolucao = resolverProdutoEntradaPdv(codigoDigitado);
+
+    if (resolucao.status === PdvResolucaoProduto.STATUS_AMBIGUO) {
+        mostrarCandidatosEntradaPdv(codigoDigitado, resolucao);
+        return 'SELECAO';
+    }
+
+    if (resolucao.balanca) {
+        if (!resolucao.produto) {
+            showNotification(`Produto da balança não encontrado. Código interno: ${resolucao.balanca.plu}`, 'danger');
+            return 'NAO_ENCONTRADO';
+        }
+        adicionarProdutoBalancaPdv(resolucao.produto, resolucao.balanca);
+        return 'ADICIONADO';
+    }
+
+    if (resolucao.produto) {
+        adicionarProdutoConsultaPDV(resolucao.produto.id);
+        return 'ADICIONADO';
+    }
+
+    if (window.PdvBuscaProduto && typeof PdvBuscaProduto.resolverPelaApi === 'function') {
+        PdvBuscaProduto.resolverPelaApi(codigoDigitado);
+        return 'PENDENTE';
+    }
+
+    showNotification(`Produto não encontrado: ${codigoDigitado}`, 'danger');
+    return 'NAO_ENCONTRADO';
 }
 
 function atualizarQuantidade(index, quantidade) {
@@ -5593,17 +5967,18 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
                 pagamentoFiscalAtual = null;
 
                 const vendaQuitadaCompletamente = !vendaPrazoInfo && statusPagamento === 'quitada';
+                const fiscalProcessadoPosVenda = vendaQuitadaCompletamente && Boolean(dados.emitir_fiscal);
 
-                // Sempre: comprovante comercial da compra (cliente)
+                // Em venda fiscal, o comprovante é impresso após a autorização da NFC-e.
                 if (vendaQuitadaCompletamente || vendaPrazoInfo) {
-                    imprimirComprovanteVenda(vendaId, {
+                    imprimirComprovanteAntecipado(fiscalProcessadoPosVenda, vendaId, {
                         ...payload,
                         itens: itensParaCupom,
                         pagamentos: payload.pagamentos || dados.pagamentos || []
                     }, total);
                 }
 
-                if (vendaQuitadaCompletamente && dados.emitir_fiscal) {
+                if (fiscalProcessadoPosVenda) {
                     processarFiscalPosPagamentoPosVenda(vendaId, response);
                 }
 
@@ -7046,7 +7421,7 @@ function toggleProdutosCategoria(categoriaId) {
             $.ajax({
                 url: `${API_URL}/produtos`,
                 method: 'GET',
-                data: { categoria_id: categoriaId },
+                data: { categoria_id: categoriaId, contexto: 'pdv' },
                 success: function(produtos) {
                     if (!produtos || produtos.length === 0) {
                         container.html(`
@@ -7093,6 +7468,10 @@ function toggleProdutosCategoria(categoriaId) {
 
 function adicionarProdutoConsultaPDV(produtoId) {
     const produto = produtosDisponiveis.find(p => Number(p.id) === Number(produtoId));
+    if (produtoEhInsumoPdv(produto)) {
+        showNotification(MENSAGEM_PRODUTO_INSUMO_PDV, 'danger');
+        return;
+    }
     if (!produto) {
         showNotification('Produto não encontrado na lista do PDV. Atualize o PDV e tente novamente.', 'danger');
         return;
@@ -7296,6 +7675,7 @@ document.addEventListener("keydown", (e) => {
   }
 
   if (e.key === "Escape") {
+    if (document.getElementById("modalVendaPorLinhaPdv")?.classList.contains("show")) return;
     e.preventDefault();
     // Se menu estiver aberto, fecha o menu
     if (document.body.classList.contains('menu-open')) {

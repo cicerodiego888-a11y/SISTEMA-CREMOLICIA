@@ -862,15 +862,23 @@ class FecharConsignacaoView {
         <div class="cds-op-hist-modal-table__head" role="row">
           <span>Forma</span><span>Valor</span><span>Data/Hora</span><span>Operador</span><span>Observação</span>
         </div>
-        ${pagamentos.map((p) => `
-          <div class="cds-op-hist-modal-table__row" role="row">
-            <span>${safeText(p.forma)}</span>
-            <strong>${formatCurrency(p.valor)}</strong>
-            <span>${safeText(formatDateTime(p.data))}</span>
-            <span>${safeText(p.operador)}</span>
-            <span>${safeText(p.observacao || '—')}</span>
-          </div>
-        `).join('')}
+        ${pagamentos.map((p) => {
+          const forma = String(p.forma || '—');
+          const formasConhecidas = {
+            CARTAO: 'Cartão',
+            CARTAO_DEBITO: 'Débito',
+            CARTAO_CREDITO: 'Crédito'
+          };
+          return `
+            <div class="cds-op-hist-modal-table__row" role="row">
+              <span>${safeText(formasConhecidas[forma.toUpperCase()] || forma)}</span>
+              <strong>${formatCurrency(p.valor)}</strong>
+              <span>${safeText(formatDateTime(p.data))}</span>
+              <span>${safeText(p.operador)}</span>
+              <span>${safeText(p.observacao || '—')}</span>
+            </div>
+          `;
+        }).join('')}
       </div>
     `;
   }
@@ -918,7 +926,8 @@ class FecharConsignacaoView {
           { value: 'PIX', label: 'PIX' },
           { value: 'TRANSFERENCIA', label: 'Transferência' },
           { value: 'CHEQUE', label: 'Cheque' },
-          { value: 'CARTAO', label: 'Cartão' }
+          { value: 'CARTAO_DEBITO', label: 'Débito' },
+          { value: 'CARTAO_CREDITO', label: 'Crédito' }
         ],
         value: draft.formaPagamento || 'DINHEIRO',
         onChange: (v) => ctx.onPagamentoChange('formaPagamento', v)

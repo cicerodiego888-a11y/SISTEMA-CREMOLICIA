@@ -44,15 +44,22 @@ setInterval(() => {
 let ultimoClique = Date.now();
 let cliquesDetectados = 0;
 
+function telaTravadaPorModal() {
+    if (document.querySelector('.modal.show')) return false;
+    return !!document.querySelector('.modal-backdrop') || document.body.classList.contains('modal-open');
+}
+
 $(document).on('click', function () {
     ultimoClique = Date.now();
     cliquesDetectados++;
 });
 
+// O reflow esconde o body por um instante: fecha select/lista aberta e tira o foco.
+// Só pode rodar quando um modal deixou a tela travada, nunca depois de um clique comum.
 setInterval(() => {
     if (window.electronAPI && cliquesDetectados > 0) {
         const tempoDesdeUltimoClique = Date.now() - ultimoClique;
-        if (tempoDesdeUltimoClique > 100 && tempoDesdeUltimoClique < 2000) {
+        if (tempoDesdeUltimoClique > 100 && tempoDesdeUltimoClique < 2000 && telaTravadaPorModal()) {
             if (window.electronAPI.forcarReflow) {
                 window.electronAPI.forcarReflow();
             }
@@ -573,6 +580,33 @@ function filtrarMenuPorPermissoes() {
         typeof podeAbrirERP === 'function' &&
         podeAbrirERP(obterUsuarioLogado())
     );
+
+    atualizarVisibilidadeGruposSidebar();
+}
+
+function atualizarVisibilidadeGruposSidebar() {
+    const sidebar = document.getElementById('sidebar-nav');
+    if (!sidebar) return;
+
+    sidebar.querySelectorAll(':scope > .sidebar-nav-group').forEach((grupo) => {
+        let irmao = grupo.nextElementSibling;
+        let temItemVisivel = false;
+
+        while (irmao && !irmao.classList.contains('sidebar-nav-group') &&
+            !irmao.classList.contains('sidebar-nav-separator')) {
+            if (irmao.classList.contains('nav-item') && irmao.style.display !== 'none') {
+                temItemVisivel = true;
+                break;
+            }
+            irmao = irmao.nextElementSibling;
+        }
+
+        grupo.hidden = !temItemVisivel;
+        const separador = grupo.previousElementSibling;
+        if (separador && separador.classList.contains('sidebar-nav-separator')) {
+            separador.hidden = !temItemVisivel;
+        }
+    });
 }
 
 function formatCurrency(value) {

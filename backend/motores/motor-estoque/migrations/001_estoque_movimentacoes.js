@@ -77,6 +77,10 @@ async function bootstrapMotorEstoqueSchema(db) {
     `CREATE INDEX IF NOT EXISTS idx_est_res_produto ON estoque_reservas(produto_id, status)`
   );
 
+  const { bootstrapSaldosLocais } = require('./002_estoque_saldos_locais');
+  await bootstrapSaldosLocais(db);
+  const { bootstrapLocalMovimentacao } = require('./003_estoque_movimentacao_local');
+  await bootstrapLocalMovimentacao(db);
   console.log('[MCC-04] Schema Motor de Estoque pronto.');
 }
 

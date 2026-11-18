@@ -37,6 +37,33 @@ describe('STAB-07.3 estação operacional', () => {
     expect(html).toMatch(/R\$/);
   });
 
+  test('formulário diferencia débito e crédito e apresenta os rótulos no histórico', () => {
+    const section = FecharConsignacaoView._buildBlocoPagamentos(
+      { pagamentoDraft: { valor: '25', formaPagamento: 'CARTAO_CREDITO' } },
+      { onPagamentoChange: () => {}, onRegistrarPagamento: () => {} },
+      { valorVenda: 100, saldoEmAberto: 25, situacaoFinanceira: 'PARCIAL' }
+    );
+    const select = section.querySelector('select');
+    const opcoes = Array.from(select.options).map((option) => ({
+      value: option.value,
+      label: option.textContent.trim()
+    }));
+
+    expect(opcoes).toContainEqual({ value: 'CARTAO_DEBITO', label: 'Débito' });
+    expect(opcoes).toContainEqual({ value: 'CARTAO_CREDITO', label: 'Crédito' });
+    expect(opcoes.some((option) => option.value === 'CARTAO')).toBe(false);
+    expect(select.value).toBe('CARTAO_CREDITO');
+
+    const historico = FecharConsignacaoView._htmlListaPagamentos([
+      { forma: 'CARTAO_DEBITO', valor: 10 },
+      { forma: 'CARTAO_CREDITO', valor: 15 },
+      { forma: 'CARTAO', valor: 5 }
+    ]);
+    expect(historico).toMatch(/Débito/);
+    expect(historico).toMatch(/Crédito/);
+    expect(historico).toMatch(/Cartão/);
+  });
+
   test('card financeiro destaca KPIs venda / recebido / saldo', () => {
     const html = FecharConsignacaoView._htmlCardFinanceiro(
       { valorVenda: 30, valorRecebido: 20, saldoEmAberto: 10 },

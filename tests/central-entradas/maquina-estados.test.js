@@ -57,12 +57,29 @@ test('ERRO → SINCRONIZADA permite reprocessamento', () => {
   );
 });
 
+test('ERRO → EM_PROCESSAMENTO permite nova tentativa do pipeline', () => {
+  assert.strictEqual(
+    podeTransicionar(DocumentoFiscalStatus.ERRO, DocumentoFiscalStatus.EM_PROCESSAMENTO),
+    true
+  );
+});
+
 test('mesmo status é idempotente', () => {
   const resultado = validarTransicao(
     DocumentoFiscalStatus.PRONTA_PARA_COMPRA,
     DocumentoFiscalStatus.PRONTA_PARA_COMPRA
   );
   assert.strictEqual(resultado.valido, true);
+});
+
+test('estados de compra podem voltar à revisão quando um vínculo deixa de ser válido', () => {
+  [
+    DocumentoFiscalStatus.REVISADA,
+    DocumentoFiscalStatus.PRONTA_PARA_COMPRA,
+    DocumentoFiscalStatus.EM_COMPRA
+  ].forEach((status) => {
+    assert.strictEqual(podeTransicionar(status, DocumentoFiscalStatus.AGUARDANDO_REVISAO), true);
+  });
 });
 
 test('ERRO_RECUPERACAO → AGUARDANDO_XML permite retry', () => {

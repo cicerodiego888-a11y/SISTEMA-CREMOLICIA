@@ -144,36 +144,42 @@ class CentralSyncExecucaoService {
       });
 
       const cfgNotif = await this._config.obterResumo();
-      await this._notificacoes.notificarSyncConcluida({
-        notasNovas: resultado.notasNovas || 0,
-        sucesso: resultado.sucesso,
-        mensagem: resultado.mensagem,
-        origem,
-        notificarNovas: cfgNotif.notificarNovasNotas
-      });
+      if (!resultado.aguardandoIntervaloSefaz) {
+        await this._notificacoes.notificarSyncConcluida({
+          notasNovas: resultado.notasNovas || 0,
+          sucesso: resultado.sucesso,
+          mensagem: resultado.mensagem,
+          origem,
+          notificarNovas: cfgNotif.notificarNovasNotas
+        });
+      }
 
       return { ...resultado, duracaoMs, origem };
     } catch (error) {
       const duracaoMs = Date.now() - inicio;
       const falha = SincronizacaoResultadoDTO.fromError(error);
 
+      const emDia = SincronizacaoResultadoDTO.ehDistribuicaoEmDia(error);
+
       this._ultimoResultado = falha;
 
       await this._eventos.registrar({
-        tipo: TIPOS_EVENTO.SYNC_ERRO,
+        tipo: emDia ? TIPOS_EVENTO.SYNC_CONCLUIDA : TIPOS_EVENTO.SYNC_ERRO,
         origem,
         descricao: falha.mensagem,
-        resultado: 'erro',
-        sucesso: false,
+        resultado: emDia ? 'sucesso' : 'erro',
+        sucesso: emDia,
         duracaoMs,
         detalhe: falha
       });
 
-      await this._notificacoes.notificarSyncConcluida({
-        sucesso: false,
-        mensagem: falha.mensagem,
-        origem
-      });
+      if (!emDia) {
+        await this._notificacoes.notificarSyncConcluida({
+          sucesso: false,
+          mensagem: falha.mensagem,
+          origem
+        });
+      }
 
       return { ...falha, duracaoMs, origem };
     } finally {

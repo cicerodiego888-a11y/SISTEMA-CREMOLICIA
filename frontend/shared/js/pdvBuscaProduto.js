@@ -5,6 +5,9 @@
   const DEBOUNCE_MS = 220;
 
   let resultados = [];
+  let termoResultados = '';
+  let avisoLista = '';
+  let acaoSelecao = null;
   let indiceSelecionado = -1;
   let timerBusca = null;
   let requisicaoAtual = 0;
@@ -22,6 +25,15 @@
     if (typeof global.showNotification === 'function') {
       global.showNotification(mensagem, tipo);
     }
+  }
+
+  function escapar(texto) {
+    if (typeof global.escapeHtml === 'function') return global.escapeHtml(String(texto ?? ''));
+    return String(texto ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
   }
 
   function formatarPrecoProduto(produto) {
@@ -42,63 +54,22 @@
     return '0';
   }
 
-  function normalizarTermo(texto) {
-    if (typeof global.normalizarTexto === 'function') {
-      return global.normalizarTexto(texto);
-    }
-    return String(texto || '')
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .toLowerCase();
+  function ehExato(produto) {
+    return produto?.match_exato === 1 || produto?.match_exato === true;
   }
 
-  function normalizarCodigoNumerico(codigo) {
-    if (typeof global.normalizarCodigoProduto === 'function') {
-      return global.normalizarCodigoProduto(codigo);
+  function resolverLocal(termo) {
+    if (typeof global.resolverProdutoEntradaPdv === 'function') {
+      return global.resolverProdutoEntradaPdv(termo);
     }
-    return String(codigo || '').replace(/\D/g, '').replace(/^0+/, '') || String(codigo || '').trim();
+    return { status: 'NENHUM', produto: null, candidatos: [], balanca: null };
   }
 
-  function produtoMatchExato(produto, termo) {
-    const busca = normalizarTermo(termo);
-    const buscaNum = normalizarCodigoNumerico(termo);
-    const codigo = normalizarTermo(produto?.codigo);
-    const barras = normalizarTermo(produto?.codigo_barras);
-    const codigoNum = normalizarCodigoNumerico(produto?.codigo);
-    const barrasNum = normalizarCodigoNumerico(produto?.codigo_barras);
-
-    return (
-      (codigo && codigo === busca) ||
-      (barras && barras === busca) ||
-      (codigoNum && codigoNum === buscaNum) ||
-      (barrasNum && barrasNum === buscaNum) ||
-      String(produto?.id) === buscaNum
-    );
-  }
-
-  function ehEntradaLeitorOuCodigoExato(termo) {
-    const limpo = String(termo || '').trim();
-    if (!limpo) return false;
-
-    if (typeof global.codigoEhBalanca === 'function' && global.codigoEhBalanca(limpo)) {
-      return true;
-    }
-
-    const apenasDigitos = limpo.replace(/\D/g, '');
-    if (apenasDigitos.length >= 8 && apenasDigitos.length === limpo.replace(/\s/g, '').length) {
-      return true;
-    }
-
-    const lista = global.produtosDisponiveis || [];
-    if (lista.some((p) => produtoMatchExato(p, limpo))) {
-      return true;
-    }
-
-    if (resultados.some((p) => p.match_exato === 1 || p.match_exato === true)) {
-      return true;
-    }
-
-    return false;
+  function rotuloIdentificadores(produto) {
+    const partes = [];
+    if (produto.codigo) partes.push(`Cód. ${produto.codigo}`);
+    if (produto.codigo_barras) partes.push(produto.codigo_barras);
+    return partes.join(' · ') || 'Sem código';
   }
 
   function estoqueDisponivel(produto) {
@@ -122,16 +93,16 @@
     dropdownAberto = true;
     lista.classList.add('aberta');
 
-    lista.innerHTML = resultados.map((produto, index) => {
+    const cabecalho = avisoLista
+      ? `<p class="pdv-autocomplete-aviso">${escapar(avisoLista)}</p>`
+      : '';
+
+    lista.innerHTML = cabecalho + resultados.map((produto, index) => {
       const ativo = index === indiceSelecionado ? ' ativo' : '';
       const semEstoque = typeof global.pdvValidarEstoqueVenda === 'function'
         ? !global.pdvValidarEstoqueVenda(produto, 1).sucesso
         : estoqueDisponivel(produto) <= 0;
       const promocao = produto.tem_promocao === 1 || produto.tem_promocao === true;
-      const codigoExibicao = produto.codigo_barras || produto.codigo || produto.id;
-      const nome = typeof global.escapeHtml === 'function'
-        ? global.escapeHtml(produto.nome || '-')
-        : String(produto.nome || '-');
 
       return `
         <button
@@ -141,9 +112,9 @@
           data-produto-id="${produto.id}"
           ${semEstoque ? 'disabled' : ''}
         >
-          <span class="pdv-autocomplete-nome">${nome}${promocao ? ' <small class="pdv-autocomplete-promo">PROMO</small>' : ''}</span>
+          <span class="pdv-autocomplete-nome">${escapar(produto.nome || '-')}${promocao ? ' <small class="pdv-autocomplete-promo">PROMO</small>' : ''}</span>
           <span class="pdv-autocomplete-meta">
-            <span class="pdv-autocomplete-codigo">${codigoExibicao}</span>
+            <span class="pdv-autocomplete-codigo">${escapar(rotuloIdentificadores(produto))}</span>
             <strong class="pdv-autocomplete-preco">${formatarPrecoProduto(produto)}</strong>
           </span>
         </button>
@@ -151,15 +122,50 @@
     }).join('');
   }
 
+  function definirResultados(termo, lista, opcoes = {}) {
+    resultados = Array.isArray(lista) ? lista.slice(0, LIMITE_RESULTADOS) : [];
+    termoResultados = termo;
+    avisoLista = opcoes.aviso || '';
+    acaoSelecao = typeof opcoes.aoSelecionar === 'function' ? opcoes.aoSelecionar : null;
+    indiceSelecionado = Number.isInteger(opcoes.indice) ? opcoes.indice : -1;
+    renderizarLista();
+  }
+
+  function obterIndiceDisponivel(inicio, direcao) {
+    for (let index = inicio; index >= 0 && index < resultados.length; index += direcao) {
+      const produto = resultados[index];
+      const validacao = typeof global.pdvValidarEstoqueVenda === 'function'
+        ? global.pdvValidarEstoqueVenda(produto, 1)
+        : { sucesso: estoqueDisponivel(produto) > 0 };
+      if (validacao?.sucesso) return index;
+    }
+    return -1;
+  }
+
+  function focarResultado(index) {
+    if (index < 0) return;
+    indiceSelecionado = index;
+    renderizarLista();
+    obterLista()?.querySelector(`[data-index="${index}"]`)?.focus();
+  }
+
   function fecharLista(mensagem) {
     resultados = [];
+    termoResultados = '';
+    avisoLista = '';
+    acaoSelecao = null;
     indiceSelecionado = -1;
     dropdownAberto = false;
     const lista = obterLista();
     if (lista) {
       lista.classList.remove('aberta');
-      lista.innerHTML = `<p class="vazio">${mensagem || 'Digite para buscar por código ou nome...'}</p>`;
+      lista.innerHTML = `<p class="vazio">${escapar(mensagem || 'Digite para buscar por código ou nome...')}</p>`;
     }
+  }
+
+  function cancelarBuscaPendente() {
+    clearTimeout(timerBusca);
+    requisicaoAtual += 1;
   }
 
   function limparCampo() {
@@ -174,27 +180,80 @@
   function adicionarProdutoSelecionado(produto) {
     if (!produto) return;
 
-    let cache = global.produtosDisponiveis || [];
-    const existe = cache.find((p) => Number(p.id) === Number(produto.id));
-    if (!existe) {
-      const normalizado = typeof global.normalizarProdutoPdvLista === 'function'
-        ? global.normalizarProdutoPdvLista([produto])[0]
-        : produto;
-      cache = cache.concat([normalizado]);
-      global.produtosDisponiveis = cache;
-    }
-
-    if (typeof global.adicionarProdutoConsultaPDV === 'function') {
-      global.adicionarProdutoConsultaPDV(produto.id);
+    const acao = acaoSelecao;
+    if (acao) {
       limparCampo();
+      acao(produto);
       return;
     }
 
-    if (typeof global.adicionarProdutoPorCodigo === 'function') {
-      const codigo = produto.codigo_barras || produto.codigo || String(produto.id);
-      global.adicionarProdutoPorCodigo(codigo);
-      limparCampo();
+    if (typeof global.garantirProdutoDisponivelPdv === 'function') {
+      global.garantirProdutoDisponivelPdv(produto);
     }
+
+    if (typeof global.adicionarProdutoConsultaPDV !== 'function') {
+      notificar('Não foi possível adicionar o produto selecionado.', 'danger');
+      return;
+    }
+    global.adicionarProdutoConsultaPDV(produto.id);
+    limparCampo();
+  }
+
+  /** Mostra produtos para o operador escolher; nada é adicionado sem seleção. */
+  function mostrarCandidatos(termo, candidatos, opcoes = {}) {
+    cancelarBuscaPendente();
+    definirResultados(termo, candidatos, opcoes);
+  }
+
+  function urlBusca(termo) {
+    const apiUrl = typeof API_URL !== 'undefined' ? API_URL : '/api';
+    return `${apiUrl}/produtos/consulta-pdv/buscar?q=${encodeURIComponent(termo)}&modo_fiscal=${obterModoFiscal()}&limite=${LIMITE_RESULTADOS}`;
+  }
+
+  function consultarApi(termo) {
+    return fetch(urlBusca(termo), {
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem('token') || ''}`
+      }
+    }).then(async (response) => {
+      const dados = await response.json().catch(() => []);
+      if (!response.ok) {
+        throw new Error(dados?.error || 'Erro ao buscar produtos.');
+      }
+      return Array.isArray(dados) ? dados : [];
+    });
+  }
+
+  /** Enter sem correspondência local: adiciona só se a API devolver exatamente um produto exato. */
+  function resolverPelaApi(termo) {
+    cancelarBuscaPendente();
+    fecharLista('Buscando...');
+    const reqId = requisicaoAtual;
+
+    consultarApi(termo)
+      .then((produtos) => {
+        if (reqId !== requisicaoAtual) return;
+        const exatos = produtos.filter(ehExato);
+        if (exatos.length === 1) {
+          adicionarProdutoSelecionado(exatos[0]);
+          return;
+        }
+        if (!produtos.length) {
+          fecharLista('Nenhum produto encontrado.');
+          notificar(`Produto não encontrado: ${termo}`, 'danger');
+          return;
+        }
+        const aviso = exatos.length > 1
+          ? `Mais de um produto corresponde a "${termo}". Selecione o produto.`
+          : `Nenhum código corresponde exatamente a "${termo}". Selecione o produto na lista.`;
+        mostrarCandidatos(termo, produtos, { aviso });
+        notificar(aviso, 'warning');
+      })
+      .catch((err) => {
+        if (reqId !== requisicaoAtual) return;
+        fecharLista('Erro ao buscar produtos.');
+        notificar(err.message, 'danger');
+      });
   }
 
   function confirmarEntrada() {
@@ -204,33 +263,22 @@
     const termo = input.value.trim();
     if (!termo) return;
 
-    const exatoApi = resultados.find((p) => p.match_exato === 1 || p.match_exato === true);
-    if (exatoApi) {
-      adicionarProdutoSelecionado(exatoApi);
-      return;
-    }
-
-    if (ehEntradaLeitorOuCodigoExato(termo)) {
-      if (typeof global.adicionarProdutoPorCodigo === 'function') {
-        global.adicionarProdutoPorCodigo(termo);
-        limparCampo();
+    if (termoResultados === termo && resultados.length) {
+      if (dropdownAberto && indiceSelecionado >= 0 && resultados[indiceSelecionado]) {
+        adicionarProdutoSelecionado(resultados[indiceSelecionado]);
+        return;
       }
-      return;
-    }
-
-    if (dropdownAberto && indiceSelecionado >= 0 && resultados[indiceSelecionado]) {
-      adicionarProdutoSelecionado(resultados[indiceSelecionado]);
-      return;
-    }
-
-    if (resultados.length > 0 && indiceSelecionado < 0) {
       notificar('Selecione o produto na lista (setas + Enter ou clique).', 'warning');
       return;
     }
 
-    if (typeof global.adicionarProdutoPorCodigo === 'function') {
-      global.adicionarProdutoPorCodigo(termo);
+    cancelarBuscaPendente();
+    if (typeof global.adicionarProdutoPorCodigo !== 'function') return;
+    const situacao = global.adicionarProdutoPorCodigo(termo);
+    if (situacao === 'ADICIONADO' || situacao === 'NAO_ENCONTRADO') {
       limparCampo();
+    } else if (situacao === 'SELECAO' && avisoLista) {
+      notificar(avisoLista, 'warning');
     }
   }
 
@@ -241,8 +289,18 @@
       return;
     }
 
-    if (ehEntradaLeitorOuCodigoExato(termo)) {
-      fecharLista('Código detectado — pressione Enter para adicionar.');
+    const local = resolverLocal(termo);
+    if (local.status === 'AMBIGUO' && typeof global.mostrarCandidatosEntradaPdv === 'function') {
+      global.mostrarCandidatosEntradaPdv(termo, local);
+      return;
+    }
+    if (local.status === 'UNICO') {
+      const tipo = local.balanca ? 'Etiqueta de balança' : 'Código detectado';
+      fecharLista(`${tipo}: ${local.produto.nome} — pressione Enter para adicionar.`);
+      return;
+    }
+    if (local.balanca) {
+      fecharLista(`Etiqueta de balança sem produto correspondente (PLU ${local.balanca.plu}).`);
       return;
     }
 
@@ -252,28 +310,15 @@
       lista.classList.add('aberta');
     }
 
-    const apiUrl = typeof API_URL !== 'undefined' ? API_URL : '/api';
-    const url = `${apiUrl}/produtos/consulta-pdv/buscar?q=${encodeURIComponent(termo)}&modo_fiscal=${obterModoFiscal()}&limite=${LIMITE_RESULTADOS}`;
-
-    fetch(url, {
-      headers: {
-        Authorization: `Bearer ${localStorage.getItem('token') || ''}`
-      }
-    })
-      .then(async (response) => {
-        const dados = await response.json().catch(() => []);
-        if (!response.ok) {
-          throw new Error(dados?.error || 'Erro ao buscar produtos.');
-        }
-        return dados;
-      })
+    consultarApi(termo)
       .then((produtos) => {
         if (reqId !== requisicaoAtual) return;
-        resultados = Array.isArray(produtos) ? produtos.slice(0, LIMITE_RESULTADOS) : [];
-        const unicoExato = resultados.length === 1
-          && (resultados[0].match_exato === 1 || resultados[0].match_exato === true);
-        indiceSelecionado = unicoExato ? 0 : -1;
-        renderizarLista();
+        const exatos = produtos.filter(ehExato);
+        const indice = exatos.length === 1 ? produtos.indexOf(exatos[0]) : -1;
+        const aviso = exatos.length > 1
+          ? `Mais de um produto corresponde a "${termo}". Selecione o produto.`
+          : '';
+        definirResultados(termo, produtos, { indice, aviso });
       })
       .catch((err) => {
         if (reqId !== requisicaoAtual) return;
@@ -287,7 +332,7 @@
     if (!input) return;
 
     const termo = input.value.trim();
-    clearTimeout(timerBusca);
+    cancelarBuscaPendente();
     timerBusca = setTimeout(() => buscarProdutos(termo), DEBOUNCE_MS);
   }
 
@@ -295,12 +340,14 @@
     const input = obterInput();
     if (!input || event.target !== input) return;
 
-    if (event.key === 'ArrowDown') {
+    if ((event.key === 'Tab' && !event.shiftKey) || event.key === 'ArrowDown') {
       if (!resultados.length) return;
+      if (termoResultados !== input.value.trim()) return;
+      const primeiroDisponivel = obterIndiceDisponivel(0, 1);
+      if (primeiroDisponivel < 0) return;
       event.preventDefault();
       event.stopPropagation();
-      indiceSelecionado = Math.min(indiceSelecionado + 1, resultados.length - 1);
-      renderizarLista();
+      focarResultado(primeiroDisponivel);
       return;
     }
 
@@ -330,6 +377,44 @@
     }
   }
 
+  function onListaKeyDown(event) {
+    const botao = event.target.closest('.pdv-autocomplete-item');
+    if (!botao) return;
+
+    const index = Number(botao.dataset.index);
+    if (!Number.isInteger(index)) return;
+
+    if (event.key === 'ArrowDown') {
+      const proximo = obterIndiceDisponivel(index + 1, 1);
+      if (proximo < 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      focarResultado(proximo);
+      return;
+    }
+
+    if (event.key === 'ArrowUp') {
+      const anterior = obterIndiceDisponivel(index - 1, -1);
+      event.preventDefault();
+      event.stopPropagation();
+      if (anterior < 0) {
+        indiceSelecionado = -1;
+        renderizarLista();
+        obterInput()?.focus();
+        return;
+      }
+      focarResultado(anterior);
+      return;
+    }
+
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      fecharLista();
+      obterInput()?.focus();
+    }
+  }
+
   function onListaClick(event) {
     const botao = event.target.closest('.pdv-autocomplete-item');
     if (!botao || botao.disabled) return;
@@ -348,6 +433,7 @@
     input.addEventListener('input', onInput);
     input.addEventListener('keydown', onKeyDown);
     lista.addEventListener('click', onListaClick);
+    lista.addEventListener('keydown', onListaKeyDown);
 
     const btnBuscar = document.getElementById('btnBuscarProdutoPdv');
     if (btnBuscar) {
@@ -361,6 +447,8 @@
     inicializar,
     estaAberto: () => dropdownAberto,
     fechar: fecharLista,
-    confirmarEntrada
+    confirmarEntrada,
+    mostrarCandidatos,
+    resolverPelaApi
   };
 })(typeof window !== 'undefined' ? window : global);

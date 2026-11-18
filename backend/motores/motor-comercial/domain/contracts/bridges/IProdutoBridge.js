@@ -21,6 +21,11 @@ class IProdutoBridge {
   async estaAtivo(_produtoId) {
     throw new Error(`${this.constructor.name} deve implementar estaAtivo()`);
   }
+
+  /** Motivo que impede nova operação com o produto; null quando liberado. @returns {Promise<string|null>} */
+  async motivoBloqueioComercial(_produtoId) {
+    return null;
+  }
 }
 
 module.exports = IProdutoBridge;

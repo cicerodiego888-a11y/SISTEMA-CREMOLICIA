@@ -19,6 +19,7 @@ const {
 const ProdutoSaldoRepository = require('./repositories/ProdutoSaldoRepository');
 const EstoqueMovimentacaoRepository = require('./repositories/EstoqueMovimentacaoRepository');
 const { bootstrapMotorEstoqueSchema } = require('./migrations/001_estoque_movimentacoes');
+const { consultarSaldoLocal, LOCAL_LOJA, LOCAL_FABRICA } = require('./repositories/SaldoLocalRepository');
 
 const motor = new MotorEstoqueService();
 
@@ -32,6 +33,9 @@ module.exports = {
   reservar: (db, entrada) => motor.reservar(db, entrada),
   liberarReserva: (db, entrada) => motor.liberarReserva(db, entrada),
   consultarSaldo: (db, produtoId) => motor.consultarSaldo(db, produtoId),
+  consultarSaldoLocal,
+  LOCAL_LOJA,
+  LOCAL_FABRICA,
   MovimentacaoEstoque,
   QuantidadeComercialRejeitadaError,
   OperacaoEstoque,

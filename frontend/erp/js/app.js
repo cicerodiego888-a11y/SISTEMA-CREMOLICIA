@@ -115,6 +115,38 @@ function loadPage(page) {
             return typeof loadCentralContabil === 'function'
                 ? loadCentralContabil()
                 : $('#page-content').html('<div class="alert alert-danger">Erro ao carregar a Central Contábil.</div>');
+        case 'painel-fabrica':
+            return typeof loadPainelFabrica === 'function'
+                ? loadPainelFabrica()
+                : $('#page-content').html('<div class="alert alert-danger">Erro ao carregar o painel da fábrica.</div>');
+        case 'necessidades-producao':
+            return typeof loadNecessidadesProducao === 'function'
+                ? loadNecessidadesProducao()
+                : $('#page-content').html('<div class="alert alert-danger">Erro ao carregar necessidades de produção.</div>');
+        case 'ordens-producao':
+            return typeof loadOrdensProducao === 'function'
+                ? loadOrdensProducao()
+                : $('#page-content').html('<div class="alert alert-danger">Erro ao carregar ordens de produção.</div>');
+        case 'transferencias':
+            return typeof loadTransferencias === 'function'
+                ? loadTransferencias()
+                : $('#page-content').html('<div class="alert alert-danger">Erro ao carregar transferências.</div>');
+        case 'insumos':
+            return typeof loadInsumos === 'function'
+                ? loadInsumos()
+                : $('#page-content').html('<div class="alert alert-danger">Erro ao carregar insumos.</div>');
+        case 'linhas-produtos':
+            return typeof loadLinhasProdutos === 'function'
+                ? loadLinhasProdutos()
+                : $('#page-content').html('<div class="alert alert-danger">Erro ao carregar linhas de produtos.</div>');
+        case 'conversao-linha':
+            return typeof loadConversaoLinha === 'function'
+                ? loadConversaoLinha()
+                : $('#page-content').html('<div class="alert alert-danger">Erro ao carregar a conversão de estoque.</div>');
+        case 'fichas-tecnicas':
+            return typeof loadFichasTecnicas === 'function'
+                ? loadFichasTecnicas()
+                : $('#page-content').html('<div class="alert alert-danger">Erro ao carregar fichas técnicas.</div>');
         case 'categorias':
             return carregarPaginaHtml('categorias.html', function () {
                 if (typeof loadCategoriasAndSubcategorias === 'function') {
